@@ -7,8 +7,8 @@ window.CONFIG = {
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
-  SUPABASE_URL: 'PEGA_AQUI_LA_URL_DEL_PROYECTO',
-  SUPABASE_KEY: 'PEGA_AQUI_LA_LLAVE_PUBLICA',
+  SUPABASE_URL: 'https://kkgnsylkmjltuphyetss.supabase.co',
+  SUPABASE_KEY: 'sb_publishable_5EeawmI8dhBMhH_ZIt8szg_xmhRitx8',
 
   // Límite de categorías por perfil (igual que en schema.sql)
   MAX_CATEGORIAS: 5,
