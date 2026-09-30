@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.1.0',
+  VERSION: '1.2.0',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -121,12 +121,35 @@ window.CONFIG = {
   // Recorte de fondo (se descarga solo al usarlo)
   RECORTE_URL: 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm',
 
+  // Ubicación exacta: más allá de esta precisión (metros) se considera aproximada
+  GPS_PRECISION_MAX: 100,
+  PRECISION_TITULO: 'Ubicación aproximada',
+  PRECISION_TEXTO: 'Tu teléfono está compartiendo una ubicación aproximada. El hallazgo se guarda igual, con la marca "ubicación aproximada". Para volver a encontrarlo con precisión, activa la ubicación exacta.',
+  PRECISION_PASOS: [
+    { so: 'iPhone', paso: 'Ajustes → Privacidad y seguridad → Localización → Safari (o Chrome) → activa "Ubicación exacta".' },
+    { so: 'Android', paso: 'Ajustes → Ubicación → Permisos de apps → Chrome → elige "Permitir solo mientras se usa la app" y activa "Usar ubicación precisa".' }
+  ],
+  PRECISION_MANUAL: 'También puedes tocar el mapa del registro para marcar el punto exacto a mano.',
+
+  // Comentarios
+  COMENTARIO_MAX: 60,        // caracteres (igual que en migracion-1.2.sql)
+  COMENTARIOS_POR_PERSONA: 10, // por hallazgo (igual que en migracion-1.2.sql)
+
+  // Emojis sugeridos (pestaña de emoji del selector de íconos)
+  EMOJIS: ['🐈', '🐕', '🐦', '🦋', '🐿️', '🐢', '🦎', '🐝', '🌳', '🌵', '🌸', '🌻', '🍄', '🪴', '🏛️', '⛪',
+           '🏠', '🚪', '🪟', '🗿', '⛲', '🚗', '🚲', '🛵', '🪑', '🛋️', '💡', '🕰️', '👓', '👒', '👗', '👠',
+           '💍', '📚', '💿', '🎨', '🖼️', '🧸', '🏺', '🗝️', '🔔', '👻', '⭐', '❤️', '✨', '🦖'],
+
   // Reencuentros: distancia para sugerir que ya lo habías registrado
   REENCUENTRO_METROS: 40,
   // "Cerca de mí": radio de búsqueda
   CERCA_METROS: 3000,
 
-  // Sección de dudas (pantalla de entrada y perfil)
+  // Títulos y textos de pantallas
+  TITULO_COLECCION: 'Colección por categorías',
+  TEXTO_CATEGORIAS: 'Elige tu categoría y añade un ícono',
+
+  // Dudas de uso (botón de ayuda en el mapa). La privacidad va aparte (pantalla de entrada)
   DUDAS: [
     { p: '¿Qué es Collector Go?', r: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo.' },
     { p: '¿Cómo registro un hallazgo?', r: 'Toca la cámara, toma la foto, elige la categoría, ponle nombre y guarda. La ubicación se guarda sola.' },
@@ -135,8 +158,11 @@ window.CONFIG = {
     { p: '¿Cómo vuelvo a un hallazgo?', r: 'Abre su ficha y toca el botón de ruta.' },
     { p: '¿Qué son las medallas?', r: 'Premios por coleccionar: por cantidad en cada categoría, por colonias exploradas, por semanas seguidas y por reencuentros. Toca una para ver cuánto te falta.' },
     { p: '¿Cómo me uno a un grupo?', r: 'Abre el enlace de invitación que te mandaron por WhatsApp y entra con Google.' },
+    { p: '¿Por qué pide mi ubicación?', r: 'Para guardar el punto de cada hallazgo y poder volver a él. Puedes compartir la exacta o la aproximada; lo aproximado queda marcado y puedes corregirlo tocando el mapa.' },
+    { p: '¿Cómo comento?', r: 'Abre la ficha de un hallazgo público y escribe en Comentarios. Máximo 60 caracteres por comentario.' },
     { p: '¿Qué significa cada ícono?', r: 'Mantén presionado cualquier botón y aparece su nombre.' }
   ],
+  // Sección de privacidad (pantalla de entrada y desde la ayuda del mapa)
   DATOS_TITULO: '¿Qué pasa con mis datos?',
   DATOS: [
     'Guardamos lo necesario para que la app funcione: tu nombre, frase y avatar; tu correo de Google, que solo sirve para entrar; y de cada hallazgo la foto, el nombre, la nota, la fecha y la ubicación exacta. También a quién sigues, tus grupos y tus reacciones.',
@@ -144,6 +170,7 @@ window.CONFIG = {
     'Lo público, incluida su ubicación exacta, lo ve cualquier persona con cuenta. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
     'Los datos y las fotos se guardan en Supabase. Google solo confirma quién eres al entrar. Para saber el nombre de la colonia, la app envía las coordenadas a OpenStreetMap, que también dibuja el mapa. El recorte de fondo se hace en tu teléfono.',
     'No vendemos tus datos ni hay publicidad.',
+    'Los comentarios los ve cualquier persona que pueda ver el hallazgo. Puedes borrar los tuyos, y quien registró el hallazgo también puede borrarlos.',
     'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta", en tu perfil, elimina tu perfil, tus hallazgos y tus fotos.',
     'La administradora puede quitar contenido público que alguien reporte y bloquear cuentas que no respeten la comunidad.'
   ],
@@ -162,8 +189,8 @@ window.CONFIG = {
     camara: 'Tomar foto', galeria: 'Elegir de la galería', sin_foto: 'Solo marcar, sin foto', guardar: 'Guardar', cerrar: 'Cerrar', atras: 'Atrás',
     ver_mapa: 'Ver en el mapa', categorias: 'Editar categorías', gps: 'Volver a leer el GPS',
     bloquear: 'Bloquear cuenta', desbloquear: 'Desbloquear', descartar: 'Descartar aviso', ver: 'Ver',
-    mas: 'Cargar más', dudas: 'Dudas', seguir: 'Seguir', dejar_seguir: 'Dejar de seguir',
+    mas: 'Cargar más', dudas: 'Cómo funciona', privacidad: 'Privacidad de datos', seguir: 'Seguir', dejar_seguir: 'Dejar de seguir',
     grupo_nuevo: 'Crear grupo', invitar: 'Invitar por WhatsApp', salir_grupo: 'Salir del grupo', grupo_publico: 'Grupo público',
-    grupo_privado: 'Grupo privado', borrar_cuenta: 'Borrar mi cuenta', buscar: 'Buscar ícono', emoji: 'Usar un emoji'
+    grupo_privado: 'Grupo privado', comentar: 'Enviar comentario', borrar_comentario: 'Borrar comentario', nueva_categoria: 'Nueva categoría', borrar_cuenta: 'Borrar mi cuenta', buscar: 'Buscar ícono', emoji: 'Usar un emoji'
   }
 };

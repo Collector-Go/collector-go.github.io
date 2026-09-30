@@ -80,6 +80,8 @@ function mensajeError(e) {
   const m = errTexto(e);
   if (m.includes('MAX_CATEGORIAS')) return `Máximo ${C.MAX_CATEGORIAS} categorías`;
   if (m.includes('NOMBRE_REPETIDO')) return 'Ese nombre ya existe aquí';
+  if (m.includes('MAX_COMENTARIOS')) return `Máximo ${C.COMENTARIOS_POR_PERSONA} comentarios por hallazgo`;
+  if (m.includes('comments_body_check')) return `Máximo ${C.COMENTARIO_MAX} caracteres`;
   if (m.includes('INVITACION_INVALIDA')) return 'Esa invitación ya no es válida';
   if ((e && e.code === '23503') || m.includes('foreign key')) return 'Primero borra o mueve sus hallazgos';
   if (e && e.code === '23505') return 'Ya estaba registrado';
@@ -132,6 +134,9 @@ function supabaseApi() {
     card: (id) => cards().eq('id', id).maybeSingle().then(ok),
     cardsByIds: (ids) => (ids.length ? cards().in('id', ids).then(ok) : Promise.resolve([])),
     history: (findId) => sb.from('sighting_cards').select('*').eq('find_id', findId).order('created_at', { ascending: false }).then(ok),
+    comments: (findId) => sb.from('comment_cards').select('*').eq('find_id', findId).order('created_at').then(ok),
+    addComment: (findId, body) => sb.from('comments').insert({ find_id: findId, body }).then(ok),
+    delComment: (id) => sb.from('comments').delete().eq('id', id).then(ok),
     findByName: (nombre, categoria, grupo) => sb.rpc('find_by_name', { nombre, categoria: categoria || null, grupo: grupo || null }).then(ok),
     addFind: (f) => sb.from('finds').insert(f).select('id').single().then(ok).then((r) => r.id),
     updateFind: (id, f) => sb.from('finds').update(f).eq('id', id).then(ok),
@@ -351,7 +356,7 @@ function iconPicker(actual) {
   const g = esEmoji(sel) ? 'emoji' : ((C.ICONOS_GRUPOS.find((x) => x.iconos.includes(sel)) || C.ICONOS_GRUPOS[0]).id);
   return `<div class="iconpick" data-iconpick data-sel="${esc(sel)}">
     <div class="row" style="margin-bottom:10px"><span class="avatar" id="icono-elegido" style="background:var(--tinta)">${ic(sel)}</span>
-      <input class="in grow" data-in="buscar-icono" id="buscar-icono" placeholder="Buscar: gato, puerta, silla…" autocomplete="off" aria-label="${esc(C.AYUDA.buscar)}"></div>
+      <input class="in grow" data-in="buscar-icono" id="buscar-icono" placeholder="Buscar: gato, puerta, silla…" autocomplete="off" aria-label="${esc(C.AYUDA.buscar)}" ${g === 'emoji' ? 'hidden' : ''}></div>
     <div class="toggle tabs" style="margin-bottom:10px">
       ${C.ICONOS_GRUPOS.map((x) => `<button type="button" data-act="icon_tab" data-v="${x.id}" class="${x.id === g ? 'on' : ''}" data-tip="${esc(x.nombre)}" aria-label="${esc(x.nombre)}">${ic(x.icono)}</button>`).join('')}
       <button type="button" data-act="icon_tab" data-v="emoji" class="${g === 'emoji' ? 'on' : ''}" data-tip="${esc(C.AYUDA.emoji)}" aria-label="${esc(C.AYUDA.emoji)}">${ic('mood-smile')}</button>
@@ -362,13 +367,23 @@ function botonesIconos(nombres, sel) {
   return `<div class="pick">${nombres.map((n) => `<button type="button" data-act="elegir_icono" data-v="${esc(n)}" class="${n === sel ? 'on' : ''}" aria-label="${esc(n)}">${ic(n)}</button>`).join('')}</div>`;
 }
 function listaIconos(grupo, sel) {
-  if (grupo === 'emoji') return `<div class="row"><input class="in grow" id="emoji-in" maxlength="16" placeholder="Pega o escribe un emoji" value="${esEmoji(sel) ? esc(sel.slice(6)) : ''}" style="font-size:24px">
+  if (grupo === 'emoji') return `${botonesIconos(C.EMOJIS.map((e) => 'emoji:' + e), sel)}
+    <p class="tiny" style="margin:10px 0 6px">¿Otro? Escríbelo con el teclado de emojis de tu teléfono:</p>
+    <div class="row"><input class="in grow" id="emoji-in" maxlength="16" placeholder="😀" value="${esEmoji(sel) && !C.EMOJIS.includes(sel.slice(6)) ? esc(sel.slice(6)) : ''}" style="font-size:24px">
     ${ib('usar_emoji', 'check', 'emoji', '', 'on')}</div>`;
   const x = C.ICONOS_GRUPOS.find((y) => y.id === grupo) || C.ICONOS_GRUPOS[0];
   return botonesIconos(x.iconos, sel);
 }
+const esEmojiTexto = (t) => !!t && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(t);
 async function buscarIconos(q) {
   const box = $('#icon-lista'), raiz = $('[data-iconpick]'); if (!box || !raiz) return;
+  const emo = primerGrafema(q);
+  if (esEmojiTexto(emo)) {
+    raiz.dataset.sel = 'emoji:' + emo;
+    $('#icono-elegido', raiz).innerHTML = ic(raiz.dataset.sel);
+    box.innerHTML = `<p class="muted row">${ic(raiz.dataset.sel)} Emoji elegido</p>`;
+    return;
+  }
   const texto = sinAcentos(q);
   if (!texto) { const tab = $('[data-act="icon_tab"].on', raiz); box.innerHTML = listaIconos(tab ? tab.dataset.v : 'animales', raiz.dataset.sel); return; }
   box.innerHTML = `<div class="empty" style="padding:16px"><span class="spin">${ic('loader-2')}</span></div>`;
@@ -475,7 +490,7 @@ function pintarApp() {
   $('#app').innerHTML = `
     <section id="scr-map" class="screen map-screen">
       <div id="map"></div>
-      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div></div>
+      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
       <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
     </section>
     <main id="scr" class="screen" hidden></main>
@@ -514,7 +529,7 @@ function tarjeta(c) {
     <div class="body row"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left">${avatar(c)}<b class="grow">${esc(c.user_name)}</b></button>${catBadge(c.cat_name, c.cat_icon, c.cat_color)}</div>
     ${c.photo || c.thumb ? `<img class="photo" src="${foto(c)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
     <div class="body"><div class="row between"><div class="grow"><h3>${esc(c.name)}</h3>
-      <div class="tiny">${c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}</div></div></div>
+      <div class="tiny">${c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}${c.comments_count ? ` · ${ic('message-circle')} ${c.comments_count}` : ''}</div></div></div>
       <div style="margin-top:8px">${reaccionesHTML(c)}</div></div></article>`;
 }
 async function pintarMuro(masViejo) {
@@ -554,7 +569,7 @@ async function pintarColeccion() {
     if (S.coleccionCat && !S.cats.some((c) => c.id === S.coleccionCat)) S.coleccionCat = null;
     const vis = S.coleccionCat ? mias.filter((c) => c.category_id === S.coleccionCat) : mias;
     if (S.tab !== 'coleccion') return;
-    scr.innerHTML = `<div class="row between" style="margin-bottom:12px"><h1 class="row">${ic('cards')} ${mias.length}</h1>${ib('categorias', 'pencil', 'categorias')}</div>
+    scr.innerHTML = `<div class="row between" style="margin-bottom:12px"><h1 class="serif grow">${esc(C.TITULO_COLECCION)}</h1>${ib('categorias', 'pencil', 'categorias')}</div>
       <div class="chips" style="margin-bottom:14px">
         <button class="chip ${!S.coleccionCat ? 'on' : ''}" data-act="colcat" data-v="" aria-label="Todas">${ic('layout-grid')} ${mias.length}</button>
         ${S.cats.map((c) => `<button class="chip ${S.coleccionCat === c.id ? 'on' : ''}" data-act="colcat" data-v="${c.id}"><span class="dot" style="background:${okColor(c.color)}"></span>${ic(c.icon)}${esc(c.name)} · ${cuenta(c.id)}</button>`).join('')}
@@ -584,14 +599,15 @@ function perfilHTML(p, st, propio, tarjetas) {
   const grupo = (t) => ls.filter((l) => l.tipo === t).map(medalla).join('');
   const md = st.mejor_dia;
   const sigo = S.following.has(p.id);
+  const colecciones = (st.categorias || []).filter((c) => propio || c.total > 0);
   return `<div class="row" style="gap:14px">${avatar(p, 'lg')}<div class="grow"><h2>${esc(p.name)}</h2>${p.bio ? `<div class="muted">${esc(p.bio)}</div>` : ''}
+      ${colecciones.length ? `<div class="colicons">${colecciones.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}
       <div class="tiny row" style="margin-top:4px"><span data-tip="Seguidores">${ic('users')} ${st.seguidores || 0}</span> · <span data-tip="Siguiendo">${ic('user-check')} ${st.siguiendo || 0}</span></div>
       ${p.blocked ? `<div class="tiny row">${ic('ban')} bloqueada</div>` : ''}</div></div>
     <div class="row wrap" style="margin:14px 0">
       ${propio ? ib('editar_perfil', 'pencil', 'editar') : ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? '' : 'on')}
       ${ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`)}
       ${ib('tabla', 'trophy', 'tabla')}
-      ${propio ? ib('dudas', 'help', 'dudas') : ''}
       ${propio && S.me.is_admin ? ib('admin', 'shield', 'admin') : ''}
       ${!propio && S.me.is_admin && !p.is_admin ? ib(p.blocked ? 'desbloquear' : 'bloquear', p.blocked ? 'lock-open' : 'ban', p.blocked ? 'desbloquear' : 'bloquear', `data-id="${p.id}"`) : ''}
       <span class="grow"></span>${propio ? ib('salir', 'logout', 'salir') : ''}
@@ -637,11 +653,28 @@ async function abrirPerfil(uid) {
   datos.cargar();
 }
 
-/* Dudas y datos */
+/* Ayuda de uso (mapa) y privacidad (entrada) */
 function hojaDudas() {
-  abrirHoja(() => `${cabeza(`${ic('help')} Dudas`)}
+  abrirHoja(() => `${cabeza(`${ic('help')} ${esc(C.AYUDA.dudas)}`)}
     <div class="dudas">${C.DUDAS.map((d) => `<div class="duda"><h3>${esc(d.p)}</h3><p>${esc(d.r)}</p></div>`).join('')}
-    <div class="duda datos"><h3>${ic('lock')} ${esc(C.DATOS_TITULO)}</h3>${C.DATOS.map((t) => `<p>${esc(t)}</p>`).join('')}</div></div>`, null, 'dudas');
+    <button class="btn alt block" data-act="privacidad">${ic('lock')} ${esc(C.DATOS_TITULO)}</button></div>`, null, 'dudas');
+}
+function hojaPrivacidad() {
+  abrirHoja(() => `${cabeza(`${ic('lock')} ${esc(C.AYUDA.privacidad)}`)}
+    <div class="dudas"><div class="duda datos"><h3>${esc(C.DATOS_TITULO)}</h3>${C.DATOS.map((t) => `<p>${esc(t)}</p>`).join('')}</div></div>`, null, 'privacidad');
+}
+/* Ubicación exacta: si el teléfono da una aproximada, explica cómo activarla */
+const esAproximada = (p) => p && p.acc != null && p.acc > C.GPS_PRECISION_MAX;
+let precisionAvisada = false;
+function avisarPrecision(p, forzar) {
+  if (!esAproximada(p) || (precisionAvisada && !forzar)) return;
+  precisionAvisada = true;
+  abrirHoja(() => `${cabeza(`${ic('current-location')} ${esc(C.PRECISION_TITULO)}`)}
+    <p>${esc(C.PRECISION_TEXTO)}</p>
+    <p class="banner" style="margin:12px 0">${ic('alert-triangle')} Precisión actual: ±${metros(p.acc)}</p>
+    <div class="dudas">${C.PRECISION_PASOS.map((x) => `<div class="duda"><h3>${esc(x.so)}</h3><p>${esc(x.paso)}</p></div>`).join('')}
+    <p class="muted">${esc(C.PRECISION_MANUAL)}</p></div>
+    <button class="btn block" data-act="cerrar" style="margin-top:14px">${ic('check')} Entendido</button>`, null, 'precision');
 }
 
 /* ---------------------------------------------------------------------
@@ -660,12 +693,35 @@ async function abrirFicha(id) {
   fichaH = H;
   abrirHoja(() => fichaHTML(S.cache.get(id) || c, H), (raiz) => montarFicha(raiz, S.cache.get(id) || c, H), 'ficha');
   H.cargar = async () => {
-    try { H.lista = await api.history(id); } catch (e) { H.lista = []; }
+    const cc = S.cache.get(id) || c;
+    try {
+      const [lista, coms] = await Promise.all([api.history(id), cc.is_private ? Promise.resolve([]) : api.comments(id)]);
+      H.lista = lista; H.coms = coms;
+    } catch (e) { H.lista = H.lista || []; H.coms = H.coms || []; }
     const top = hojaArriba(); if (top && top.tipo === 'ficha' && pila.includes(top)) dibujarHoja();
   };
   H.cargar();
   return H;
 }
+// Comentarios de la ficha
+const puedoComentar = (c) => !c.is_private && !S.me.blocked && (!c.group_id || c.group_public || !!miGrupo(c.group_id));
+function comentariosHTML(c, H) {
+  const coms = H.coms;
+  const mios = (coms || []).filter((k) => k.user_id === S.user.id).length;
+  const puedoBorrar = (k) => k.user_id === S.user.id || c.user_id === S.user.id || S.me.is_admin;
+  return `<div class="sec" id="comentarios" style="margin-top:14px"><h3>${ic('message-circle')} Comentarios${coms ? ` · ${coms.length}` : ''}</h3>
+    ${coms === undefined ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>` : `
+    <div class="coms">${coms.map((k) => `<div class="com">
+      <button data-act="perfil" data-id="${k.user_id}" aria-label="${esc(k.user_name)}">${avatar(k)}</button>
+      <div class="grow"><div><b>${esc(k.user_name)}</b> <span class="tiny">${hace(k.created_at)}</span></div><p>${esc(k.body)}</p></div>
+      ${puedoBorrar(k) ? ib('borrar_comentario', 'trash', 'borrar_comentario', `data-id="${k.id}" data-find="${c.id}"`, 'sm ghost') : ''}</div>`).join('')}</div>
+    ${puedoComentar(c) ? (mios < C.COMENTARIOS_POR_PERSONA ? `<div class="row" style="align-items:flex-end;margin-top:8px">
+      <div class="grow"><input id="coment-in" class="in" maxlength="${C.COMENTARIO_MAX}" placeholder="Escribe un comentario" value="${esc(H.borrador || '')}" autocomplete="off">
+      <div class="tiny" style="text-align:right"><span id="coment-n">${(H.borrador || '').length}</span>/${C.COMENTARIO_MAX}</div></div>
+      ${ib('comentar', 'send', 'comentar', `data-id="${c.id}"`, 'on')}</div>`
+      : `<p class="tiny">Ya dejaste ${C.COMENTARIOS_POR_PERSONA} comentarios aquí.</p>`) : ''}`}</div>`;
+}
+
 // Todas las fotos del sujeto: la más reciente primero
 function galeria(c, H) {
   const inicial = { photo: c.photo, thumb: c.thumb, created_at: c.created_at, colonia: c.colonia, lat: c.lat, lng: c.lng, user_name: c.user_name, inicial: true };
@@ -687,7 +743,9 @@ function fichaHTML(c, H) {
       <button class="row" data-act="perfil" data-id="${c.user_id}">${avatar(c)}<b>${esc(c.user_name)}</b></button>
       ${catBadge(c.cat_name, c.cat_icon, c.cat_color)}</div>
     ${c.note ? `<p style="margin:6px 0 12px">${esc(c.note)}</p>` : ''}
+    ${esAproximada({ acc: c.accuracy }) ? `<button class="linkbtn tiny" data-act="info_precision" data-acc="${c.accuracy}" style="padding:0;color:var(--tinta2)">${ic('alert-triangle')} Ubicación aproximada ±${metros(c.accuracy)}</button>` : ''}
     ${!c.is_private ? `<div style="margin:12px 0">${reaccionesHTML(c)}</div>` : ''}
+    ${!c.is_private ? comentariosHTML(c, H) : ''}
     <div class="row wrap" style="margin-top:14px">
       ${ib('ruta', 'route', 'ruta', `data-id="${c.id}"`, 'on')}
       ${ib('ver_mapa', 'map-pin', 'ver_mapa', `data-id="${c.id}"`)}
@@ -761,7 +819,8 @@ function registroHTML() {
 function gpsTexto() {
   if (R.gps === 'buscando') return `<span class="spin">${ic('loader-2')}</span> GPS`;
   if (R.gps === 'error') return 'Sin GPS: toca el mapa para marcar';
-  if (R.pos) return R.pos.acc != null ? `±${R.pos.acc} m` : 'Marcado a mano';
+  if (R.pos) return R.pos.acc == null ? 'Marcado a mano'
+    : esAproximada(R.pos) ? `${ic('alert-triangle')} ±${metros(R.pos.acc)} · aproximada <button type="button" class="linkbtn" data-act="info_precision" style="padding:0 4px">¿Cómo activar la exacta?</button>` : `±${R.pos.acc} m`;
   return '';
 }
 // Guarda lo escrito antes de volver a dibujar el formulario
@@ -1051,10 +1110,12 @@ function tablaGeneral(grupo) {
 /* Categorías */
 function hojaCategorias(alTerminar) {
   const render = () => `${cabeza(ic('cards'))}
+    <div class="instruccion"><p>${esc(C.TEXTO_CATEGORIAS)}</p>
+      <div class="tiny row wrap"><span class="row">${ic('pencil')} editar</span><span class="row">${ic('trash')} borrar</span><span class="row">${ic('plus')} nueva categoría</span></div></div>
     <div class="list">${S.cats.map((c) => `<div class="li"><span class="avatar" style="background:${okColor(c.color)}">${ic(c.icon)}</span>
       <b class="grow">${esc(c.name)}</b>${ib('editar_categoria', 'pencil', 'editar', `data-id="${c.id}"`, 'sm')}${ib('borrar_categoria', 'trash', 'borrar', `data-id="${c.id}"`, 'sm')}</div>`).join('')}</div>
     <p class="tiny" style="margin:10px 0">${S.cats.length} / ${C.MAX_CATEGORIAS}</p>
-    ${S.cats.length < C.MAX_CATEGORIAS ? `<button class="btn alt block" data-act="editar_categoria" data-id="">${ic('plus')}</button>` : ''}
+    ${S.cats.length < C.MAX_CATEGORIAS ? `<button class="btn alt block" data-act="editar_categoria" data-id="" aria-label="${esc(C.AYUDA.nueva_categoria)}" data-tip="${esc(C.AYUDA.nueva_categoria)}">${ic('plus')}</button>` : ''}
     ${alTerminar ? `<button class="btn block" data-act="listo_categorias" style="margin-top:12px" ${S.cats.length ? '' : 'disabled'}>${ic('check')} Listo</button>` : ''}`;
   abrirHoja(render, null, 'categorias', !!alTerminar);
   hojaArriba().listo = alTerminar;
@@ -1253,6 +1314,29 @@ const adminAbierto = () => pila.find((h) => h.tipo === 'admin');
 const ACCIONES = {
   entrar: (b) => { ocupado(b, true); api.login().catch((e) => { ocupado(b, false); fallo(e); }); },
   dudas: () => hojaDudas(),
+  privacidad: () => hojaPrivacidad(),
+  info_precision(b) { const acc = +(b.dataset.acc || (R.pos && R.pos.acc) || C.GPS_PRECISION_MAX + 1); if (hojaArriba() && hojaArriba().tipo === 'registro') recordarFormulario(); avisarPrecision({ acc }, true); },
+  async comentar(b) {
+    const t = $('#coment-in'); const texto = (t ? t.value : '').trim();
+    if (!texto) { if (t) t.focus(); return aviso('Escribe un comentario', 'message-circle'); }
+    if (texto.length > C.COMENTARIO_MAX) return aviso(`Máximo ${C.COMENTARIO_MAX} caracteres`, 'message-circle');
+    ocupado(b, true);
+    try {
+      await api.addComment(b.dataset.id, texto);
+      if (fichaH) { fichaH.borrador = ''; fichaH.coms = await api.comments(b.dataset.id); }
+      const nueva = await api.card(b.dataset.id); if (nueva) guarda([nueva]);
+      refrescarFicha(b.dataset.id); aviso('Comentario publicado', 'message-circle');
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async borrar_comentario(b) {
+    if (!(await confirmar('¿Borrar este comentario?'))) return;
+    try {
+      await api.delComment(b.dataset.id);
+      if (fichaH) fichaH.coms = await api.comments(b.dataset.find);
+      const nueva = await api.card(b.dataset.find); if (nueva) guarda([nueva]);
+      refrescarFicha(b.dataset.find); aviso('Comentario borrado', 'trash');
+    } catch (e) { fallo(e); }
+  },
   tab: (b) => irA(b.dataset.v),
   nuevo: () => nuevoRegistro(),
   fondo: (b, ev) => { const top = hojaArriba(); if (ev.target === b && top && !top.fija) cerrarHoja(); },
@@ -1268,7 +1352,7 @@ const ACCIONES = {
   icon_tab(b) {
     const raiz = b.closest('[data-iconpick]');
     $$('[data-act="icon_tab"]', raiz).forEach((x) => x.classList.toggle('on', x === b));
-    const q = $('#buscar-icono', raiz); if (q) q.value = '';
+    const q = $('#buscar-icono', raiz); if (q) { q.value = ''; q.hidden = b.dataset.v === 'emoji'; }
     $('#icon-lista', raiz).innerHTML = listaIconos(b.dataset.v, raiz.dataset.sel);
   },
   elegir_icono(b) {
@@ -1280,8 +1364,9 @@ const ACCIONES = {
   usar_emoji(b) {
     const raiz = b.closest('[data-iconpick]');
     const e = primerGrafema($('#emoji-in', raiz).value);
-    if (!e || /^[\w\s.,;:!?¿¡'"()-]$/.test(e)) return aviso('Pega o escribe un emoji', 'mood-smile');
+    if (!esEmojiTexto(e)) return aviso('Escribe un emoji, no letras', 'mood-smile');
     raiz.dataset.sel = 'emoji:' + e;
+    $$('[data-act="elegir_icono"]', raiz).forEach((x) => x.classList.remove('on'));
     $('#icono-elegido', raiz).innerHTML = ic(raiz.dataset.sel);
     aviso('Emoji elegido', 'mood-smile');
   },
@@ -1497,6 +1582,7 @@ document.addEventListener('click', (ev) => {
 });
 let tBuscar;
 document.addEventListener('input', (ev) => {
+  if (ev.target.id === 'coment-in') { if (fichaH) fichaH.borrador = ev.target.value; const n = $('#coment-n'); if (n) n.textContent = ev.target.value.length; }
   if (ev.target.matches('[data-in="buscar-icono"]')) { clearTimeout(tBuscar); const v = ev.target.value; tBuscar = setTimeout(() => buscarIconos(v), 300); }
 });
 
@@ -1509,7 +1595,7 @@ function pantallaEntrada() {
     <h1 class="serif" style="font-size:36px">Collector Go</h1>
     <p class="muted" style="max-width:280px;font-size:18px">${ic('map-pin')} ${esc(C.LEMA)}</p>
     <button class="btn" data-act="entrar">${ic('brand-google')} Entrar con Google</button>
-    <button class="ib" data-act="dudas" data-tip="${esc(C.AYUDA.dudas)}" aria-label="${esc(C.AYUDA.dudas)}">${ic('help')}</button></div>`;
+    <button class="linkbtn" data-act="privacidad" style="color:var(--tinta2)">${ic('lock')} ${esc(C.DATOS_TITULO)}</button></div>`;
 }
 function pantallaConfig() {
   $('#app').innerHTML = `<div class="login"><h1 class="serif">Collector Go</h1>

@@ -190,3 +190,15 @@ textarea.in{min-height:70px;resize:vertical}
 .duda.datos h3{display:flex;gap:6px;align-items:center}
 .duda.datos p{font-size:15px}
 .chip .avatar{width:24px;height:24px;font-size:13px;border-width:1px}
+
+/* ---- v1.2 ---- */
+.colicons{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.colicon{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:var(--papel);border:1.5px solid var(--tinta);font-size:15px}
+.coms{display:flex;flex-direction:column;gap:10px}
+.com{display:flex;gap:10px;align-items:flex-start}
+.com .avatar{width:30px;height:30px;font-size:15px}
+.com p{margin:2px 0 0;overflow-wrap:anywhere}
+.instruccion{background:var(--papel3);border:1px dashed var(--tinta2);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+.instruccion p{margin:0 0 6px}
+.instruccion .row{gap:4px}
+.instruccion .wrap{gap:14px}
