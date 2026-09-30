@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.2.0',
+  VERSION: '1.3.0',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -149,31 +149,60 @@ window.CONFIG = {
   TITULO_COLECCION: 'Colección por categorías',
   TEXTO_CATEGORIAS: 'Elige tu categoría y añade un ícono',
 
-  // Dudas de uso (botón de ayuda en el mapa). La privacidad va aparte (pantalla de entrada)
-  DUDAS: [
-    { p: '¿Qué es Collector Go?', r: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo.' },
-    { p: '¿Cómo registro un hallazgo?', r: 'Toca la cámara, toma la foto, elige la categoría, ponle nombre y guarda. La ubicación se guarda sola.' },
-    { p: '¿Y si lo vuelvo a ver?', r: 'Regístralo con el mismo nombre en la misma categoría. La app te pregunta si es el mismo y agrega la foto a su historia.' },
-    { p: '¿Quién ve lo que registro?', r: 'Lo público lo ve la comunidad. Lo que marcas con candado solo lo ves tú.' },
-    { p: '¿Cómo vuelvo a un hallazgo?', r: 'Abre su ficha y toca el botón de ruta.' },
-    { p: '¿Qué son las medallas?', r: 'Premios por coleccionar: por cantidad en cada categoría, por colonias exploradas, por semanas seguidas y por reencuentros. Toca una para ver cuánto te falta.' },
-    { p: '¿Cómo me uno a un grupo?', r: 'Abre el enlace de invitación que te mandaron por WhatsApp y entra con Google.' },
-    { p: '¿Por qué pide mi ubicación?', r: 'Para guardar el punto de cada hallazgo y poder volver a él. Puedes compartir la exacta o la aproximada; lo aproximado queda marcado y puedes corregirlo tocando el mapa.' },
-    { p: '¿Cómo comento?', r: 'Abre la ficha de un hallazgo público y escribe en Comentarios. Máximo 60 caracteres por comentario.' },
-    { p: '¿Qué significa cada ícono?', r: 'Mantén presionado cualquier botón y aparece su nombre.' }
+  // Guía completa de uso (botón de ayuda en el mapa). Cada sección: ícono, título y pasos.
+  GUIA: [
+    { icono: 'map-2', titulo: '¿Qué es Collector Go?',
+      texto: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo. Cada persona arma hasta 5 colecciones por categoría: gatos, puertas, letreros, lo que quieras.' },
+    { icono: 'camera', titulo: 'Registrar un hallazgo',
+      pasos: ['Toca la cámara del centro, abajo.', 'Toma la foto o elígela de tu galería. Si quieres, toca las tijeras para quitar el fondo.',
+              'Elige la categoría (o un grupo) y ponle un nombre.', 'Revisa el punto en el mapa: puedes tocarlo para corregirlo.', 'Toca Guardar y celebra.'] },
+    { icono: 'repeat', titulo: 'Volver a verlo (reencuentros)',
+      pasos: ['Regístralo con el mismo nombre en la misma categoría: la app te pregunta si es el mismo.',
+              'O abre su ficha y toca el botón de flechas.', 'Cada reencuentro suma una foto, una fecha y un punto a su historia.',
+              'Si registraste dos veces lo mismo, edita el nombre de uno igual al otro y la app los junta.'] },
+    { icono: 'route', titulo: 'Volver a encontrarlo en la calle',
+      pasos: ['Abre su ficha y toca el botón de ruta: se abre el camino en el mapa de tu teléfono.',
+              'En el mapa, el botón de caminar muestra lo que hay cerca de ti, ordenado por distancia.'] },
+    { icono: 'cards', titulo: 'Tu colección y tus categorías',
+      pasos: ['La pestaña de tarjetas muestra todo lo que has registrado, por categoría.', 'El lápiz abre tus categorías: edítalas, bórralas o crea nuevas (máximo 5).',
+              'Cada categoría lleva un ícono: elige uno de las tres pestañas, búscalo por nombre o usa un emoji.'] },
+    { icono: 'lock', titulo: 'Público o privado',
+      texto: 'Al registrar eliges el ojo (público: lo ve la comunidad) o el candado (privado: solo tú). Lo de un grupo privado solo lo ven sus miembros.' },
+    { icono: 'layout-grid', titulo: 'Muro, seguir y reacciones',
+      pasos: ['El Muro muestra lo más reciente. Arriba filtras: todos, personas que sigues o un grupo.', 'Abre un perfil y toca el botón de seguir.',
+              'Reacciona con un ícono: me encanta, joya, increíble o yo también lo vi.'] },
+    { icono: 'message-circle', titulo: 'Comentarios',
+      texto: 'Abre la ficha de un hallazgo público y escribe en Comentarios: máximo 60 caracteres por comentario. Puedes borrar los tuyos; quien registró el hallazgo también puede borrarlos.' },
+    { icono: 'users', titulo: 'Grupos',
+      pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Invita por WhatsApp: quien abra el enlace y entre con Google queda dentro.',
+              'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.'] },
+    { icono: 'medal', titulo: 'Medallas y récords',
+      texto: 'Ganas medallas por cantidad en cada categoría, por colonias exploradas, por semanas seguidas y por reencuentros. Toca una medalla para ver cuánto te falta. La copa muestra la tabla general.' },
+    { icono: 'current-location', titulo: 'Ubicación',
+      texto: 'La app guarda el punto de cada hallazgo. Puedes compartir la ubicación exacta o la aproximada; lo aproximado queda marcado y puedes corregirlo tocando el mapa.' },
+    { icono: 'brand-whatsapp', titulo: 'Compartir',
+      texto: 'En la ficha, el botón de WhatsApp crea una tarjeta con la foto de tu hallazgo para enviarla.' },
+    { icono: 'hand-finger', titulo: '¿Qué significa cada ícono?',
+      texto: 'Mantén presionado cualquier botón y aparece su nombre.' }
   ],
-  // Sección de privacidad (pantalla de entrada y desde la ayuda del mapa)
+  // Privacidad: la pantalla de entrada muestra DATOS; la guía del mapa agrega DATOS_EXTRA
   DATOS_TITULO: '¿Qué pasa con mis datos?',
   DATOS: [
-    'Guardamos lo necesario para que la app funcione: tu nombre, frase y avatar; tu correo de Google, que solo sirve para entrar; y de cada hallazgo la foto, el nombre, la nota, la fecha y la ubicación exacta. También a quién sigues, tus grupos y tus reacciones.',
+    'Guardamos lo necesario para que la app funcione: tu nombre, frase y avatar; tu correo de Google, que solo sirve para entrar; y de cada hallazgo la foto, el nombre, la nota, la fecha y la ubicación. También a quién sigues, tus grupos y tus reacciones.',
     'Tu nombre, frase y avatar los ve cualquier persona con cuenta. Tu correo no aparece en la app; solo lo ve la administradora en el panel de la base de datos.',
-    'Lo público, incluida su ubicación exacta, lo ve cualquier persona con cuenta. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
+    'Lo público, incluida su ubicación, lo ve cualquier persona con cuenta. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
     'Los datos y las fotos se guardan en Supabase. Google solo confirma quién eres al entrar. Para saber el nombre de la colonia, la app envía las coordenadas a OpenStreetMap, que también dibuja el mapa. El recorte de fondo se hace en tu teléfono.',
     'No vendemos tus datos ni hay publicidad.',
-    'Los comentarios los ve cualquier persona que pueda ver el hallazgo. Puedes borrar los tuyos, y quien registró el hallazgo también puede borrarlos.',
     'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta", en tu perfil, elimina tu perfil, tus hallazgos y tus fotos.',
     'La administradora puede quitar contenido público que alguien reporte y bloquear cuentas que no respeten la comunidad.'
   ],
+  DATOS_EXTRA: [
+    'Los comentarios los ve cualquier persona que pueda ver el hallazgo. Puedes borrar los tuyos, y quien registró el hallazgo también puede borrarlos.'
+  ],
+
+  // Celebraciones (solo visuales: sin sonido ni vibración)
+  CELEBRACION_MS: 1500,
+  CONFETI_COLORES: ['#C4532F', '#6E7B3A', '#D9A21B', '#2E2A26', '#3F6E73', '#F3EBDD'],
 
   // Mensaje que acompaña lo que se comparte por WhatsApp
   WHATSAPP_TEXTO: 'Mira mi hallazgo en Collector Go',

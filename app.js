@@ -442,7 +442,7 @@ function mapaPuntos(el, puntos, color, icono) {
    --------------------------------------------------------------------- */
 function pinIcono(c) {
   return L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36],
-    html: `<div class="pin ${c.is_private ? 'priv' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` });
+    html: `<div class="pin ${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` });
 }
 function crearMapa() {
   document.documentElement.style.setProperty('--map-filter', C.MAPA_FILTRO);
@@ -656,8 +656,9 @@ async function abrirPerfil(uid) {
 /* Ayuda de uso (mapa) y privacidad (entrada) */
 function hojaDudas() {
   abrirHoja(() => `${cabeza(`${ic('help')} ${esc(C.AYUDA.dudas)}`)}
-    <div class="dudas">${C.DUDAS.map((d) => `<div class="duda"><h3>${esc(d.p)}</h3><p>${esc(d.r)}</p></div>`).join('')}
-    <button class="btn alt block" data-act="privacidad">${ic('lock')} ${esc(C.DATOS_TITULO)}</button></div>`, null, 'dudas');
+    <div class="dudas guia">${C.GUIA.map((d) => `<div class="duda"><h3 class="row"><span class="gicon">${ic(d.icono)}</span>${esc(d.titulo)}</h3>
+      ${d.texto ? `<p>${esc(d.texto)}</p>` : ''}${d.pasos ? `<ol>${d.pasos.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}</div>`).join('')}
+    <div class="duda datos"><h3 class="row">${ic('lock')} ${esc(C.DATOS_TITULO)}</h3>${C.DATOS.concat(C.DATOS_EXTRA || []).map((t) => `<p>${esc(t)}</p>`).join('')}</div></div>`, null, 'dudas');
 }
 function hojaPrivacidad() {
   abrirHoja(() => `${cabeza(`${ic('lock')} ${esc(C.AYUDA.privacidad)}`)}
@@ -849,8 +850,13 @@ function leerGPS() {
 // Sugerencia: algo tuyo registrado muy cerca de aquí
 async function buscarCandidatos() {
   const box = $('#candidatos'); if (!box || !R.pos || R.destino) return;
+  const dest = valor($('.sheet'), 'dest') || R.dest || '';
+  if (!dest) { box.innerHTML = ''; return; }
+  // Solo lo registrado en la misma categoría (propia) o en el mismo grupo
+  const filtro = dest.startsWith('g:') ? { group: dest.slice(2), limit: 5 } : { uid: S.user.id, cat: dest.slice(2), limit: 5 };
   try {
-    const cerca = guarda(await api.cardsInBox(cajaAlrededor(R.pos, C.REENCUENTRO_METROS), { uid: S.user.id, limit: 5 }));
+    const cerca = guarda(await api.cardsInBox(cajaAlrededor(R.pos, C.REENCUENTRO_METROS), filtro));
+    if ((valor($('.sheet'), 'dest') || R.dest) !== dest) return;
     R.candidatos = cerca.filter((c) => distancia(R.pos, c) <= C.REENCUENTRO_METROS);
     box.innerHTML = R.candidatos.map((c) => `<div class="banner" style="margin-top:10px">
       ${c.thumb ? `<img src="${foto(c, true)}" alt="" style="width:44px;height:44px;object-fit:contain;border-radius:8px">` : ic(c.cat_icon)}
@@ -966,14 +972,19 @@ async function guardarHallazgo(btn) {
     const antes = S.stats || await api.stats(S.user.id);
     const { pFoto, pMini } = await subirFotos();
     const colonia = await api.colonia(R.pos.lat, R.pos.lng);
+    let nuevoId;
     try {
-      await api.addFind({ category_id: cat, group_id: grupo, name: nombre, note: nota || null, is_private: grupo ? false : R.priv,
+      nuevoId = await api.addFind({ category_id: cat, group_id: grupo, name: nombre, note: nota || null, is_private: grupo ? false : R.priv,
         lat: R.pos.lat, lng: R.pos.lng, accuracy: R.pos.acc, colonia, photo: pFoto, thumb: pMini });
     } catch (e) { api.removeFiles([pFoto, pMini]).catch(() => null); throw e; }
     const despues = await api.stats(S.user.id);
     S.stats = despues;
     cerrarTodo();
-    celebrar(novedades(antes, despues), 'Guardado');
+    S.nuevoId = nuevoId; setTimeout(() => { if (S.nuevoId === nuevoId) S.nuevoId = null; }, 4000);
+    if (S.tab === 'map' && S.map) S.map.setView([R.pos.lat, R.pos.lng], Math.max(16, (S.map.getZoom && S.map.getZoom()) || 16));
+    const g = grupo ? miGrupo(grupo) : null, ct = cat ? (despues.categorias || []).find((x) => x.id === cat) : null;
+    celebrarHallazgo({ icono: (ct || g || {}).icon, color: (ct || g || {}).color, titulo: nombre,
+      detalle: ct ? `${ct.name} · ${ct.total}` : (g ? g.name : ''), foto: R.vistaUrl }, () => celebrar(novedades(antes, despues)));
     refrescarActual();
   } catch (e) { ocupado(btn, false); fallo(e); }
 }
@@ -994,18 +1005,64 @@ async function guardarReencuentro(btn, c) {
     const habiaFicha = pila.some((h) => h.tipo === 'ficha');
     cerrarTodo();
     if (habiaFicha) abrirFicha(c.id);
-    celebrar(novedades(antes, despues), 'Reencuentro guardado');
+    celebrarHallazgo({ icono: 'repeat', color: c.cat_color, titulo: c.name, detalle: 'Reencuentro · ' + ((nueva && nueva.sightings_count) || ''), foto: R.original ? R.vistaUrl : '' },
+      () => celebrar(novedades(antes, despues)));
     refrescarActual();
   } catch (e) { ocupado(btn, false); fallo(e); }
 }
+/* Celebraciones (solo visuales: sin sonido ni vibración) */
+const menosMovimiento = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+function confeti(cantidad, duracion) {
+  if (menosMovimiento()) return;
+  const cv = document.createElement('canvas'); cv.className = 'confeti';
+  const W = cv.width = innerWidth, H = cv.height = innerHeight; document.body.appendChild(cv);
+  const x = cv.getContext('2d'), cols = C.CONFETI_COLORES;
+  const ps = Array.from({ length: cantidad }, () => ({
+    x: W / 2 + (Math.random() - 0.5) * W * 0.3, y: H * 0.45, vx: (Math.random() - 0.5) * 14, vy: -8 - Math.random() * 10,
+    w: 6 + Math.random() * 7, h: 9 + Math.random() * 9, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, c: cols[Math.floor(Math.random() * cols.length)] }));
+  const t0 = performance.now();
+  (function paso(t) {
+    const k = (t - t0) / duracion; x.clearRect(0, 0, W, H);
+    ps.forEach((p) => { p.vy += 0.45; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+      x.save(); x.globalAlpha = Math.max(0, 1 - Math.max(0, k - 0.6) / 0.4); x.translate(p.x, p.y); x.rotate(p.r);
+      x.fillStyle = p.c; x.strokeStyle = '#2E2A26'; x.lineWidth = 1; x.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); x.strokeRect(-p.w / 2, -p.h / 2, p.w, p.h); x.restore(); });
+    if (k < 1) requestAnimationFrame(paso); else cv.remove();
+  })(t0);
+}
+// Tarjeta "+1" al guardar un hallazgo o reencuentro; luego sigue con las medallas
+function celebrarHallazgo(d, luego) {
+  const el = document.createElement('div'); el.className = 'celebra'; el.setAttribute('role', 'status');
+  el.innerHTML = `<div class="celebra-card">
+    ${d.foto ? `<img src="${esc(d.foto)}" alt="">` : `<span class="celebra-icono" style="background:${okColor(d.color)}">${ic(d.icono)}</span>`}
+    <div class="mas1">+1</div><h2>${esc(d.titulo)}</h2>${d.detalle ? `<p class="row" style="justify-content:center">${ic(d.icono)} ${esc(d.detalle)}</p>` : ''}</div>`;
+  document.body.appendChild(el);
+  confeti(90, C.CELEBRACION_MS);
+  let hecho = false;
+  const fin = () => { if (hecho) return; hecho = true; el.classList.add('sale'); setTimeout(() => { el.remove(); if (luego) luego(); }, 250); };
+  el.addEventListener('click', fin);
+  setTimeout(fin, menosMovimiento() ? 900 : C.CELEBRACION_MS);
+}
+// Siguiente meta de la misma serie de una medalla
+function siguienteMeta(l) {
+  const serie = { cat: C.METAS_CATEGORIA, col: C.METAS_COLONIAS, racha: C.METAS_RACHA_SEMANAS, reen: C.METAS_REENCUENTROS }[l.tipo] || [];
+  return serie.find((m) => m > l.m) || null;
+}
 function celebrar(n, textoBase) {
   const hay = n.nuevos.length || n.colonias.length || n.records.length;
-  if (!hay) return aviso(textoBase);
-  abrirHoja(() => `${cabeza(ic('sparkles'))}<div class="unlock">
-    ${n.colonias.map((c) => `<div class="banner" style="margin-bottom:10px;justify-content:center">${ic('map-pin')} <b>${esc(c)}</b></div>`).join('')}
-    <div class="medals" style="justify-content:center">${n.nuevos.map(medalla).join('')}</div>
+  if (!hay) { if (textoBase) aviso(textoBase); return; }
+  // Si una serie ganó varias metas a la vez, se muestra la más alta
+  const mejores = Object.values(n.nuevos.reduce((a, l) => { const k = l.tipo + (l.cat || ''); if (!a[k] || a[k].m < l.m) a[k] = l; return a; }, {}));
+  const titulo = n.nuevos.length > 1 ? `¡${n.nuevos.length} nuevas medallas!` : n.nuevos.length ? '¡Nueva medalla!' : '¡Nuevo récord!';
+  abrirHoja(() => `${cabeza('')}<div class="unlock">
+    <div class="burst" aria-hidden="true"></div>
+    <h1 class="serif unlock-t">${titulo}</h1>
+    ${n.colonias.map((c) => `<div class="banner" style="margin-bottom:10px;justify-content:center">${ic('map-pin')} Nueva colonia: <b>${esc(c)}</b></div>`).join('')}
+    <div class="medals nuevas">${n.nuevos.map(medalla).join('')}</div>
+    ${mejores.map((l) => { const sig = siguienteMeta(l); return `<div class="meta-sig"><div class="row between tiny"><span>${esc(l.titulo)}</span>
+      <span>${sig ? `${l.v} / ${sig}` : 'meta máxima'}</span></div><div class="progress"><div style="width:${sig ? Math.min(100, Math.round(l.v / sig * 100)) : 100}%"></div></div></div>`; }).join('')}
     ${n.records.map((r) => `<p class="row" style="justify-content:center">${ic(r.icon)} ${esc(r.texto)}</p>`).join('')}
     <button class="btn block" data-act="cerrar" style="margin-top:18px">${ic('check')}</button></div>`, null, 'logro');
+  confeti(160, 2200);
 }
 
 /* Editar hallazgo (si el nombre ya existe, ofrece juntarlos) */
@@ -1344,7 +1401,7 @@ const ACCIONES = {
   atras: () => cerrarHoja(),
   elegir(b) {
     const g = b.closest('[data-pick]'); $$('[data-v]', g).forEach((x) => x.classList.toggle('on', x === b));
-    if (g.dataset.pick === 'dest') { const p = $('#campo-priv'); if (p) p.hidden = b.dataset.v.startsWith('g:'); }
+    if (g.dataset.pick === 'dest') { const p = $('#campo-priv'); if (p) p.hidden = b.dataset.v.startsWith('g:'); R.dest = b.dataset.v; buscarCandidatos(); }
   },
   medalla: (b) => aviso(b.dataset.info, b.dataset.icon || 'medal'),
 

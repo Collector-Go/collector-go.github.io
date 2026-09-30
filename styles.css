@@ -202,3 +202,44 @@ textarea.in{min-height:70px;resize:vertical}
 .instruccion p{margin:0 0 6px}
 .instruccion .row{gap:4px}
 .instruccion .wrap{gap:14px}
+
+/* ---- v1.3: guía y celebraciones (solo visuales) ---- */
+.guia .duda{background:var(--papel3);border:1px solid rgba(46,42,38,.18);border-radius:12px;padding:12px}
+.guia h3{gap:8px}
+.gicon{width:30px;height:30px;border-radius:50%;background:var(--terracota);color:var(--papel);display:grid;place-items:center;font-size:16px;flex:none}
+.guia ol{margin:6px 0 0;padding-left:1.3em;display:flex;flex-direction:column;gap:4px}
+.confeti{position:fixed;inset:0;z-index:3500;pointer-events:none}
+.celebra{position:fixed;inset:0;z-index:3400;display:grid;place-items:center;background:rgba(46,42,38,.35);animation:fadein .15s ease-out}
+.celebra.sale{animation:fadeout .25s ease-in forwards}
+.celebra-card{background:var(--papel);border:var(--borde);border-radius:20px;box-shadow:5px 5px 0 var(--tinta);padding:20px 24px;text-align:center;
+  min-width:220px;max-width:80vw;animation:pop .45s cubic-bezier(.2,1.6,.4,1)}
+.celebra-card img{width:150px;height:150px;object-fit:contain;display:block;margin:0 auto 6px;background:var(--papel2);border-radius:14px;border:var(--borde)}
+.celebra-icono{width:96px;height:96px;border-radius:50%;display:grid;place-items:center;margin:0 auto 6px;color:var(--papel);font-size:48px;border:2px solid var(--tinta)}
+.mas1{font:800 44px/1 Georgia,serif;color:var(--terracota);animation:sube .6s .15s cubic-bezier(.2,1.6,.4,1) both}
+.celebra-card h2{margin-top:4px}
+.celebra-card p{margin:4px 0 0;color:var(--tinta2)}
+.pin.cae{animation:cae .7s cubic-bezier(.3,1.5,.5,1) both}
+.unlock{position:relative;overflow:hidden}
+.unlock-t{font-size:30px;margin:0 0 12px;animation:pop .5s cubic-bezier(.2,1.6,.4,1)}
+.burst{position:absolute;left:50%;top:40%;width:340px;height:340px;margin:-170px 0 0 -170px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle,rgba(217,162,27,.55) 0%,rgba(217,162,27,0) 65%);animation:brilla 1.4s ease-out both}
+.medals.nuevas{justify-content:center;gap:14px;position:relative}
+.medals.nuevas .medal{width:auto}
+.medals.nuevas .medal .m{width:84px;height:84px;font-size:40px;box-shadow:3px 3px 0 var(--tinta);animation:medalla .9s cubic-bezier(.2,1.4,.4,1) both}
+.medals.nuevas .medal:nth-child(2) .m{animation-delay:.15s}
+.medals.nuevas .medal:nth-child(3) .m{animation-delay:.3s}
+.meta-sig{margin-top:12px;text-align:left}
+.meta-sig .progress{height:10px;margin-top:4px}
+.meta-sig .progress>div{animation:llena 1s .4s ease-out both}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+@keyframes fadeout{to{opacity:0}}
+@keyframes pop{from{transform:scale(.4);opacity:0}to{transform:none;opacity:1}}
+@keyframes sube{from{transform:translateY(16px) scale(.6);opacity:0}to{transform:none;opacity:1}}
+@keyframes cae{0%{transform:translateY(-120px) rotate(-45deg);opacity:0}60%{opacity:1}100%{transform:rotate(-45deg)}}
+@keyframes medalla{0%{transform:scale(.2) rotate(-200deg);opacity:0}70%{transform:scale(1.15) rotate(10deg);opacity:1}100%{transform:none}}
+@keyframes brilla{0%{transform:scale(.3);opacity:0}40%{opacity:1}100%{transform:scale(1.4);opacity:0}}
+@keyframes llena{from{width:0}}
+@media (prefers-reduced-motion: reduce){
+  .celebra,.celebra-card,.mas1,.pin.cae,.unlock-t,.burst,.medals.nuevas .medal .m,.meta-sig .progress>div{animation:none!important}
+  .burst{display:none}
+}
