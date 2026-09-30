@@ -12,6 +12,7 @@
   color-scheme:light;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
 html,body{margin:0;height:100%;background:var(--papel);color:var(--tinta);
   font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
 button,input,textarea,select{font:inherit;color:inherit}
@@ -159,3 +160,33 @@ textarea.in{min-height:70px;resize:vertical}
 .unlock{text-align:center;padding:10px 0}
 .unlock .medal{width:auto}
 .unlock .medal .m{width:84px;height:84px;font-size:40px}
+
+/* ---- v1.1 ---- */
+.ic.emo{background:none;-webkit-mask:none;mask:none;font-style:normal;font-size:1.05em;line-height:1.2em;text-align:center;vertical-align:-.2em}
+.pin .ic.emo{font-size:19px}
+.pin.sm{width:30px;height:30px}
+.pin.sm .ic{font-size:14px}
+.pin.old{opacity:.75}
+.medal{background:none;border:0;padding:0;cursor:pointer;font:inherit;color:inherit}
+.stat .lbl{font-size:11px;color:var(--tinta2);margin-top:2px}
+.strip{display:flex;gap:8px;overflow-x:auto;padding:8px 2px 4px;scrollbar-width:none}
+.strip::-webkit-scrollbar{display:none}
+.strip button{flex:none;width:58px;height:58px;border-radius:10px;border:1.5px solid var(--tinta);background:var(--papel2);overflow:hidden;padding:0}
+.strip button.on{outline:3px solid var(--mostaza);outline-offset:1px}
+.strip img{width:100%;height:100%;object-fit:contain;display:block}
+.hist{display:flex;flex-direction:column;gap:2px;border-left:2px dashed var(--tinta2);margin-left:14px;padding-left:4px}
+.hist-i{gap:10px;padding:6px 0}
+.dotline{width:26px;height:26px;border-radius:50%;background:var(--papel3);border:1.5px solid var(--tinta);display:grid;place-items:center;font-size:14px;margin-left:-19px;flex:none}
+.tile .count{position:absolute;bottom:4px;right:4px;background:var(--papel3);border:1px solid var(--tinta);border-radius:10px;padding:0 5px;font-size:11px;display:flex;align-items:center;gap:2px}
+.tile .count .ic{font-size:11px}
+.toggle.tabs{display:flex;width:100%}
+.toggle.tabs button{flex:1;justify-content:center}
+.iconpick .pick{max-height:300px;overflow-y:auto;padding:2px}
+.linkbtn{background:none;border:0;color:var(--terracota);font-size:14px;display:inline-flex;gap:6px;align-items:center;padding:8px;text-decoration:underline}
+.dudas{display:flex;flex-direction:column;gap:14px}
+.duda h3{font-size:17px;margin-bottom:4px}
+.duda p{margin:0 0 6px;color:var(--tinta)}
+.duda.datos{background:var(--papel3);border:var(--borde);border-radius:var(--r);padding:12px}
+.duda.datos h3{display:flex;gap:6px;align-items:center}
+.duda.datos p{font-size:15px}
+.chip .avatar{width:24px;height:24px;font-size:13px;border-width:1px}
