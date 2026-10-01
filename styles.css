@@ -13,6 +13,8 @@
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 [hidden]{display:none!important}
+/* iPhone: los campos de texto siempre aceptan escritura, aunque el mapa deje la página como no seleccionable */
+input,textarea,select,[contenteditable]{-webkit-user-select:text!important;user-select:text!important;-webkit-touch-callout:default}
 html,body{margin:0;height:100%;background:var(--papel);color:var(--tinta);
   font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
 button,input,textarea,select{font:inherit;color:inherit}
@@ -243,3 +245,45 @@ textarea.in{min-height:70px;resize:vertical}
   .celebra,.celebra-card,.mas1,.pin.cae,.unlock-t,.burst,.medals.nuevas .medal .m,.meta-sig .progress>div{animation:none!important}
   .burst{display:none}
 }
+
+/* 1.4 · vitrina (perfil compartido) */
+.vitrina-pub{padding-bottom:calc(30px + var(--safe-b))}
+.vgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.vtile{margin:0;cursor:pointer;display:flex;flex-direction:column;gap:4px;min-width:0}
+.vtile img{width:100%;aspect-ratio:1/1;object-fit:contain;display:block;background:var(--papel2);border:var(--borde);border-radius:12px;box-shadow:2px 2px 0 var(--tinta)}
+.vtile figcaption{font-size:12px;line-height:1.25;display:flex;flex-direction:column;min-width:0}
+.vtile figcaption b,.vtile figcaption span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vtile figcaption span{color:var(--tinta2)}
+.invita{margin:16px 0;padding:14px;border:var(--borde);border-radius:var(--r);background:var(--papel3);box-shadow:var(--sombra);display:flex;flex-direction:column;gap:12px}
+.invita p{margin:0;font-size:16px}
+.invita.pulso{animation:pulso .9s ease-out}
+@keyframes pulso{0%{box-shadow:0 0 0 0 var(--mostaza)}40%{box-shadow:0 0 0 8px var(--mostaza)}100%{box-shadow:var(--sombra)}}
+.sheet .big.mosaico{aspect-ratio:4/5}
+
+/* 1.4 · buzón */
+.peticion{padding:10px;border:var(--borde);border-radius:12px;background:var(--papel3);display:flex;flex-direction:column;gap:6px}
+.peticion p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.peticion pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0 0;font-size:11px}
+.estado{display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:600;padding:2px 8px;border-radius:10px;border:1px solid var(--tinta)}
+.estado.e-recibido{background:var(--papel2)}
+.estado.e-revision{background:var(--mostaza)}
+.estado.e-resuelto{background:var(--oliva);color:var(--papel)}
+.respuesta{padding:8px 10px;border-left:4px solid var(--oliva);background:var(--papel);border-radius:0 8px 8px 0;font-size:15px}
+.captura{max-width:140px;max-height:180px;border:var(--borde);border-radius:10px;display:block;object-fit:contain;background:var(--papel2)}
+.captura.sm{max-width:64px;max-height:64px}
+label.ib{cursor:pointer}
+
+/* 1.4 · avisos (notificación pequeña, solo visual) */
+[data-campana]{position:relative}
+.badge-n{position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 4px;border-radius:9px;background:var(--terracota);color:var(--papel);
+  font:700 11px/18px system-ui,sans-serif;text-align:center;border:1.5px solid var(--tinta)}
+#notif{position:fixed;left:50%;top:calc(10px + var(--safe-t));transform:translate(-50%,-140%);width:min(520px,calc(100% - 24px));z-index:2000;
+  display:flex;align-items:center;gap:4px;padding:8px;border:var(--borde);border-radius:var(--r);background:var(--papel3);box-shadow:var(--sombra);
+  transition:transform .25s ease-out}
+#notif.show{transform:translate(-50%,0)}
+#notif .notif-cuerpo{flex:1;min-width:0;text-align:left;font-size:14px;line-height:1.3}
+#notif .notif-cuerpo span{overflow-wrap:anywhere}
+.notif-img{width:44px;height:44px;border-radius:8px;border:1px solid var(--tinta);object-fit:contain;background:var(--papel2);flex:none}
+.li.aviso.nuevo{background:#F6E3B4}
+@media (prefers-reduced-motion:reduce){#notif{transition:none}.invita.pulso{animation:none}}
+.catb-btn{display:inline-flex;flex:none}

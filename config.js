@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.3.0',
+  VERSION: '1.4.0',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -169,10 +169,9 @@ window.CONFIG = {
     { icono: 'lock', titulo: 'Público o privado',
       texto: 'Al registrar eliges el ojo (público: lo ve la comunidad) o el candado (privado: solo tú). Lo de un grupo privado solo lo ven sus miembros.' },
     { icono: 'layout-grid', titulo: 'Muro, seguir y reacciones',
-      pasos: ['El Muro muestra lo más reciente. Arriba filtras: todos, personas que sigues o un grupo.', 'Abre un perfil y toca el botón de seguir.',
-              'Reacciona con un ícono: me encanta, joya, increíble o yo también lo vi.'] },
-    { icono: 'message-circle', titulo: 'Comentarios',
-      texto: 'Abre la ficha de un hallazgo público y escribe en Comentarios: máximo 60 caracteres por comentario. Puedes borrar los tuyos; quien registró el hallazgo también puede borrarlos.' },
+      pasos: ['El Muro muestra lo más reciente. Arriba filtras: todos, personas que sigues o un grupo.', 'Abre un perfil y toca el botón de seguir.'] },
+    { icono: 'volume-off', titulo: 'Silenciar',
+      texto: 'Si no quieres ver el contenido de alguien, o de un grupo del que no formas parte, abre su perfil y toca silenciar. Deja de aparecer en tu Muro y tu mapa; no se le avisa. No es posible silenciar a quienes comparten un grupo contigo.' },
     { icono: 'users', titulo: 'Grupos',
       pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Invita por WhatsApp: quien abra el enlace y entre con Google queda dentro.',
               'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.'] },
@@ -189,8 +188,8 @@ window.CONFIG = {
   DATOS_TITULO: '¿Qué pasa con mis datos?',
   DATOS: [
     'Guardamos lo necesario para que la app funcione: tu nombre, frase y avatar; tu correo de Google, que solo sirve para entrar; y de cada hallazgo la foto, el nombre, la nota, la fecha y la ubicación. También a quién sigues, tus grupos y tus reacciones.',
-    'Tu nombre, frase y avatar los ve cualquier persona con cuenta. Tu correo no aparece en la app; solo lo ve la administradora en el panel de la base de datos.',
-    'Lo público, incluida su ubicación, lo ve cualquier persona con cuenta. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
+    'Tu nombre, frase y avatar los ve cualquier persona. Tu correo no aparece en la app; solo lo ve la administradora en el panel de la base de datos.',
+    'Lo público, incluida su ubicación, lo ve cualquier persona. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
     'Los datos y las fotos se guardan en Supabase. Google solo confirma quién eres al entrar. Para saber el nombre de la colonia, la app envía las coordenadas a OpenStreetMap, que también dibuja el mapa. El recorte de fondo se hace en tu teléfono.',
     'No vendemos tus datos ni hay publicidad.',
     'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta", en tu perfil, elimina tu perfil, tus hallazgos y tus fotos.',
@@ -207,6 +206,43 @@ window.CONFIG = {
   // Mensaje que acompaña lo que se comparte por WhatsApp
   WHATSAPP_TEXTO: 'Mira mi hallazgo en Collector Go',
   WHATSAPP_INVITACION: 'Te invito a mi grupo en Collector Go',
+  // Compartir perfil: vitrina de fotos públicas por categoría
+  WHATSAPP_VITRINA: 'Mira mi colección en Collector Go',
+  WHATSAPP_VITRINA_DE: 'Mira la colección de {nombre} en Collector Go',
+  VITRINA_INVITACION: 'Esto es solo una parte. Únete a la comunidad de hallazgos para ver dónde se encontró cada cosa, seguir colecciones y empezar la tuya.',
+  VITRINA_BOTON: 'Unirme a la comunidad',
+  VITRINA_VACIA: 'Aún no hay fotos públicas',
+
+  // Silenciar
+  SILENCIAR_CONFIRMAR: '¿Silenciar? Deja de aparecer en tu Muro y tu mapa. No se le avisa.',
+  SILENCIADO_LISTO: 'Silenciado',
+  SILENCIO_QUITADO: 'Ya no está silenciado',
+  SILENCIADOS_VACIO: 'No has silenciado a nadie',
+
+  // Avisos dentro de la app (solo con la app abierta) cuando reaccionan, comentan o vuelven a ver tus hallazgos.
+  // Sin sonido ni vibración.
+  AVISOS_CADA_MS: 60000,   // cada cuánto se revisa si hay avisos nuevos
+  AVISO_MS: 6000,          // cuánto dura la notificación en pantalla
+  AVISOS_NUEVOS: 'Tienes {n} avisos nuevos',
+  AVISOS_VACIO: 'Aquí verás quién reacciona, comenta o vuelve a ver tus hallazgos',
+
+  // Buzón de peticiones a la administradora
+  BUZON_MAX: 500,              // caracteres (igual que en migracion-1.4.sql)
+  BUZON_RESPUESTA_MAX: 300,
+  BUZON_TEXTO: 'Cuéntanos un error o una idea para mejorar. Solo lo ve la administradora.',
+  BUZON_PISTA: '¿Qué pasó o qué te gustaría?',
+  BUZON_ENVIADO: 'Mensaje enviado. Gracias',
+  BUZON_MIS: 'Tus mensajes',
+  BUZON_TIPOS: [
+    { id: 'error', icono: 'bug', nombre: 'Error' },
+    { id: 'mejora', icono: 'bulb', nombre: 'Mejora' },
+    { id: 'otro', icono: 'dots', nombre: 'Otro' }
+  ],
+  BUZON_ESTADOS: {
+    recibido: { icono: 'mail', nombre: 'Recibido' },
+    revision: { icono: 'progress', nombre: 'En revisión' },
+    resuelto: { icono: 'circle-check', nombre: 'Resuelto' }
+  },
 
   // Textos de ayuda (aparecen al mantener presionado un ícono)
   AYUDA: {
@@ -220,6 +256,9 @@ window.CONFIG = {
     bloquear: 'Bloquear cuenta', desbloquear: 'Desbloquear', descartar: 'Descartar aviso', ver: 'Ver',
     mas: 'Cargar más', dudas: 'Cómo funciona', privacidad: 'Privacidad de datos', seguir: 'Seguir', dejar_seguir: 'Dejar de seguir',
     grupo_nuevo: 'Crear grupo', invitar: 'Invitar por WhatsApp', salir_grupo: 'Salir del grupo', grupo_publico: 'Grupo público',
-    grupo_privado: 'Grupo privado', comentar: 'Enviar comentario', borrar_comentario: 'Borrar comentario', nueva_categoria: 'Nueva categoría', borrar_cuenta: 'Borrar mi cuenta', buscar: 'Buscar ícono', emoji: 'Usar un emoji'
+    grupo_privado: 'Grupo privado', comentar: 'Enviar comentario', borrar_comentario: 'Borrar comentario', nueva_categoria: 'Nueva categoría', borrar_cuenta: 'Borrar mi cuenta', buscar: 'Buscar ícono', emoji: 'Usar un emoji',
+    silenciar: 'Silenciar', quitar_silencio: 'Quitar silencio', silenciado: 'silenciado', silenciados: 'Silenciados',
+    buzon: 'Buzón: errores e ideas', captura: 'Agregar captura de pantalla (opcional)', quitar_captura: 'Quitar captura',
+    enviar: 'Enviar', responder: 'Guardar respuesta', ver_perfil: 'Ver perfil', avisos: 'Avisos', descargar: 'Descargar imagen'
   }
 };

@@ -1,5 +1,5 @@
 /* =====================================================================
-   Collector Go · app.js · v1.1
+   Collector Go · app.js · v1.4
    Estructura (para parches rápidos):
      1. Utilidades            6. Pantallas (muro, colección, perfil)
      2. Capa de datos (api)   7. Hojas (ficha, registrar, editar, grupos…)
@@ -36,6 +36,11 @@ function avatar(p, cls = '') {
 }
 function catBadge(name, icon, color) {
   return `<span class="catb" style="background:${okColor(color)}">${ic(icon)}${esc(name)}</span>`;
+}
+// En lo de un grupo, la etiqueta abre el grupo (ahí se puede silenciar si es público y no eres parte)
+function etiquetaDe(c) {
+  const b = catBadge(c.cat_name, c.cat_icon, c.cat_color);
+  return c.group_id ? `<button class="catb-btn" data-act="grupo" data-id="${c.group_id}" aria-label="${esc(c.cat_name)}">${b.replace('</span>', ` ${ic('users')}</span>`)}</button>` : b;
 }
 const sinAcentos = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
 function primerGrafema(t) {
@@ -85,9 +90,17 @@ function mensajeError(e) {
   if (m.includes('INVITACION_INVALIDA')) return 'Esa invitación ya no es válida';
   if ((e && e.code === '23503') || m.includes('foreign key')) return 'Primero borra o mueve sus hallazgos';
   if (e && e.code === '23505') return 'Ya estaba registrado';
+  if (m.includes('"mutes"')) return 'No se puede silenciar a quien comparte un grupo contigo';
+  if (m.includes('requests_body_check')) return `Máximo ${C.BUZON_MAX} caracteres`;
   if (m.includes('row-level security') || m.includes('NO_PERMITIDO')) return 'No tienes permiso para eso';
   if (m.includes('Failed to fetch') || m.includes('NetworkError')) return 'Sin conexión. Intenta de nuevo';
-  return 'Algo falló. Intenta de nuevo';
+  return `Algo falló (código ${codigoError(e)}). Intenta de nuevo o escríbenos en el buzón`;
+}
+// Código corto para identificar un error: el de la base de datos o uno derivado del mensaje
+function codigoError(e) {
+  if (e && e.code && /^[0-9A-Z]{3,6}$/.test(String(e.code))) return String(e.code);
+  let h = 0; const t = errTexto(e); for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  return 'E' + (h % 46656).toString(36).toUpperCase().padStart(3, '0');
 }
 
 /* ---------------------------------------------------------------------
@@ -99,6 +112,23 @@ function supabaseApi() {
   });
   const ok = ({ data, error }) => { if (error) throw error; return data; };
   const cards = () => sb.from('find_cards').select('*');
+  // Fotos privadas: viven en el almacén cerrado "privadas" y se ven con enlaces temporales.
+  // En la base de datos su ruta empieza con "priv:".
+  const URLS = new Map();
+  const almacen = (path) => (String(path).startsWith('priv:') ? ['privadas', path.slice(5)] : ['fotos', path]);
+  async function firmar(filas) {
+    const lista = Array.isArray(filas) ? filas : (filas ? [filas] : []);
+    const pend = new Set();
+    lista.forEach((f) => ['photo', 'thumb', 'last_thumb', 'screenshot'].forEach((k) => {
+      const v = f && f[k]; if (v && String(v).startsWith('priv:') && !URLS.has(v)) pend.add(v.slice(5)); }));
+    if (pend.size) {
+      try {
+        const r = ok(await sb.storage.from('privadas').createSignedUrls([...pend], 3600));
+        (r || []).forEach((x) => { if (x && x.signedUrl) URLS.set('priv:' + x.path, x.signedUrl); });
+      } catch (e) { /* sin enlace: la foto no se muestra */ }
+    }
+    return filas;
+  }
   // o: { uid, cat, uids, group, comunidad }
   const filtrar = (q, o) => {
     if (o.uid) q = q.eq('user_id', o.uid);
@@ -122,18 +152,36 @@ function supabaseApi() {
     delCat: (id) => sb.from('categories').delete().eq('id', id).then(ok),
     cardsInBox(b, o = {}) {
       const q = cards().gte('lat', b.s).lte('lat', b.n).gte('lng', b.w).lte('lng', b.e);
-      return filtrar(q, o).order('created_at', { ascending: false }).limit(o.limit || 400).then(ok);
+      let q2 = filtrar(q, o); if (o.sinSilenciados) q2 = q2.eq('muted', false);
+      return q2.order('created_at', { ascending: false }).limit(o.limit || 400).then(ok).then(firmar);
     },
+    // Muro: hallazgos y reencuentros con foto, cada uno como novedad
     feed(before, o = {}) {
-      let q = filtrar(cards().eq('is_private', false), o).order('created_at', { ascending: false }).limit(20);
-      if (before) q = q.lt('created_at', before);
-      return q.then(ok);
+      let q = sb.from('feed_items').select('*').eq('is_private', false).eq('muted', false);
+      if (o.uids) q = q.in('actor_id', o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']);
+      if (o.group) q = q.eq('group_id', o.group);
+      if (o.comunidad) q = q.or('group_id.is.null,group_public.eq.true');
+      q = q.order('at', { ascending: false }).limit(20);
+      if (before) q = q.lt('at', before);
+      return q.then(ok).then(firmar);
     },
-    userCards: (uid) => cards().eq('user_id', uid).order('created_at', { ascending: false }).limit(1000).then(ok),
-    groupCards: (gid) => cards().eq('group_id', gid).order('created_at', { ascending: false }).limit(1000).then(ok),
-    card: (id) => cards().eq('id', id).maybeSingle().then(ok),
-    cardsByIds: (ids) => (ids.length ? cards().in('id', ids).then(ok) : Promise.resolve([])),
-    history: (findId) => sb.from('sighting_cards').select('*').eq('find_id', findId).order('created_at', { ascending: false }).then(ok),
+    userCards: (uid) => cards().eq('user_id', uid).order('created_at', { ascending: false }).limit(1000).then(ok).then(firmar),
+    groupCards: (gid) => cards().eq('group_id', gid).order('created_at', { ascending: false }).limit(1000).then(ok).then(firmar),
+    card: (id) => cards().eq('id', id).maybeSingle().then(ok).then(firmar),
+    cardsByIds: (ids) => (ids.length ? cards().in('id', ids).then(ok).then(firmar) : Promise.resolve([])),
+    history: (findId) => sb.from('sighting_cards').select('*').eq('find_id', findId).order('created_at', { ascending: false }).then(ok).then(firmar),
+    vitrina: (uid) => sb.rpc('vitrina', { persona: uid }).then(ok),
+    comparteGrupo: (uid) => sb.rpc('comparte_grupo_conmigo', { otra: uid }).then(ok),
+    muteList: () => sb.from('mute_cards').select('*').order('created_at', { ascending: false }).then(ok),
+    mute: (m) => sb.from('mutes').insert(m).then(ok),
+    unmute: (id) => sb.from('mutes').delete().eq('id', id).then(ok),
+    sendRequest: (r) => sb.from('requests').insert(r).then(ok),
+    myRequests: (uid) => sb.from('requests').select('*').eq('user_id', uid).order('created_at', { ascending: false }).then(ok).then(firmar),
+    allRequests: () => sb.from('request_cards').select('*').order('created_at', { ascending: false }).limit(200).then(ok).then(firmar),
+    updateRequest: (id, r) => sb.from('requests').update(r).eq('id', id).then(ok),
+    delRequest: (id) => sb.from('requests').delete().eq('id', id).then(ok),
+    avisos: () => sb.rpc('mis_avisos', { lim: 30 }).then(ok).then(firmar),
+    avisosVistos: () => sb.rpc('avisos_vistos').then(ok),
     comments: (findId) => sb.from('comment_cards').select('*').eq('find_id', findId).order('created_at').then(ok),
     addComment: (findId, body) => sb.from('comments').insert({ find_id: findId, body }).then(ok),
     delComment: (id) => sb.from('comments').delete().eq('id', id).then(ok),
@@ -143,6 +191,7 @@ function supabaseApi() {
     delFind: (id) => sb.from('finds').delete().eq('id', id).then(ok),
     merge: (origen, destino) => sb.rpc('merge_finds', { origen, destino }).then(ok),
     addSighting: (s) => sb.from('sightings').insert(s).then(ok),
+    updateSighting: (id, s) => sb.from('sightings').update(s).eq('id', id).then(ok),
     react(findId, kind, on, uid) {
       return on ? sb.from('reactions').insert({ find_id: findId, kind }).then(ok)
                 : sb.from('reactions').delete().match({ find_id: findId, kind, user_id: uid }).then(ok);
@@ -169,18 +218,40 @@ function supabaseApi() {
     dismiss: (findId) => sb.from('reports').delete().eq('find_id', findId).then(ok),
     setBlocked: (uid, b) => sb.from('profiles').update({ blocked: b }).eq('id', uid).then(ok),
     blockedList: () => sb.from('profiles').select('*').eq('blocked', true).then(ok),
-    upload: (path, blob) => sb.storage.from('fotos').upload(path, blob, { contentType: blob.type, cacheControl: '31536000', upsert: false }).then(ok),
-    removeFiles: (paths) => sb.storage.from('fotos').remove(paths.filter(Boolean)).then(ok),
+    upload(path, blob) {
+      const [b, n] = almacen(path);
+      return sb.storage.from(b).upload(n, blob, { contentType: blob.type, cacheControl: '31536000', upsert: false }).then(ok);
+    },
+    async removeFiles(paths) {
+      const por = { fotos: [], privadas: [] };
+      paths.filter(Boolean).forEach((x) => { const [b, n] = almacen(x); por[b].push(n); });
+      for (const b of Object.keys(por)) if (por[b].length) ok(await sb.storage.from(b).remove(por[b]));
+    },
+    // Cambia una foto de almacén (al pasar un hallazgo de privado a público o al revés)
+    async moverFoto(path, aPrivado) {
+      if (!path || String(path).startsWith('priv:') === aPrivado) return path;
+      const [b, n] = almacen(path);
+      const blob = ok(await sb.storage.from(b).download(n));
+      const nuevo = aPrivado ? 'priv:' + n : n;
+      const [b2, n2] = almacen(nuevo);
+      ok(await sb.storage.from(b2).upload(n2, blob, { contentType: blob.type, upsert: true }));
+      await sb.storage.from(b).remove([n]).catch(() => null);
+      URLS.delete(path);
+      return nuevo;
+    },
     async deleteAccount(uid) {
-      for (let i = 0; i < 50; i++) {
-        const files = ok(await sb.storage.from('fotos').list(uid, { limit: 100 }));
-        if (!files || !files.length) break;
-        ok(await sb.storage.from('fotos').remove(files.map((f) => `${uid}/${f.name}`)));
+      for (const b of ['fotos', 'privadas']) {
+        for (let i = 0; i < 50; i++) {
+          const files = ok(await sb.storage.from(b).list(uid, { limit: 100 }));
+          if (!files || !files.length) break;
+          ok(await sb.storage.from(b).remove(files.map((f) => `${uid}/${f.name}`)));
+        }
       }
       ok(await sb.rpc('delete_my_account'));
       await sb.auth.signOut().catch(() => null);
     },
-    photoUrl: (path) => (path ? `${C.SUPABASE_URL}/storage/v1/object/public/fotos/${path}` : ''),
+    photoUrl: (path) => (!path ? '' : String(path).startsWith('priv:') ? (URLS.get(path) || '')
+      : `${C.SUPABASE_URL}/storage/v1/object/public/fotos/${path}`),
     async colonia(lat, lng) {
       try {
         const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 4000);
@@ -208,7 +279,8 @@ const S = {
   user: null, me: null, cats: [], groups: [], following: new Set(), tab: 'map', stats: null,
   filtro: { modo: 'todos', id: null }, muro: { modo: 'todos', id: null },
   cache: new Map(), feed: [], feedFin: false, coleccionCat: null,
-  map: null, capa: null, yo: null, mini: null, arrancando: false
+  map: null, capa: null, yo: null, mini: null, arrancando: false,
+  mutes: [], avisos: [], avisosVistos: new Set(), avisosListo: false
 };
 const guarda = (arr) => { (arr || []).forEach((c) => S.cache.set(c.id, c)); return arr || []; };
 const foto = (c, mini) => api.photoUrl(mini ? (c.thumb || c.photo) : (c.photo || c.thumb));
@@ -218,9 +290,9 @@ const puedoReencontrar = (c) => c.user_id === S.user.id || (c.group_id && !!miGr
 function opcionesFiltro(f) {
   if (f.modo === 'mios') return { uid: S.user.id };
   if (f.modo === 'cat') return { uid: S.user.id, cat: f.id };
-  if (f.modo === 'siguiendo') return { uids: [...S.following], comunidad: true };
+  if (f.modo === 'siguiendo') return { uids: [...S.following], comunidad: true, sinSilenciados: true };
   if (f.modo === 'grupo') return { group: f.id };
-  return { comunidad: true };
+  return { comunidad: true, sinSilenciados: true };
 }
 
 /* ---------------------------------------------------------------------
@@ -267,8 +339,16 @@ function dibujarHoja() {
   if (!pila.length) { root.innerHTML = ''; return; }
   const top = pila[pila.length - 1];
   root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet" role="dialog" aria-modal="true">${top.render()}</div></div>`;
+  liberarTexto();
   if (top.after) top.after($('.sheet', root));
 }
+// El mapa bloquea la selección de texto mientras se arrastra y en iPhone a veces no la libera,
+// lo que impide escribir en los campos. Se libera siempre que aparece una hoja.
+function liberarTexto() {
+  try { if (window.L && L.DomUtil) { L.DomUtil.enableTextSelection(); L.DomUtil.enableImageDrag(); } } catch (e) { /* nada */ }
+  const h = document.documentElement.style; if (h.userSelect === 'none' || h.webkitUserSelect === 'none') { h.userSelect = ''; h.webkitUserSelect = ''; }
+}
+document.addEventListener('focusin', (ev) => { if (ev.target.matches && ev.target.matches('input, textarea')) liberarTexto(); });
 function cerrarHoja() { pila.pop(); dibujarHoja(); }
 function cerrarTodo() { pila.length = 0; dibujarHoja(); }
 const hojaArriba = () => pila[pila.length - 1];
@@ -285,7 +365,12 @@ function aviso(texto, icono = 'check') {
   t.classList.add('show');
   clearTimeout(tToast); tToast = setTimeout(() => t.classList.remove('show'), 2800);
 }
-const fallo = (e) => { console.error(e); aviso(mensajeError(e), 'alert-triangle'); };
+const fallo = (e) => {
+  console.error(e);
+  const texto = mensajeError(e);
+  S.ultimoError = { codigo: codigoError(e), texto, detalle: errTexto(e).slice(0, 300), cuando: new Date().toISOString() };
+  aviso(texto, 'alert-triangle');
+};
 // Confirmación con dos botones de ícono (sí / no) y una imagen opcional
 function confirmar(texto, icono = 'trash', imagen = '', iconoSi = 'check') {
   return new Promise((res) => {
@@ -317,7 +402,9 @@ function ocupado(btn, si) {
   const tip = () => $('#tip');
   const ocultar = () => { clearTimeout(t); tip().classList.remove('show'); };
   document.addEventListener('pointerdown', (ev) => {
-    const el = ev.target.closest('[data-tip]'); visto = false;
+    visto = false;
+    if (ev.target.closest('input, textarea, select')) return;
+    const el = ev.target.closest('[data-tip]');
     if (!el || !el.dataset.tip) return;
     t = setTimeout(() => {
       const r = el.getBoundingClientRect(), tp = tip();
@@ -490,7 +577,7 @@ function pintarApp() {
   $('#app').innerHTML = `
     <section id="scr-map" class="screen map-screen">
       <div id="map"></div>
-      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
+      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'bell', 'avisos', 'data-campana', 'sm')}${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
       <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
     </section>
     <main id="scr" class="screen" hidden></main>
@@ -503,6 +590,7 @@ function pintarApp() {
     </nav>`;
   crearMapa();
   irA('map');
+  pintarCampana();
 }
 function irA(tab) {
   S.tab = tab;
@@ -526,24 +614,42 @@ function reaccionesHTML(c) {
 }
 function tarjeta(c) {
   return `<article class="card" data-card="${c.id}">
-    <div class="body row"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left">${avatar(c)}<b class="grow">${esc(c.user_name)}</b></button>${catBadge(c.cat_name, c.cat_icon, c.cat_color)}</div>
+    <div class="body row"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left">${avatar(c)}<b class="grow">${esc(c.user_name)}</b></button>${etiquetaDe(c)}</div>
     ${c.photo || c.thumb ? `<img class="photo" src="${foto(c)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
     <div class="body"><div class="row between"><div class="grow"><h3>${esc(c.name)}</h3>
       <div class="tiny">${c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}${c.comments_count ? ` · ${ic('message-circle')} ${c.comments_count}` : ''}</div></div></div>
       <div style="margin-top:8px">${reaccionesHTML(c)}</div></div></article>`;
 }
+// Novedad del Muro: un reencuentro con foto nueva
+function tarjetaReencuentro(it) {
+  return `<article class="card novedad" data-item="${it.item_id}">
+    <div class="body row"><button class="row grow" data-act="perfil" data-id="${it.actor_id}" style="text-align:left">${avatar({ avatar: it.actor_avatar, avatar_color: it.actor_color })}<b class="grow">${esc(it.actor_name)}</b></button>${etiquetaDe(it)}</div>
+    <img class="photo" src="${api.photoUrl(it.photo || it.thumb)}" alt="${esc(it.name)}" loading="lazy" data-act="ficha" data-id="${it.find_id}">
+    <div class="body"><h3>${esc(it.name)}</h3>
+      <div class="tiny row">${ic('repeat')} Visto de nuevo · ${it.vez}ª vez${it.colonia ? ` · ${esc(it.colonia)}` : ''} · ${hace(it.at)}</div></div></article>`;
+}
+// Convierte una novedad de tipo "hallazgo" en tarjeta (sin ubicación: la ficha la pide completa)
+function cartaDeNovedad(it) {
+  return { id: it.find_id, user_id: it.owner_id, user_name: it.actor_name, avatar: it.actor_avatar, avatar_color: it.actor_color,
+    name: it.name, cat_name: it.cat_name, cat_icon: it.cat_icon, cat_color: it.cat_color, category_id: it.category_id,
+    group_id: it.group_id, group_public: it.group_public, is_private: it.is_private, photo: it.photo, thumb: it.thumb, colonia: it.colonia,
+    created_at: it.at, reactions: it.reactions, my_reactions: it.my_reactions, sightings_count: it.sightings_count,
+    comments_count: it.comments_count, parcial: true };
+}
 async function pintarMuro(masViejo) {
   const scr = $('#scr');
   if (!masViejo) {
     scr.innerHTML = `<div class="row between" style="margin-bottom:10px"><h1 class="serif">Collector Go</h1>
-      <div class="row">${ib('tabla', 'trophy', 'tabla')}${ib('refrescar', 'refresh', 'Actualizar')}</div></div>
+      <div class="row">${ib('avisos', 'bell', 'avisos', 'data-campana')}${ib('tabla', 'trophy', 'tabla')}${ib('refrescar', 'refresh', 'Actualizar')}</div></div>
       <div class="chips" id="chips-muro" style="margin-bottom:12px">${chipsFiltro(S.muro, 'muro_filtro', false)}</div>
       <div class="feed" id="feed"><div class="empty"><span class="spin">${ic('loader-2')}</span></div></div>`;
     S.feed = []; S.feedFin = false;
+    pintarCampana();
   }
   try {
-    const antes = S.feed.length ? S.feed[S.feed.length - 1].created_at : null;
-    const lote = guarda(await api.feed(antes, opcionesFiltro(S.muro)));
+    const antes = S.feed.length ? S.feed[S.feed.length - 1].at : null;
+    const lote = await api.feed(antes, opcionesFiltro(S.muro));
+    lote.forEach((it) => { if (it.kind === 'find') { const ya = S.cache.get(it.find_id); S.cache.set(it.find_id, ya && !ya.parcial ? Object.assign({}, ya, { reactions: it.reactions, my_reactions: it.my_reactions }) : cartaDeNovedad(it)); } });
     S.feed = S.feed.concat(lote);
     if (lote.length < 20) S.feedFin = true;
     const f = $('#feed'); if (!f) return;
@@ -551,7 +657,8 @@ async function pintarMuro(masViejo) {
       ? `<div class="empty">${ic('user-plus')}<p>Aún no sigues a nadie. Abre un perfil y toca ${ic('user-plus')}</p></div>`
       : `<div class="empty">${ic('camera')}<p>Aún no hay hallazgos aquí</p><button class="btn" data-act="nuevo">${ic('camera')}</button></div>`;
     f.innerHTML = S.feed.length
-      ? S.feed.map(tarjeta).join('') + (S.feedFin ? '' : `<div class="row" style="justify-content:center">${ib('mas', 'plus', 'mas')}</div>`)
+      ? S.feed.map((it) => (it.kind === 'find' ? tarjeta(S.cache.get(it.find_id)) : tarjetaReencuentro(it))).join('')
+        + (S.feedFin ? '' : `<div class="row" style="justify-content:center">${ib('mas', 'plus', 'mas')}</div>`)
       : vacio;
   } catch (e) { fallo(e); }
 }
@@ -591,7 +698,7 @@ function rejilla(lista, mostrarPrivado) {
 }
 
 /* Perfil (propio en pestaña, ajeno en hoja) */
-function perfilHTML(p, st, propio, tarjetas) {
+function perfilHTML(p, st, propio, tarjetas, o = {}) {
   const ls = logros(st);
   const porCat = (st.categorias || []).map((c) => `<div class="li" style="flex-direction:column;align-items:stretch">
       <div class="row between">${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total} ${c.total === 1 ? 'hallazgo' : 'hallazgos'}</span></div>
@@ -600,14 +707,18 @@ function perfilHTML(p, st, propio, tarjetas) {
   const md = st.mejor_dia;
   const sigo = S.following.has(p.id);
   const colecciones = (st.categorias || []).filter((c) => propio || c.total > 0);
+  const silencio = propio ? null : S.mutes.find((m) => m.target_user === p.id);
   return `<div class="row" style="gap:14px">${avatar(p, 'lg')}<div class="grow"><h2>${esc(p.name)}</h2>${p.bio ? `<div class="muted">${esc(p.bio)}</div>` : ''}
       ${colecciones.length ? `<div class="colicons">${colecciones.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}
       <div class="tiny row" style="margin-top:4px"><span data-tip="Seguidores">${ic('users')} ${st.seguidores || 0}</span> · <span data-tip="Siguiendo">${ic('user-check')} ${st.siguiendo || 0}</span></div>
-      ${p.blocked ? `<div class="tiny row">${ic('ban')} bloqueada</div>` : ''}</div></div>
+      ${p.blocked ? `<div class="tiny row">${ic('ban')} bloqueada</div>` : ''}
+      ${silencio && o.comparte === false ? `<div class="tiny row">${ic('volume-off')} ${esc(C.AYUDA.silenciado)}</div>` : ''}</div></div>
     <div class="row wrap" style="margin:14px 0">
       ${propio ? ib('editar_perfil', 'pencil', 'editar') : ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? '' : 'on')}
       ${ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`)}
       ${ib('tabla', 'trophy', 'tabla')}
+      ${!propio && o.comparte === false ? (silencio ? ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${silencio.id}"`, 'on') : ib('silenciar', 'volume-off', 'silenciar', `data-user="${p.id}"`)) : ''}
+      ${propio ? ib('silenciados', 'volume-off', 'silenciados') + ib('buzon', 'mail', 'buzon') : ''}
       ${propio && S.me.is_admin ? ib('admin', 'shield', 'admin') : ''}
       ${!propio && S.me.is_admin && !p.is_admin ? ib(p.blocked ? 'desbloquear' : 'bloquear', p.blocked ? 'lock-open' : 'ban', p.blocked ? 'desbloquear' : 'bloquear', `data-id="${p.id}"`) : ''}
       <span class="grow"></span>${propio ? ib('salir', 'logout', 'salir') : ''}
@@ -635,19 +746,19 @@ async function pintarPerfil() {
   try {
     const [me, st] = await Promise.all([api.getProfile(S.user.id), api.stats(S.user.id)]);
     S.me = me || S.me; S.stats = st;
-    if (S.tab === 'perfil') scr.innerHTML = perfilHTML(S.me, st, true, null);
+    if (S.tab === 'perfil') { scr.innerHTML = perfilHTML(S.me, st, true, null); cuandoDesocupado(() => prepararMosaico(S.user.id)); }
   } catch (e) { fallo(e); }
 }
 async function abrirPerfil(uid) {
   if (uid === S.user.id) { cerrarTodo(); irA('perfil'); return; }
   const datos = { p: null, st: null, cards: null };
-  abrirHoja(() => datos.p ? cabeza('') + perfilHTML(datos.p, datos.st, false, datos.cards) : cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`,
+  abrirHoja(() => datos.p ? cabeza('') + perfilHTML(datos.p, datos.st, false, datos.cards, { comparte: datos.comparte }) : cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`,
     (r) => { r._perfil = datos; }, 'perfil');
   datos.cargar = async () => {
     try {
-      const [p, st, cards] = await Promise.all([api.getProfile(uid), api.stats(uid), api.userCards(uid)]);
+      const [p, st, cards, comparte] = await Promise.all([api.getProfile(uid), api.stats(uid), api.userCards(uid), api.comparteGrupo(uid).catch(() => null)]);
       if (!p) { cerrarHoja(); return aviso('Perfil no disponible', 'alert-triangle'); }
-      Object.assign(datos, { p, st, cards: guarda(cards) }); if (hojaArriba() && hojaArriba().tipo === 'perfil') dibujarHoja();
+      Object.assign(datos, { p, st, cards: guarda(cards), comparte }); if (hojaArriba() && hojaArriba().tipo === 'perfil') dibujarHoja();
     } catch (e) { fallo(e); }
   };
   datos.cargar();
@@ -658,7 +769,8 @@ function hojaDudas() {
   abrirHoja(() => `${cabeza(`${ic('help')} ${esc(C.AYUDA.dudas)}`)}
     <div class="dudas guia">${C.GUIA.map((d) => `<div class="duda"><h3 class="row"><span class="gicon">${ic(d.icono)}</span>${esc(d.titulo)}</h3>
       ${d.texto ? `<p>${esc(d.texto)}</p>` : ''}${d.pasos ? `<ol>${d.pasos.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}</div>`).join('')}
-    <div class="duda datos"><h3 class="row">${ic('lock')} ${esc(C.DATOS_TITULO)}</h3>${C.DATOS.concat(C.DATOS_EXTRA || []).map((t) => `<p>${esc(t)}</p>`).join('')}</div></div>`, null, 'dudas');
+    <div class="duda datos"><h3 class="row">${ic('lock')} ${esc(C.DATOS_TITULO)}</h3>${C.DATOS.concat(C.DATOS_EXTRA || []).map((t) => `<p>${esc(t)}</p>`).join('')}</div>
+    <button class="btn alt block" data-act="buzon" style="margin-top:16px">${ic('mail')} ${esc(C.AYUDA.buzon)}</button></div>`, null, 'dudas');
 }
 function hojaPrivacidad() {
   abrirHoja(() => `${cabeza(`${ic('lock')} ${esc(C.AYUDA.privacidad)}`)}
@@ -685,7 +797,7 @@ function avisarPrecision(p, forzar) {
 let fichaH = null; // historia de la ficha abierta (para la galería)
 async function abrirFicha(id) {
   let c = S.cache.get(id);
-  if (!c) {
+  if (!c || c.parcial) {
     try { c = await api.card(id); } catch (e) { return fallo(e); }
     if (!c) return aviso('Este hallazgo no está disponible', 'alert-triangle');
     guarda([c]);
@@ -742,7 +854,7 @@ function fichaHTML(c, H) {
       <img src="${api.photoUrl(f.thumb || f.photo)}" alt="" loading="lazy"></button>`).join('')}</div>` : ''}
     <div class="row between" style="margin:12px 0">
       <button class="row" data-act="perfil" data-id="${c.user_id}">${avatar(c)}<b>${esc(c.user_name)}</b></button>
-      ${catBadge(c.cat_name, c.cat_icon, c.cat_color)}</div>
+      ${etiquetaDe(c)}</div>
     ${c.note ? `<p style="margin:6px 0 12px">${esc(c.note)}</p>` : ''}
     ${esAproximada({ acc: c.accuracy }) ? `<button class="linkbtn tiny" data-act="info_precision" data-acc="${c.accuracy}" style="padding:0;color:var(--tinta2)">${ic('alert-triangle')} Ubicación aproximada ±${metros(c.accuracy)}</button>` : ''}
     ${!c.is_private ? `<div style="margin:12px 0">${reaccionesHTML(c)}</div>` : ''}
@@ -934,11 +1046,12 @@ async function prepararFotos() {
   return { grande, mini };
 }
 const ext = (b) => ({ 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg' }[b.type] || 'jpg');
-async function subirFotos() {
+// Las fotos de hallazgos privados van al almacén cerrado (ruta "priv:…")
+async function subirFotos(privado) {
   if (!R.original) return { pFoto: null, pMini: null };
   const { grande, mini } = await prepararFotos();
-  const id = uuid();
-  const pFoto = `${S.user.id}/${id}.${ext(grande)}`, pMini = `${S.user.id}/${id}_t.${ext(mini)}`;
+  const id = uuid(), pre = privado ? 'priv:' : '';
+  const pFoto = `${pre}${S.user.id}/${id}.${ext(grande)}`, pMini = `${pre}${S.user.id}/${id}_t.${ext(mini)}`;
   await api.upload(pFoto, grande);
   await api.upload(pMini, mini);
   return { pFoto, pMini };
@@ -970,7 +1083,7 @@ async function guardarHallazgo(btn) {
       return aviso('Cambia el nombre para registrarlo como nuevo', 'pencil');
     }
     const antes = S.stats || await api.stats(S.user.id);
-    const { pFoto, pMini } = await subirFotos();
+    const { pFoto, pMini } = await subirFotos(!grupo && R.priv);
     const colonia = await api.colonia(R.pos.lat, R.pos.lng);
     let nuevoId;
     try {
@@ -993,7 +1106,7 @@ async function guardarReencuentro(btn, c) {
   ocupado(btn, true);
   try {
     const antes = S.stats || await api.stats(S.user.id);
-    const { pFoto, pMini } = await subirFotos();
+    const { pFoto, pMini } = await subirFotos(!!c.is_private);
     const pos = R.pos || null;
     const colonia = pos ? await api.colonia(pos.lat, pos.lng) : null;
     try {
@@ -1100,10 +1213,27 @@ async function guardarEdicion(btn, id) {
       ocupado(btn, false);
       return ofrecerJuntar(c, nombre, cambios.category_id || null, c.group_id || null);
     }
+    // Si cambió entre privado y público, sus fotos cambian de almacén
+    if (!c.group_id) await moverFotosHallazgo(id, cambios.is_private);
     const nueva = await api.card(id); if (nueva) guarda([nueva]);
     S.stats = null;
     cerrarHoja(); refrescarFicha(id); refrescarActual(); aviso('Guardado');
   } catch (e) { ocupado(btn, false); fallo(e); }
+}
+async function moverFotosHallazgo(id, aPrivado) {
+  const f = await api.card(id); if (!f) return;
+  const esPriv = (x) => String(x || '').startsWith('priv:');
+  if ([f.photo, f.thumb].some((x) => x && esPriv(x) !== aPrivado)) {
+    const photo = await api.moverFoto(f.photo, aPrivado), thumb = await api.moverFoto(f.thumb, aPrivado);
+    await api.updateFind(id, { photo, thumb });
+  }
+  const hist = await api.history(id);
+  for (const h of hist.filter((x) => x.user_id === S.user.id)) {
+    if ([h.photo, h.thumb].some((x) => x && esPriv(x) !== aPrivado)) {
+      const photo = await api.moverFoto(h.photo, aPrivado), thumb = await api.moverFoto(h.thumb, aPrivado);
+      await api.updateSighting(h.id, { photo, thumb });
+    }
+  }
 }
 async function ofrecerJuntar(c, nombre, cat, grupo) {
   try {
@@ -1139,7 +1269,7 @@ function cercaDeMi() {
   pila.push(hoja); dibujarHoja();
   getPos().then(async (p) => {
     D.pos = p; ponerYo(p);
-    const l = guarda(await api.cardsInBox(cajaAlrededor(p, C.CERCA_METROS), { limit: 300 }));
+    const l = guarda(await api.cardsInBox(cajaAlrededor(p, C.CERCA_METROS), { limit: 300, sinSilenciados: true }));
     D.lista = l.map((c) => Object.assign({}, c, { dist: distancia(p, c) })).filter((c) => c.dist <= C.CERCA_METROS).sort((a, b) => a.dist - b.dist);
     D.estado = 'ok';
   }).catch((e) => { D.estado = 'error'; if (!(e && typeof e.code === 'number') && !(e && e.message === 'NO_GPS')) fallo(e); })
@@ -1218,6 +1348,8 @@ function abrirGrupo(gid) {
         ${ib('ver_grupo_mapa', 'map-2', 'ver_mapa', `data-id="${g.id}"`)}
         ${ib('tabla_grupo', 'trophy', 'tabla', `data-id="${g.id}"`)}
         ${soyDuena ? ib('editar_grupo', 'pencil', 'editar', `data-id="${g.id}"`) : ''}
+        ${g.is_public && !soyMiembro ? (() => { const m = S.mutes.find((x) => x.target_group === g.id);
+          return m ? ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${m.id}"`, 'on') : ib('silenciar', 'volume-off', 'silenciar', `data-group="${g.id}"`); })() : ''}
         <span class="grow"></span>
         ${soyMiembro && !soyDuena ? ib('salir_grupo', 'door-exit', 'salir_grupo', `data-id="${g.id}"`) : ''}
       </div>
@@ -1335,10 +1467,301 @@ function leerPerfil(raiz) {
   return { name: $('#p-nombre', raiz).value.trim(), bio: $('#p-bio', raiz).value.trim() || null, avatar: valor(raiz, 'avatar'), avatar_color: valor(raiz, 'color') };
 }
 
-/* Moderación */
+/* Silenciar: personas y grupos públicos de los que no formas parte */
+async function recargarSilencios() { S.mutes = await api.muteList(); }
+function trasSilencio() {
+  S.feed = [];
+  const top = hojaArriba();
+  if (top && top.tipo === 'perfil') { const D = $('.sheet')._perfil; if (D) D.cargar(); else dibujarHoja(); }
+  else if (top) dibujarHoja();
+  refrescarActual();
+}
+function hojaSilenciados() {
+  const render = () => `${cabeza(`${ic('volume-off')} ${esc(C.AYUDA.silenciados)}`)}
+    ${S.mutes.length ? `<div class="list">${S.mutes.map((m) => `<div class="li">
+      ${m.target_user ? `<button class="row grow" data-act="perfil" data-id="${m.target_user}" style="text-align:left">${avatar({ avatar: m.avatar, avatar_color: m.avatar_color })}<b class="grow">${esc(m.user_name || '—')}</b></button>`
+        : `<button class="row grow" data-act="grupo" data-id="${m.target_group}" style="text-align:left"><span class="avatar" style="background:${okColor(m.group_color)}">${ic(m.group_icon)}</span><b class="grow">${esc(m.group_name || '—')}</b>${ic('users')}</button>`}
+      ${ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${m.id}"`, 'sm')}</div>`).join('')}</div>`
+      : `<div class="empty">${ic('volume')}<p>${esc(C.SILENCIADOS_VACIO)}</p></div>`}`;
+  abrirHoja(render, null, 'silenciados');
+  recargarSilencios().then(() => { if (hojaArriba() && hojaArriba().tipo === 'silenciados') dibujarHoja(); }).catch(fallo);
+}
+
+/* Vitrina: fotos públicas de un perfil, por categoría (se puede ver sin cuenta) */
+function invitacionHTML(conId) {
+  return `<div class="invita" ${conId ? 'id="invita"' : ''}><p>${esc(C.VITRINA_INVITACION)}</p>
+    <button class="btn block" data-act="entrar">${ic('user-plus')} ${esc(C.VITRINA_BOTON)}</button></div>`;
+}
+function vitrinaHTML(v, uid, conCuenta) {
+  const cats = (v.categorias || []).filter((c) => c.hallazgos && c.hallazgos.length);
+  return `<div class="vitrina">
+    <div class="row" style="gap:14px">${avatar(v, 'lg')}<div class="grow"><h2>${esc(v.name)}</h2>${v.bio ? `<div class="muted">${esc(v.bio)}</div>` : ''}
+      ${cats.length ? `<div class="colicons">${cats.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}</div></div>
+    ${conCuenta ? `<div class="row wrap" style="margin:14px 0">${ib('perfil', 'user', 'ver_perfil', `data-id="${uid}"`)}${ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${uid}"`)}</div>` : invitacionHTML(true)}
+    ${cats.length ? cats.map((c) => `<div class="sec"><h3>${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total}</span></h3>
+      <div class="vgrid">${c.hallazgos.map((h) => `<figure class="vtile" data-act="${conCuenta ? 'ficha' : 'vitrina_invitar'}" data-id="${h.id}" role="button" aria-label="${esc(h.name)}">
+        <img src="${api.photoUrl(h.thumb || h.photo)}" alt="" loading="lazy"><figcaption><b>${esc(h.name)}</b>${h.colonia ? `<span>${ic('map-pin')} ${esc(h.colonia)}</span>` : ''}</figcaption></figure>`).join('')}</div></div>`).join('')
+      : `<div class="empty">${ic('photo')}<p>${esc(C.VITRINA_VACIA)}</p></div>`}
+    ${conCuenta || cats.reduce((n, c) => n + c.hallazgos.length, 0) <= 6 ? '' : invitacionHTML(false)}</div>`;
+}
+function abrirVitrina(uid) {
+  const D = { v: undefined };
+  const hoja = { render: () => cabeza(ic('photo')) + (D.v === undefined ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+    : D.v ? vitrinaHTML(D.v, uid, true) : `<div class="empty">${ic('alert-triangle')}<p>Este perfil no está disponible</p></div>`), tipo: 'vitrina' };
+  pila.push(hoja); dibujarHoja();
+  api.vitrina(uid).then((v) => { D.v = v || null; }).catch((e) => { D.v = null; fallo(e); })
+    .finally(() => { if (hojaArriba() === hoja) dibujarHoja(); });
+}
+// Sin cuenta: la vitrina ocupa la pantalla, con la invitación a unirse
+async function pantallaVitrina(uid) {
+  $('#app').innerHTML = `<main class="screen vitrina-pub"><div class="row" style="margin-bottom:16px"><img src="icon.svg" alt="" width="40" height="40">
+      <div class="grow"><b class="serif" style="font-size:20px">Collector Go</b><div class="tiny">${esc(C.LEMA)}</div></div></div>
+    <div id="vit"><div class="empty"><span class="spin">${ic('loader-2')}</span></div></div></main>`;
+  let v = null;
+  try { v = await api.vitrina(uid); } catch (e) { fallo(e); }
+  if (S.user || !$('#vit')) return;
+  $('#vit').innerHTML = v ? vitrinaHTML(v, uid, false) : `<div class="empty">${ic('alert-triangle')}<p>Este perfil no está disponible</p></div>${invitacionHTML(true)}`;
+}
+const destinoVitrina = () => { const m = location.hash.match(/^#v=([0-9a-f-]{36})$/i); return m ? m[1] : null; };
+
+/* Imagen tipo mosaico para compartir la vitrina por WhatsApp */
+async function iconoLienzo(nombre, color, lado) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = lado;
+  const x = cv.getContext('2d');
+  const n = okIcon(nombre);
+  if (esEmoji(n)) { x.font = `${Math.round(lado * 0.8)}px serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(n.slice(6), lado / 2, lado / 2 + 2); return cv; }
+  const r = await fetch(C.ICONOS_URL + n + '.svg');
+  if (!r.ok) throw new Error('ICONO');
+  const svg = (await r.text()).replace(/currentColor/g, color);
+  const img = await cargarImagen(new Blob([svg], { type: 'image/svg+xml' }));
+  x.drawImage(img, 0, 0, lado, lado);
+  cv.toDataURL(); // si el navegador no permite usar el ícono, falla aquí y no ensucia el mosaico
+  return cv;
+}
+function textoCorto(x, t, max) {
+  let s = String(t || '');
+  while (s.length > 1 && x.measureText(s).width > max) s = s.slice(0, -1);
+  return s === String(t || '') ? s : s.trimEnd() + '…';
+}
+async function mosaicoImagen(v) {
+  const W = 1080, H = 1350, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const x = cv.getContext('2d');
+  x.fillStyle = C.COLORES.papel; x.fillRect(0, 0, W, H);
+  x.strokeStyle = C.COLORES.tinta; x.lineWidth = 8; x.strokeRect(40, 40, W - 80, H - 80);
+  x.fillStyle = C.COLORES.tinta; x.font = 'bold 66px Georgia, serif'; x.textAlign = 'left';
+  x.fillText(textoCorto(x, v.name, W - 180), 90, 150);
+  // Hasta 9 fotos, alternando categorías
+  const cats = (v.categorias || []).filter((c) => c.hallazgos && c.hallazgos.length);
+  const colas = cats.map((c) => c.hallazgos.slice()), fotos = [];
+  while (fotos.length < 9 && colas.some((l) => l.length)) colas.forEach((l) => { if (l.length && fotos.length < 9) fotos.push(l.shift()); });
+  const imgs = await Promise.all(fotos.map((h) => cargarRemota(api.photoUrl(h.thumb || h.photo)).catch(() => null)));
+  const gap = 12, lado = (840 - gap * 2) / 3, x0 = (W - 840) / 2, y0 = 195;
+  for (let i = 0; i < 9; i++) {
+    const cx = x0 + (i % 3) * (lado + gap), cy = y0 + Math.floor(i / 3) * (lado + gap);
+    x.fillStyle = '#EADFCB'; x.fillRect(cx, cy, lado, lado);
+    const img = imgs[i];
+    if (img) {
+      const k = Math.min(lado / img.width, lado / img.height), w = img.width * k, h = img.height * k;
+      x.drawImage(img, cx + (lado - w) / 2, cy + (lado - h) / 2, w, h);
+    }
+    x.strokeStyle = C.COLORES.tinta; x.lineWidth = 3; x.strokeRect(cx, cy, lado, lado);
+  }
+  // Íconos de las colecciones
+  const yI = y0 + 840 + 85, paso = Math.min(190, (W - 180) / Math.max(1, cats.length));
+  for (let i = 0; i < cats.length; i++) {
+    const c = cats[i], cx = 90 + i * paso + 40;
+    x.fillStyle = okColor(c.color); x.beginPath(); x.arc(cx, yI, 40, 0, Math.PI * 2); x.fill();
+    x.strokeStyle = C.COLORES.tinta; x.lineWidth = 3; x.stroke();
+    try { x.drawImage(await iconoLienzo(c.icon, C.COLORES.papel, 44), cx - 22, yI - 22); }
+    catch (e) { x.fillStyle = C.COLORES.papel; x.font = 'bold 38px system-ui, sans-serif'; x.textAlign = 'center'; x.fillText(primerGrafema(c.name).toUpperCase(), cx, yI + 13); x.textAlign = 'left'; }
+    x.fillStyle = C.COLORES.tinta; x.font = '26px system-ui, sans-serif'; x.textAlign = 'center';
+    x.fillText(textoCorto(x, c.name, paso - 10), cx, yI + 76); x.textAlign = 'left';
+  }
+  x.fillStyle = C.COLORES.terracota; x.font = 'bold 34px Georgia, serif'; x.fillText('Collector Go', 90, H - 80);
+  x.fillStyle = '#6B635A'; x.font = '28px system-ui, sans-serif'; x.fillText(C.LEMA, 330, H - 80);
+  return new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('MOSAICO'))), 'image/jpeg', 0.86));
+}
+// Solo para tu propio perfil, el mosaico se prepara cuando el teléfono está desocupado, para compartirlo con un solo toque
+// (Safari y otros navegadores solo dejan compartir un archivo en el mismo instante del toque).
+const MOSAICOS = new Map();
+const cuandoDesocupado = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 3000 }) : setTimeout(fn, 1200));
+function prepararMosaico(uid) {
+  const ya = MOSAICOS.get(uid);
+  if (ya && (ya.estado === 'cargando' || Date.now() - ya.t < 10 * 60 * 1000)) return ya;
+  if (ya && ya.url) URL.revokeObjectURL(ya.url);
+  const M = { estado: 'cargando', url: null, file: null, texto: '', t: Date.now() };
+  MOSAICOS.set(uid, M);
+  M.listo = (async () => {
+    let v = null;
+    try { v = await api.vitrina(uid); } catch (e) { console.error(e); }
+    M.texto = `${S.user && uid === S.user.id ? C.WHATSAPP_VITRINA : C.WHATSAPP_VITRINA_DE.replace('{nombre}', v ? v.name : '')}\n${location.origin + location.pathname}#v=${uid}`;
+    if (v && (v.categorias || []).some((c) => c.hallazgos && c.hallazgos.length)) {
+      try {
+        const blob = await mosaicoImagen(v);
+        M.file = new File([blob], `collector-go-${uid.slice(0, 8)}.jpg`, { type: 'image/jpeg' });
+        M.url = URL.createObjectURL(blob);
+      } catch (e) { console.error(e); }
+    }
+    M.estado = 'listo'; M.t = Date.now();
+    return M;
+  })();
+  return M;
+}
+const puedeCompartirArchivo = (f) => !!(f && navigator.canShare && navigator.share && navigator.canShare({ files: [f] }));
+function compartirMosaico(M) {
+  if (puedeCompartirArchivo(M.file)) {
+    navigator.share({ files: [M.file], text: M.texto }).catch((e) => { if (!(e && e.name === 'AbortError')) abrirWhatsApp(M.texto); });
+  } else abrirWhatsApp(M.texto);
+}
+// Si aún no está listo (o el navegador no comparte archivos): vista previa con Enviar y Descargar
+function hojaMosaico(uid) {
+  const M = prepararMosaico(uid);
+  const hoja = { render: () => `${cabeza(`${ic('brand-whatsapp')} ${esc(C.AYUDA.whatsapp)}`)}
+    ${M.estado === 'cargando' ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : ''}
+    ${M.url ? `<img class="big mosaico" src="${M.url}" alt="">` : ''}
+    ${M.estado === 'listo' ? `<button class="btn block" data-act="enviar_mosaico" data-id="${uid}" style="margin-top:12px">${ic('brand-whatsapp')} Enviar</button>
+      ${M.url ? `<a class="btn alt block" href="${M.url}" download="collector-go-${uid.slice(0, 8)}.jpg" style="margin-top:10px">${ic('download')} ${esc(C.AYUDA.descargar)}</a>` : ''}` : ''}`, tipo: 'mosaico' };
+  pila.push(hoja); dibujarHoja();
+  M.listo.then(() => { if (hojaArriba() === hoja) dibujarHoja(); });
+}
+
+/* Buzón de peticiones a la administradora */
+const tipoBuzon = (id) => C.BUZON_TIPOS.find((t) => t.id === id) || C.BUZON_TIPOS[C.BUZON_TIPOS.length - 1];
+const estadoBuzon = (id) => C.BUZON_ESTADOS[id] || C.BUZON_ESTADOS.recibido;
+function metaBuzon() {
+  return { version: C.VERSION, dispositivo: String(navigator.userAgent || '').slice(0, 300), pantalla: `${screen.width}x${screen.height}`,
+    idioma: navigator.language || '', ultimo_error: S.ultimoError || null };
+}
+function resumenDispositivo(ua) {
+  ua = String(ua || '');
+  const so = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Mac OS/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'Otro';
+  const nav = /CriOS|Chrome/.test(ua) && !/Edg|SamsungBrowser/.test(ua) ? 'Chrome' : /FxiOS|Firefox/.test(ua) ? 'Firefox' : /SamsungBrowser/.test(ua) ? 'Samsung' : /Edg/.test(ua) ? 'Edge' : /Safari/.test(ua) ? 'Safari' : 'navegador';
+  return `${so} · ${nav}`;
+}
+function peticionHTML(r, admin) {
+  const t = tipoBuzon(r.tipo), e = estadoBuzon(r.status), m = r.meta || {};
+  return `<div class="peticion">
+    <div class="row between">${admin ? `<button class="row" data-act="perfil" data-id="${r.user_id}">${avatar(r)}<b>${esc(r.user_name || '')}</b></button>` : ''}
+      <span class="row">${ic(t.icono)} <b>${esc(t.nombre)}</b></span><span class="estado e-${esc(r.status)}">${ic(e.icono)} ${esc(e.nombre)}</span></div>
+    <p>${esc(r.body)}</p>
+    ${r.screenshot ? `<a href="${api.photoUrl(r.screenshot)}" target="_blank" rel="noopener"><img class="captura" src="${api.photoUrl(r.screenshot)}" alt="Captura"></a>` : ''}
+    ${admin ? `<div class="tiny">v${esc(m.version || '?')} · ${esc(resumenDispositivo(m.dispositivo))}${m.ultimo_error ? ` · código ${esc(m.ultimo_error.codigo)}` : ''}</div>
+      ${m.ultimo_error ? `<details class="tiny"><summary>Último error</summary><pre>${esc(JSON.stringify(m.ultimo_error, null, 1))}</pre></details>` : ''}
+      <div class="toggle" style="margin:8px 0">${Object.keys(C.BUZON_ESTADOS).map((k) => `<button type="button" data-act="peticion_estado" data-id="${r.id}" data-v="${k}" class="${r.status === k ? 'on' : ''}" aria-label="${esc(C.BUZON_ESTADOS[k].nombre)}" data-tip="${esc(C.BUZON_ESTADOS[k].nombre)}">${ic(C.BUZON_ESTADOS[k].icono)}</button>`).join('')}</div>
+      <textarea class="in" id="resp-${r.id}" maxlength="${C.BUZON_RESPUESTA_MAX}" placeholder="Respuesta">${esc(r.reply || '')}</textarea>`
+      : r.reply ? `<div class="respuesta">${ic('message-circle')} ${esc(r.reply)}</div>` : ''}
+    <div class="row between" style="margin-top:6px"><span class="tiny">${esc(fecha(r.created_at))}</span>
+      <span class="row">${admin ? ib('responder_peticion', 'send', 'responder', `data-id="${r.id}"`, 'sm') : ''}${ib('borrar_peticion', 'trash', 'borrar', `data-id="${r.id}"`, 'sm')}</span></div></div>`;
+}
+function hojaBuzon() {
+  const D = { tipo: C.BUZON_TIPOS[0].id, texto: '', foto: null, fotoUrl: null, lista: null };
+  const hoja = { render: () => `${cabeza(`${ic('mail')} ${esc(C.AYUDA.buzon)}`)}
+    <p class="muted" style="margin:0 0 12px">${esc(C.BUZON_TEXTO)}</p>
+    <div class="toggle" style="margin-bottom:6px">${C.BUZON_TIPOS.map((t) => `<button type="button" data-act="buzon_tipo" data-v="${t.id}" class="${D.tipo === t.id ? 'on' : ''}" aria-label="${esc(t.nombre)}">${ic(t.icono)}<span style="font-size:15px">${esc(t.nombre)}</span></button>`).join('')}</div>
+    <div class="field"><textarea id="buzon-in" class="in" maxlength="${C.BUZON_MAX}" rows="4" placeholder="${esc(C.BUZON_PISTA)}">${esc(D.texto)}</textarea>
+      <div class="tiny" style="text-align:right"><span id="buzon-n">${D.texto.length}</span>/${C.BUZON_MAX}</div></div>
+    <div class="row" style="margin-bottom:12px">${D.fotoUrl ? `<img class="captura sm" src="${D.fotoUrl}" alt="">${ib('buzon_quitar_foto', 'x', 'quitar_captura', '', 'sm')}`
+      : `<label class="ib" data-tip="${esc(C.AYUDA.captura)}" aria-label="${esc(C.AYUDA.captura)}">${ic('photo-plus')}<input type="file" accept="image/*" hidden data-in="captura"></label>`}
+      <span class="tiny grow">${esc(C.AYUDA.captura)}</span></div>
+    <button class="btn block" data-act="enviar_buzon">${ic('send')} ${esc(C.AYUDA.enviar)}</button>
+    <div class="sec"><h3>${ic('inbox')} ${esc(C.BUZON_MIS)}</h3>
+      ${D.lista === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.lista.length ? `<div class="list">${D.lista.map((r) => peticionHTML(r, false)).join('')}</div>` : `<p class="muted">—</p>`}</div>`,
+  after: (r) => {
+    r._buzon = D;
+    $$('[data-in="captura"]', r).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && ponerCaptura(D, inp.files[0])));
+  }, tipo: 'buzon' };
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => { try { D.lista = await api.myRequests(S.user.id); } catch (e) { D.lista = []; fallo(e); } if (pila.includes(hoja)) dibujarHoja(); };
+  D.cargar();
+}
+async function ponerCaptura(D, file) {
+  try {
+    const cv = escalar(await cargarImagen(file), 1280);
+    const blob = await new Promise((res) => cv.toBlob((b) => res(b), 'image/jpeg', 0.8));
+    if (!blob) throw new Error('IMAGEN');
+    if (D.fotoUrl) URL.revokeObjectURL(D.fotoUrl);
+    D.foto = blob; D.fotoUrl = URL.createObjectURL(blob);
+    const t = $('#buzon-in'); if (t) D.texto = t.value;
+    dibujarHoja();
+  } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
+}
+
+/* Avisos: quién reaccionó, comentó o volvió a ver tus hallazgos (solo con la app abierta) */
+const claveAviso = (a) => `${a.kind}|${a.find_id}|${a.actor_id}|${a.reaccion || ''}|${a.at}`;
+function textoAviso(a) {
+  if (a.kind === 'comentario') return `${a.actor_name} comentó en ${a.find_name}: «${a.texto}»`;
+  if (a.kind === 'reencuentro') return `${a.actor_name} volvió a ver ${a.find_name}`;
+  const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
+  return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
+}
+function iconoAviso(a) {
+  if (a.kind === 'comentario') return 'message-circle';
+  if (a.kind === 'reencuentro') return 'repeat';
+  const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
+}
+function pintarCampana() {
+  const n = S.avisos.filter((a) => a.nuevo).length;
+  $$('[data-campana]').forEach((b) => {
+    let s = $('.badge-n', b);
+    if (!n) { if (s) s.remove(); return; }
+    if (!s) { s = document.createElement('span'); s.className = 'badge-n'; b.appendChild(s); }
+    s.textContent = n > 9 ? '9+' : String(n);
+  });
+}
+let tNotif;
+function notificar(html, act, id) {
+  let el = $('#notif');
+  if (!el) { el = document.createElement('div'); el.id = 'notif'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  el.innerHTML = `<button class="notif-cuerpo row" data-act="${act}" data-id="${esc(id || '')}">${html}</button>${ib('cerrar_notif', 'x', 'cerrar', '', 'sm ghost')}`;
+  el.classList.add('show');
+  clearTimeout(tNotif); tNotif = setTimeout(() => el.classList.remove('show'), C.AVISO_MS);
+}
+function cerrarNotif() { const el = $('#notif'); if (el) el.classList.remove('show'); }
+async function revisarAvisos() {
+  if (!S.user || !S.me || document.hidden || !api.avisos) return;
+  let lista;
+  try { lista = await api.avisos(); } catch (e) { return; } // sin avisos si falla: no interrumpe
+  S.avisos = lista || [];
+  const nuevos = S.avisos.filter((a) => a.nuevo && !S.avisosVistos.has(claveAviso(a)));
+  nuevos.forEach((a) => S.avisosVistos.add(claveAviso(a)));
+  const primera = !S.avisosListo; S.avisosListo = true;
+  pintarCampana();
+  if (!nuevos.length) return;
+  if (primera && nuevos.length > 1) return notificar(`${ic('bell')}<span class="grow">${esc(C.AVISOS_NUEVOS.replace('{n}', nuevos.length))}</span>`, 'avisos');
+  const a = nuevos[0];
+  notificar(`${avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })}<span class="grow">${ic(iconoAviso(a))} ${esc(textoAviso(a))}${nuevos.length > 1 ? ` <b>+${nuevos.length - 1}</b>` : ''}</span>
+    ${a.thumb ? `<img class="notif-img" src="${api.photoUrl(a.thumb)}" alt="">` : ''}`, nuevos.length > 1 ? 'avisos' : 'aviso_abrir', a.find_id);
+}
+function hojaAvisos() {
+  cerrarNotif();
+  const D = { lista: S.avisos.slice() };
+  const render = () => `${cabeza(`${ic('bell')} ${esc(C.AYUDA.avisos)}`)}
+    ${D.lista.length ? `<div class="list">${D.lista.map((a) => `<button class="li aviso ${a.nuevo ? 'nuevo' : ''}" data-act="aviso_abrir" data-id="${a.find_id}" style="text-align:left">
+      ${avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })}<div class="grow"><div>${ic(iconoAviso(a))} ${esc(textoAviso(a))}</div><div class="tiny">${esc(hace(a.at))}</div></div>
+      ${a.thumb ? `<img class="thumb" src="${api.photoUrl(a.thumb)}" alt="">` : ''}</button>`).join('')}</div>`
+      : `<div class="empty">${ic('bell')}<p>${esc(C.AVISOS_VACIO)}</p></div>`}`;
+  abrirHoja(render, null, 'avisos');
+  api.avisosVistos().then(() => { S.avisos = S.avisos.map((a) => Object.assign({}, a, { nuevo: false })); pintarCampana(); }).catch(() => null);
+  if (!S.avisos.length) revisarAvisos().then(() => { D.lista = S.avisos.slice(); if (hojaArriba() && hojaArriba().tipo === 'avisos') dibujarHoja(); });
+}
+let tAvisos;
+function vigilarAvisos() {
+  clearInterval(tAvisos);
+  revisarAvisos();
+  tAvisos = setInterval(revisarAvisos, C.AVISOS_CADA_MS);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) revisarAvisos(); });
+
+/* Moderación: avisos de contenido y buzón */
 function hojaAdmin() {
-  const D = { avisos: null, bloqueados: [] };
+  const D = { vista: 'avisos', avisos: null, bloqueados: [], peticiones: null };
+  const pendientes = () => (D.peticiones || []).filter((r) => r.status === 'recibido').length;
   const hoja = { render: () => `${cabeza(ic('shield'))}
+    <div class="toggle" style="margin-bottom:14px">
+      <button type="button" data-act="admin_vista" data-v="avisos" class="${D.vista === 'avisos' ? 'on' : ''}" aria-label="Avisos">${ic('flag')}<span style="font-size:15px">${D.avisos ? D.avisos.length : ''}</span></button>
+      <button type="button" data-act="admin_vista" data-v="buzon" class="${D.vista === 'buzon' ? 'on' : ''}" aria-label="${esc(C.AYUDA.buzon)}">${ic('mail')}<span style="font-size:15px">${pendientes() || ''}</span></button></div>
+    ${D.vista === 'buzon' ? (D.peticiones === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+      : D.peticiones.length ? `<div class="list">${D.peticiones.map((r) => peticionHTML(r, true)).join('')}</div>` : `<div class="empty">${ic('mail')}<p>Sin mensajes</p></div>`) : `
     <div class="sec" style="margin-top:0"><h3>${ic('flag')} ${D.avisos ? D.avisos.length : ''}</h3>
     ${!D.avisos ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.avisos.length ? `<div class="list">${D.avisos.map((a) => a.card ? `
       <div class="li">${a.card.thumb ? `<img class="thumb" src="${foto(a.card, true)}" alt="">` : `<span class="thumb">${ic(a.card.cat_icon)}</span>`}
@@ -1346,7 +1769,7 @@ function hojaAdmin() {
         ${ib('ficha', 'eye', 'ver', `data-id="${a.card.id}"`, 'sm')}${ib('descartar', 'check', 'descartar', `data-id="${a.card.id}"`, 'sm')}${ib('borrar_hallazgo', 'trash', 'borrar', `data-id="${a.card.id}"`, 'sm')}${ib('bloquear', 'ban', 'bloquear', `data-id="${a.card.user_id}"`, 'sm')}
       </div>` : `<div class="li"><div class="grow tiny">—</div>${ib('descartar', 'check', 'descartar', `data-id="${a.find_id}"`, 'sm')}</div>`).join('')}</div>` : `<div class="empty">${ic('check')}<p>Sin avisos</p></div>`}</div>
     <div class="sec"><h3>${ic('ban')} ${D.bloqueados.length}</h3><div class="list">${D.bloqueados.map((p) => `
-      <div class="li">${avatar(p)}<b class="grow">${esc(p.name)}</b>${ib('desbloquear', 'lock-open', 'desbloquear', `data-id="${p.id}"`, 'sm')}</div>`).join('')}</div></div>`,
+      <div class="li">${avatar(p)}<b class="grow">${esc(p.name)}</b>${ib('desbloquear', 'lock-open', 'desbloquear', `data-id="${p.id}"`, 'sm')}</div>`).join('')}</div></div>`}`,
     after: (r) => { r._admin = D; }, tipo: 'admin' };
   pila.push(hoja); dibujarHoja();
   D.cargar = async () => {
@@ -1358,6 +1781,7 @@ function hojaAdmin() {
       D.avisos = ids.map((id) => ({ find_id: id, n: n[id], card: cards.find((c) => c.id === id) }));
       D.bloqueados = await api.blockedList();
     } catch (e) { D.avisos = []; fallo(e); }
+    try { D.peticiones = await api.allRequests(); } catch (e) { D.peticiones = []; fallo(e); }
     if (pila.includes(hoja)) dibujarHoja();
   };
   D.cargar();
@@ -1469,7 +1893,17 @@ const ACCIONES = {
     setTimeout(() => S.map.setView([c.lat, c.lng], 18), 60);
   },
   whatsapp: (b) => { const c = S.cache.get(b.dataset.id); if (c) compartirHallazgo(c, b); },
-  whatsapp_perfil: (b) => abrirWhatsApp(`Mira mi colección en Collector Go\n${location.origin + location.pathname}#u=${b.dataset.id}`),
+  whatsapp_perfil(b) {
+    const M = MOSAICOS.get(b.dataset.id);
+    if (M && M.estado === 'listo' && puedeCompartirArchivo(M.file)) return compartirMosaico(M);
+    hojaMosaico(b.dataset.id);
+  },
+  enviar_mosaico(b) { const M = MOSAICOS.get(b.dataset.id); if (M && M.estado === 'listo') compartirMosaico(M); },
+  vitrina_invitar() {
+    const el = $('#invita'); if (!el) return;
+    el.scrollIntoView({ behavior: menosMovimiento() ? 'auto' : 'smooth', block: 'center' });
+    el.classList.remove('pulso'); void el.offsetWidth; el.classList.add('pulso');
+  },
   reencuentro(b) {
     const c = S.cache.get(b.dataset.id); if (!c) return;
     nuevoRegistro(c);
@@ -1490,7 +1924,7 @@ const ACCIONES = {
       const mias = hist.filter((h) => h.user_id === S.user.id).flatMap((h) => [h.photo, h.thumb]);
       await api.removeFiles([c.photo, c.thumb].concat(c.user_id === S.user.id ? mias : [])).catch(() => null);
       await api.delFind(c.id);
-      S.cache.delete(c.id); S.feed = S.feed.filter((x) => x.id !== c.id); S.stats = null;
+      S.cache.delete(c.id); S.feed = S.feed.filter((x) => x.find_id !== c.id); S.stats = null;
       const adm = adminAbierto();
       if (adm) { await api.dismiss(c.id).catch(() => null); while (hojaArriba() !== adm) pila.pop(); dibujarHoja(); $('.sheet')._admin.cargar(); }
       else cerrarTodo();
@@ -1603,6 +2037,70 @@ const ACCIONES = {
     } catch (e) { ocupado(b, false); fallo(e); }
   },
   tabla: () => tablaGeneral(),
+
+  /* silenciar */
+  async silenciar(b) {
+    const m = b.dataset.user ? { target_user: b.dataset.user } : { target_group: b.dataset.group };
+    if (!(await confirmar(C.SILENCIAR_CONFIRMAR, 'volume-off'))) return;
+    ocupado(b, true);
+    try { await api.mute(m); await recargarSilencios(); aviso(C.SILENCIADO_LISTO, 'volume-off'); trasSilencio(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async quitar_silencio(b) {
+    ocupado(b, true);
+    try { await api.unmute(b.dataset.id); await recargarSilencios(); aviso(C.SILENCIO_QUITADO, 'volume'); trasSilencio(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  silenciados: () => hojaSilenciados(),
+
+  /* buzón */
+  buzon: () => hojaBuzon(),
+  buzon_tipo(b) { const D = $('.sheet')._buzon; if (!D) return; const t = $('#buzon-in'); if (t) D.texto = t.value; D.tipo = b.dataset.v; dibujarHoja(); },
+  buzon_quitar_foto() { const D = $('.sheet')._buzon; if (!D) return; const t = $('#buzon-in'); if (t) D.texto = t.value; if (D.fotoUrl) URL.revokeObjectURL(D.fotoUrl); D.foto = null; D.fotoUrl = null; dibujarHoja(); },
+  async enviar_buzon(b) {
+    const D = $('.sheet')._buzon; if (!D) return;
+    const t = $('#buzon-in'), texto = (t ? t.value : '').trim();
+    if (!texto) { if (t) t.focus(); return aviso('Escribe tu mensaje', 'mail'); }
+    if (texto.length > C.BUZON_MAX) return aviso(`Máximo ${C.BUZON_MAX} caracteres`, 'mail');
+    ocupado(b, true);
+    let ruta = null;
+    try {
+      if (D.foto) { ruta = `priv:${S.user.id}/buzon-${uuid()}.jpg`; await api.upload(ruta, D.foto); }
+      await api.sendRequest({ tipo: D.tipo, body: texto, screenshot: ruta, meta: metaBuzon() });
+      if (D.fotoUrl) URL.revokeObjectURL(D.fotoUrl);
+      Object.assign(D, { texto: '', foto: null, fotoUrl: null, lista: null });
+      aviso(C.BUZON_ENVIADO, 'mail'); dibujarHoja(); D.cargar();
+    } catch (e) { if (ruta) api.removeFiles([ruta]).catch(() => null); ocupado(b, false); fallo(e); }
+  },
+  async borrar_peticion(b) {
+    const sh = $('.sheet'), D = sh && (sh._buzon || sh._admin); if (!D) return;
+    const r = (D.lista || D.peticiones || []).find((x) => x.id === b.dataset.id); if (!r) return;
+    if (!(await confirmar('¿Borrar este mensaje?'))) return;
+    try {
+      await api.delRequest(r.id);
+      if (r.screenshot) await api.removeFiles([r.screenshot]).catch(() => null);
+      aviso('Borrado', 'trash'); D.cargar();
+    } catch (e) { fallo(e); }
+  },
+  admin_vista(b) { const D = $('.sheet')._admin; if (!D) return; D.vista = b.dataset.v; dibujarHoja(); },
+  async peticion_estado(b) {
+    const D = $('.sheet')._admin; if (!D) return;
+    try { await api.updateRequest(b.dataset.id, { status: b.dataset.v }); aviso(C.BUZON_ESTADOS[b.dataset.v].nombre, C.BUZON_ESTADOS[b.dataset.v].icono); D.cargar(); }
+    catch (e) { fallo(e); }
+  },
+  async responder_peticion(b) {
+    const D = $('.sheet')._admin; if (!D) return;
+    const t = $('#resp-' + b.dataset.id), texto = (t ? t.value : '').trim();
+    if (texto.length > C.BUZON_RESPUESTA_MAX) return aviso(`Máximo ${C.BUZON_RESPUESTA_MAX} caracteres`, 'message-circle');
+    ocupado(b, true);
+    try { await api.updateRequest(b.dataset.id, { reply: texto || null }); aviso('Respuesta guardada', 'send'); D.cargar(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+
+  /* avisos */
+  avisos: () => hojaAvisos(),
+  aviso_abrir(b) { cerrarNotif(); const id = b.dataset.id; if (!id) return hojaAvisos(); S.cache.delete(id); abrirFicha(id); },
+  cerrar_notif: () => cerrarNotif(),
   tabla_metrica(b) { const D = $('.sheet')._tabla; D.metric = b.dataset.v; D.cargar(); },
   async salir() { if (await confirmar('¿Cerrar sesión?', 'logout')) { await api.logout().catch(() => null); location.hash = ''; location.reload(); } },
   async borrar_cuenta(b) {
@@ -1640,6 +2138,7 @@ document.addEventListener('click', (ev) => {
 let tBuscar;
 document.addEventListener('input', (ev) => {
   if (ev.target.id === 'coment-in') { if (fichaH) fichaH.borrador = ev.target.value; const n = $('#coment-n'); if (n) n.textContent = ev.target.value.length; }
+  if (ev.target.id === 'buzon-in') { const D = $('.sheet') && $('.sheet')._buzon; if (D) D.texto = ev.target.value; const n = $('#buzon-n'); if (n) n.textContent = ev.target.value.length; }
   if (ev.target.matches('[data-in="buscar-icono"]')) { clearTimeout(tBuscar); const v = ev.target.value; tBuscar = setTimeout(() => buscarIconos(v), 300); }
 });
 
@@ -1668,14 +2167,16 @@ async function arrancar(user) {
     if (!S.me) return pedirPerfil();
     const [cats, groups, following] = await Promise.all([api.listCats(user.id), api.myGroups(user.id), api.following(user.id)]);
     S.cats = cats; S.groups = groups; S.following = new Set(following);
+    S.mutes = await api.muteList().catch(() => []);
+    vigilarAvisos();
     if (!S.cats.length) return pedirCategorias();
     pintarApp(); rutaHash();
   } catch (e) { fallo(e); S.user = null; pantallaEntrada(); }
   finally { S.arrancando = false; }
 }
-// Enlaces compartidos: #f= hallazgo, #u= perfil, #g= invitación a grupo.
+// Enlaces compartidos: #f= hallazgo, #u= perfil, #v= vitrina, #g= invitación a grupo.
 // Se recuerdan durante el inicio de sesión con Google.
-const RX_DESTINO = /^#([fu])=([0-9a-f-]{36})$|^#g=([0-9a-f]{6,40})$/i;
+const RX_DESTINO = /^#([fuv])=([0-9a-f-]{36})$|^#g=([0-9a-f]{6,40})$/i;
 function guardarDestino() {
   if (RX_DESTINO.test(location.hash)) { try { localStorage.setItem('cg_destino', location.hash); } catch (e) { /* sin almacenamiento */ } }
 }
@@ -1687,20 +2188,26 @@ function rutaHash() {
   if (location.hash) history.replaceState(null, '', location.pathname);
   if (!m) return;
   if (m[3]) mostrarInvitacion(m[3]);
-  else if (m[1] === 'f') abrirFicha(m[2]); else abrirPerfil(m[2]);
+  else if (m[1] === 'f') abrirFicha(m[2]); else if (m[1] === 'v') abrirVitrina(m[2]); else abrirPerfil(m[2]);
 }
-window.addEventListener('hashchange', () => { guardarDestino(); if (S.me && S.cats.length && $('#scr-map')) rutaHash(); });
+window.addEventListener('hashchange', () => {
+  guardarDestino();
+  if (S.me && S.cats.length && $('#scr-map')) rutaHash();
+  else if (!S.user && destinoVitrina()) pantallaVitrina(destinoVitrina());
+});
+// Sin sesión: la vitrina compartida se ve sin cuenta; lo demás pide entrar
+function pantallaSinCuenta() { const v = destinoVitrina(); if (v) pantallaVitrina(v); else pantallaEntrada(); }
 
 async function iniciar() {
   guardarDestino();
   api = window.__API_PRUEBAS__ || (/^https:\/\//.test(C.SUPABASE_URL) ? supabaseApi() : null);
   if (!api) return pantallaConfig();
   api.onAuth((ev, u) => {
-    if (ev === 'SIGNED_OUT') { S.user = null; pantallaEntrada(); }
+    if (ev === 'SIGNED_OUT') { S.user = null; clearInterval(tAvisos); pantallaEntrada(); }
     else if (u && (ev === 'SIGNED_IN' || ev === 'INITIAL_SESSION')) arrancar(u);
   });
-  try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaEntrada(); }
-  catch (e) { fallo(e); pantallaEntrada(); }
+  try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
+  catch (e) { fallo(e); pantallaSinCuenta(); }
 }
 window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio };
 iniciar();
