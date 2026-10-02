@@ -1,5 +1,5 @@
 /* =====================================================================
-   Collector Go · app.js · v1.5
+   Collector Go · app.js · v1.6
    Estructura (para parches rápidos):
      1. Utilidades            6. Pantallas (muro, colección, perfil)
      2. Capa de datos (api)   7. Hojas (ficha, registrar, editar, grupos…)
@@ -183,6 +183,7 @@ function supabaseApi() {
     avisos: () => sb.rpc('mis_avisos', { lim: 30 }).then(ok).then(firmar),
     avisosVistos: () => sb.rpc('avisos_vistos').then(ok),
     usoPlan: () => sb.rpc('uso_plan').then(ok),
+    marcarVisto: (findId, p) => sb.rpc('marcar_visto', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
     comments: (findId) => sb.from('comment_cards').select('*').eq('find_id', findId).order('created_at').then(ok),
     addComment: (findId, body) => sb.from('comments').insert({ find_id: findId, body }).then(ok),
     delComment: (id) => sb.from('comments').delete().eq('id', id).then(ok),
@@ -545,6 +546,72 @@ function ponerYo(p) {
   if (!S.yo) S.yo = L.marker([p.lat, p.lng], { interactive: false, icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(S.map);
   else S.yo.setLatLng([p.lat, p.lng]);
 }
+/* Instalar la app en el teléfono
+   Android (Chrome, Edge, Samsung): botón de un toque con el aviso del propio navegador.
+   iPhone: Apple no permite instalar con un toque; se muestran los dos pasos (Compartir → Agregar a inicio).
+   Navegador dentro de WhatsApp, Instagram o Facebook: no permite instalar; se pide abrir la liga en el navegador. */
+let eventoInstalar = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); eventoInstalar = e; pintarInstalar(); });
+window.addEventListener('appinstalled', () => { eventoInstalar = null; noMostrarInstalar(); pintarInstalar(); aviso(C.INSTALAR_LISTO, 'device-mobile'); });
+const yaInstalada = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+function tipoInstalacion() {
+  if (yaInstalada()) return null;
+  const ua = navigator.userAgent || '';
+  if (/FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Line\/|TikTok|Snapchat/i.test(ua)) return 'interno';
+  if (eventoInstalar) return 'boton';
+  if (/iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iphone';
+  if (/Android/.test(ua)) return 'menu';
+  return null; // en computadora no se ofrece
+}
+const instalarDescartado = () => { try { return !!localStorage.getItem('cg_instalar_no'); } catch (e) { return false; } };
+const noMostrarInstalar = () => { try { localStorage.setItem('cg_instalar_no', '1'); } catch (e) { /* nada */ } };
+// Tarjeta de la entrada, botón del perfil y franja del mapa (una sola vez, se puede cerrar)
+function pintarInstalar() {
+  const t = tipoInstalacion();
+  $$('[data-instalar]').forEach((el) => {
+    el.innerHTML = t ? `<button class="btn alt block" data-act="instalar">${ic('device-mobile')} ${esc(C.INSTALAR_BOTON)}</button>` : '';
+  });
+  const fr = $('#instalar-franja');
+  if (fr) fr.hidden = !t || instalarDescartado();
+  $$('[data-act="instalar"].ib').forEach((b) => { b.hidden = !t; });
+}
+async function instalarApp() {
+  const t = tipoInstalacion();
+  if (t === 'boton' && eventoInstalar) {
+    const e = eventoInstalar; eventoInstalar = null;
+    try { await e.prompt(); const r = await e.userChoice; if (r && r.outcome === 'accepted') noMostrarInstalar(); }
+    catch (err) { console.error(err); }
+    return pintarInstalar();
+  }
+  const pasos = t === 'iphone' ? C.INSTALAR_IPHONE : t === 'interno' ? C.INSTALAR_INTERNO : C.INSTALAR_MENU;
+  abrirHoja(() => `${cabeza(`${ic('device-mobile')} ${esc(C.INSTALAR_BOTON)}`)}
+    <ol class="pasos-instalar">${pasos.map((x) => `<li><span class="gicon">${ic(x.icono)}</span><span>${esc(x.texto)}</span></li>`).join('')}</ol>
+    ${t === 'interno' ? `<button class="btn block" data-act="copiar_liga">${ic('copy')} ${esc(C.INSTALAR_COPIAR)}</button>` : ''}`, null, 'instalar');
+}
+
+/* "¡Lo vi!" (reacción "eye"): solo se marca estando en el lugar. La ubicación se usa para medir y no se guarda. */
+async function marcarVisto(btn, c) {
+  ocupado(btn, true);
+  let p;
+  try { p = await getPos(); } catch (e) { ocupado(btn, false); return aviso(C.VISTO_SIN_GPS, 'current-location'); }
+  try {
+    const r = await api.marcarVisto(c.id, p);
+    ocupado(btn, false);
+    if (r && r.ok) {
+      const rs = Object.assign({}, c.reactions || {}); rs.eye = (rs.eye || 0) + 1;
+      guarda([Object.assign({}, c, { reactions: rs, my_reactions: (c.my_reactions || []).concat('eye') })]);
+      refrescarFicha(c.id);
+      $$(`[data-act="reaccion"][data-id="${c.id}"][data-v="eye"]`).forEach((x) => x.classList.add('visto-ok'));
+      return aviso(C.VISTO_OK, 'eye-check');
+    }
+    const lejos = r && r.motivo === 'lejos';
+    abrirHoja(() => `${cabeza(`${ic('eye-check')} ${esc(C.AYUDA.visto)}`)}
+      <p>${esc(lejos ? C.VISTO_LEJOS.replace('{d}', metros(r.distancia)) : C.VISTO_APROXIMADA)}</p>
+      ${lejos ? `<button class="btn block" data-act="ir_al_punto" data-id="${c.id}">${ic('navigation')} ${esc(C.AYUDA.ir_al_punto)}</button>`
+        : `<button class="btn alt block" data-act="info_precision" data-acc="${p.acc || ''}">${ic('current-location')} ${esc(C.PRECISION_TITULO)}</button>`}`, null, 'visto');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+
 /* Ir al punto: el mapa de la app lleva hasta un hallazgo. La distancia y la dirección
    se calculan en el teléfono; la ubicación no se envía a ningún servicio de mapas. */
 const RUMBOS = ['norte', 'noreste', 'este', 'sureste', 'sur', 'suroeste', 'oeste', 'noroeste'];
@@ -629,6 +696,7 @@ function pintarApp() {
       <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'bell', 'avisos', 'data-campana', 'sm')}${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
       <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
       <div id="guia-punto" class="guia-punto" hidden></div>
+      <div id="instalar-franja" class="instalar-franja" hidden><button class="row grow" data-act="instalar" style="text-align:left">${ic('device-mobile')}<span class="grow">${esc(C.INSTALAR_FRANJA)}</span></button>${ib('instalar_no', 'x', 'cerrar', '', 'sm ghost')}</div>
     </section>
     <main id="scr" class="screen" hidden></main>
     <nav class="nav">
@@ -641,6 +709,7 @@ function pintarApp() {
   crearMapa();
   irA('map');
   pintarCampana();
+  pintarInstalar();
 }
 function irA(tab) {
   if (tab !== 'map') terminarGuia();
@@ -767,10 +836,10 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
       ${silencio && o.comparte === false ? `<div class="tiny row">${ic('volume-off')} ${esc(C.AYUDA.silenciado)}</div>` : ''}</div></div>
     <div class="row wrap" style="margin:14px 0">
       ${propio ? ib('editar_perfil', 'pencil', 'editar') : ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? '' : 'on')}
-      ${ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`)}
+      ${propio ? ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`) : ''}
       ${ib('tabla', 'trophy', 'tabla')}
       ${!propio && o.comparte === false ? (silencio ? ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${silencio.id}"`, 'on') : ib('silenciar', 'volume-off', 'silenciar', `data-user="${p.id}"`)) : ''}
-      ${propio ? ib('silenciados', 'volume-off', 'silenciados') + ib('buzon', 'mail', 'buzon') : ''}
+      ${propio ? ib('silenciados', 'volume-off', 'silenciados') + ib('buzon', 'mail', 'buzon') + (tipoInstalacion() ? ib('instalar', 'device-mobile', 'instalar') : '') : ''}
       ${propio && S.me.is_admin ? ib('admin', 'shield', 'admin') : ''}
       ${!propio && S.me.is_admin && !p.is_admin ? ib(p.blocked ? 'desbloquear' : 'bloquear', p.blocked ? 'lock-open' : 'ban', p.blocked ? 'desbloquear' : 'bloquear', `data-id="${p.id}"`) : ''}
       <span class="grow"></span>${propio ? ib('salir', 'logout', 'salir') : ''}
@@ -901,6 +970,30 @@ function galeria(c, H) {
   const todas = (H.lista || []).concat([inicial]).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   return todas;
 }
+// Cada quien solo quita sus propias fotos (la principal es de quien registró el hallazgo)
+const esMiaLaFoto = (c, h) => (h.inicial ? c.user_id === S.user.id : h.user_id === S.user.id);
+async function quitarFoto(btn, c, h) {
+  if (!esMiaLaFoto(c, h)) return;
+  if (!(await confirmar(C.QUITAR_FOTO_CONFIRMAR, 'trash', api.photoUrl(h.thumb || h.photo)))) return;
+  ocupado(btn, true);
+  try {
+    const viejas = [h.photo, h.thumb];
+    if (h.inicial) {
+      // La foto más reciente de tus reencuentros pasa a ser la principal; ese momento queda sin foto
+      const hist = await api.history(c.id);
+      const sig = hist.filter((x) => x.user_id === S.user.id && (x.photo || x.thumb)).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
+      if (sig) { await api.updateFind(c.id, { photo: sig.photo, thumb: sig.thumb }); await api.updateSighting(sig.id, { photo: null, thumb: null }); }
+      else await api.updateFind(c.id, { photo: null, thumb: null });
+    } else {
+      await api.updateSighting(h.id, { photo: null, thumb: null });
+    }
+    await api.removeFiles(viejas).catch(() => null);
+    const nueva = await api.card(c.id); if (nueva) guarda([nueva]);
+    S.feed = []; S.stats = null; MOSAICOS.clear();
+    if (fichaH && fichaH.id === c.id) { fichaH.i = 0; await fichaH.cargar(); }
+    refrescarFicha(c.id); aviso(C.QUITAR_FOTO_LISTO, 'trash');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
 function fichaHTML(c, H) {
   const propio = c.user_id === S.user.id;
   const hist = galeria(c, H);
@@ -909,7 +1002,8 @@ function fichaHTML(c, H) {
   const actual = fotos[H.i];
   const puntos = hist.filter((h) => h.lat != null && h.lng != null);
   return `${cabeza(esc(c.name), c.is_private ? `<span class="ib ghost" data-tip="${C.AYUDA.privado}">${ic('lock')}</span>` : '')}
-    ${actual ? `<img class="big" src="${api.photoUrl(actual.photo || actual.thumb)}" alt="${esc(c.name)}">` : ''}
+    ${actual ? `<div class="foto-grande"><img class="big" src="${api.photoUrl(actual.photo || actual.thumb)}" alt="${esc(c.name)}">
+      ${esMiaLaFoto(c, actual) ? ib('quitar_foto', 'trash', 'quitar_foto', `data-id="${c.id}" data-i="${H.i}"`, 'sm sobre-foto') : ''}</div>` : ''}
     ${fotos.length > 1 ? `<div class="strip">${fotos.map((f, i) => `<button class="${i === H.i ? 'on' : ''}" data-act="galeria" data-i="${i}" aria-label="Foto ${i + 1}">
       <img src="${api.photoUrl(f.thumb || f.photo)}" alt="" loading="lazy"></button>`).join('')}</div>` : ''}
     <div class="row between" style="margin:12px 0">
@@ -921,7 +1015,7 @@ function fichaHTML(c, H) {
     ${!c.is_private ? comentariosHTML(c, H) : ''}
     <div class="row wrap" style="margin-top:14px">
       ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'on')}
-      ${!c.is_private ? ib('whatsapp', 'brand-whatsapp', 'whatsapp', `data-id="${c.id}"`) : ''}
+      ${propio && !c.is_private ? ib('whatsapp', 'brand-whatsapp', 'whatsapp', `data-id="${c.id}"`) : ''}
       ${puedoReencontrar(c) ? ib('reencuentro', 'repeat', 'reencuentro', `data-id="${c.id}"`) : ''}
       ${propio ? ib('editar_hallazgo', 'pencil', 'editar', `data-id="${c.id}"`) : ''}
       <span class="grow"></span>
@@ -1558,7 +1652,7 @@ function vitrinaHTML(v, uid, conCuenta) {
   return `<div class="vitrina">
     <div class="row" style="gap:14px">${avatar(v, 'lg')}<div class="grow"><h2>${esc(v.name)}</h2>${v.bio ? `<div class="muted">${esc(v.bio)}</div>` : ''}
       ${cats.length ? `<div class="colicons">${cats.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}</div></div>
-    ${conCuenta ? `<div class="row wrap" style="margin:14px 0">${ib('perfil', 'user', 'ver_perfil', `data-id="${uid}"`)}${ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${uid}"`)}</div>` : invitacionHTML(true)}
+    ${conCuenta ? `<div class="row wrap" style="margin:14px 0">${ib('perfil', 'user', 'ver_perfil', `data-id="${uid}"`)}${S.user && uid === S.user.id ? ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${uid}"`) : ''}</div>` : invitacionHTML(true)}
     ${cats.length ? cats.map((c) => `<div class="sec"><h3>${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total}</span></h3>
       <div class="vgrid">${c.hallazgos.map((h) => `<figure class="vtile" data-act="${conCuenta ? 'ficha' : 'vitrina_invitar'}" data-id="${h.id}" role="button" aria-label="${esc(h.name)}">
         <img src="${api.photoUrl(h.thumb || h.photo)}" alt="" loading="lazy"><figcaption><b>${esc(h.name)}</b>${h.colonia ? `<span>${ic('map-pin')} ${esc(h.colonia)}</span>` : ''}</figcaption></figure>`).join('')}</div></div>`).join('')
@@ -1994,6 +2088,7 @@ const ACCIONES = {
   async reaccion(b) {
     const c = S.cache.get(b.dataset.id), tipo = b.dataset.v; if (!c) return;
     const mia = (c.my_reactions || []).includes(tipo);
+    if (tipo === 'eye' && !mia) return marcarVisto(b, c);
     const r = Object.assign({}, c.reactions || {});
     r[tipo] = Math.max(0, (r[tipo] || 0) + (mia ? -1 : 1));
     const nueva = Object.assign({}, c, { reactions: r, my_reactions: mia ? c.my_reactions.filter((x) => x !== tipo) : (c.my_reactions || []).concat(tipo) });
@@ -2001,10 +2096,17 @@ const ACCIONES = {
     try { await api.react(c.id, tipo, !mia, S.user.id); }
     catch (e) { guarda([c]); refrescarFicha(c.id); fallo(e); }
   },
-  ir_al_punto(b) { const c = S.cache.get(b.dataset.id); if (c) irAlPunto(c); },
+  ir_al_punto(b) { const c = S.cache.get(b.dataset.id); if (!c) return; cerrarTodo(); irAlPunto(c); },
+  quitar_foto(b) {
+    const c = S.cache.get(b.dataset.id); if (!c || !fichaH) return;
+    const fotos = galeria(c, fichaH).filter((h) => h.photo || h.thumb), h = fotos[+b.dataset.i];
+    if (h) quitarFoto(b, c, h);
+  },
   cerrar_guia: () => terminarGuia(),
-  whatsapp: (b) => { const c = S.cache.get(b.dataset.id); if (c) compartirHallazgo(c, b); },
+  // Solo se comparte lo propio: tus hallazgos y tu vitrina
+  whatsapp: (b) => { const c = S.cache.get(b.dataset.id); if (c && c.user_id === S.user.id) compartirHallazgo(c, b); },
   whatsapp_perfil(b) {
+    if (b.dataset.id !== S.user.id) return;
     const M = MOSAICOS.get(b.dataset.id);
     if (M && M.estado === 'listo' && puedeCompartirArchivo(M.file)) return compartirMosaico(M);
     hojaMosaico(b.dataset.id);
@@ -2219,6 +2321,13 @@ const ACCIONES = {
     S.cache.delete(id); abrirFicha(id);
   },
   admin_uso: () => hojaAdmin('uso'),
+  instalar: () => instalarApp(),
+  instalar_no() { noMostrarInstalar(); pintarInstalar(); },
+  async copiar_liga() {
+    const liga = location.origin + location.pathname;
+    try { await navigator.clipboard.writeText(liga); aviso(C.INSTALAR_COPIADA, 'copy'); }
+    catch (e) { aviso(liga, 'copy'); }
+  },
   cerrar_notif: () => cerrarNotif(),
   tabla_metrica(b) { const D = $('.sheet')._tabla; D.metric = b.dataset.v; D.cargar(); },
   async salir() { if (await confirmar('¿Cerrar sesión?', 'logout')) { await api.logout().catch(() => null); location.hash = ''; location.reload(); } },
@@ -2270,7 +2379,9 @@ function pantallaEntrada() {
     <h1 class="serif" style="font-size:36px">Collector Go</h1>
     <p class="muted" style="max-width:280px;font-size:18px">${ic('map-pin')} ${esc(C.LEMA)}</p>
     <button class="btn" data-act="entrar">${ic('brand-google')} Entrar con Google</button>
+    <div data-instalar style="width:100%;max-width:300px"></div>
     <button class="linkbtn" data-act="privacidad" style="color:var(--tinta2)">${ic('lock')} ${esc(C.DATOS_TITULO)}</button></div>`;
+  pintarInstalar();
 }
 function pantallaConfig() {
   $('#app').innerHTML = `<div class="login"><h1 class="serif">Collector Go</h1>
@@ -2329,6 +2440,6 @@ async function iniciar() {
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
-window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas };
+window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas, tipoInstalacion };
 iniciar();
 })();

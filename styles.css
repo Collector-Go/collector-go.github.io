@@ -313,3 +313,16 @@ label.ib{cursor:pointer}
 .pin.destino{animation:destino 1.6s ease-in-out infinite}
 @keyframes destino{0%,100%{box-shadow:2px 2px 0 var(--tinta),0 0 0 0 rgba(196,83,47,.55)}50%{box-shadow:2px 2px 0 var(--tinta),0 0 0 12px rgba(196,83,47,0)}}
 @media (prefers-reduced-motion:reduce){.pin.destino{animation:none}}
+
+/* 1.6 · quitar una foto y "Yo también lo vi" en el lugar */
+.foto-grande{position:relative}
+.ib.sobre-foto{position:absolute;top:8px;right:8px;background:var(--papel3)}
+.react.visto-ok{animation:visto .7s ease-out}
+@keyframes visto{0%{transform:scale(1)}40%{transform:scale(1.15)}100%{transform:scale(1)}}
+@media (prefers-reduced-motion:reduce){.react.visto-ok{animation:none}}
+
+/* 1.6 · instalar en el teléfono */
+.instalar-franja{position:absolute;left:10px;right:10px;top:calc(62px + var(--safe-t));z-index:420;display:flex;align-items:center;gap:6px;
+  padding:6px 6px 6px 12px;border:var(--borde);border-radius:var(--r);background:var(--mostaza);box-shadow:var(--sombra);font-weight:600}
+.pasos-instalar{list-style:none;padding:0;margin:0 0 14px;display:flex;flex-direction:column;gap:12px}
+.pasos-instalar li{display:flex;gap:10px;align-items:flex-start}

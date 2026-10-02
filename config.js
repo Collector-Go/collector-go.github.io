@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.5.1',
+  VERSION: '1.6.0',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -94,7 +94,7 @@ window.CONFIG = {
   REACCIONES: [
     { tipo: 'heart', icono: 'heart',      ayuda: 'Me encanta' },
     { tipo: 'flame', icono: 'flame',      ayuda: 'Increíble' },
-    { tipo: 'eye',   icono: 'eye-check',  ayuda: 'Yo también lo vi', etiqueta: 'Yo también lo vi' },
+    { tipo: 'eye',   icono: 'eye-check',  ayuda: '¡Lo vi!', etiqueta: '¡Lo vi!' },
     { tipo: 'sad',   icono: 'mood-sad',   ayuda: 'Me entristece' },
     { tipo: 'angry', icono: 'mood-angry', ayuda: 'Me enoja' }
   ],
@@ -134,12 +134,44 @@ window.CONFIG = {
 
   // Comentarios
   COMENTARIO_MAX: 60,        // caracteres (igual que en migracion-1.2.sql)
-  COMENTARIOS_POR_PERSONA: 10, // por hallazgo (igual que en migracion-1.2.sql)
+  COMENTARIOS_POR_PERSONA: 20, // por hallazgo (igual que en migracion-1.6.sql)
 
   // Emojis sugeridos (pestaña de emoji del selector de íconos)
   EMOJIS: ['🐈', '🐕', '🐦', '🦋', '🐿️', '🐢', '🦎', '🐝', '🌳', '🌵', '🌸', '🌻', '🍄', '🪴', '🏛️', '⛪',
            '🏠', '🚪', '🪟', '🗿', '⛲', '🚗', '🚲', '🛵', '🪑', '🛋️', '💡', '🕰️', '👓', '👒', '👗', '👠',
            '💍', '📚', '💿', '🎨', '🖼️', '🧸', '🏺', '🗝️', '🔔', '👻', '⭐', '❤️', '✨', '🦖'],
+
+  // Instalar la app en el teléfono
+  INSTALAR_BOTON: 'Instalar en mi teléfono',
+  INSTALAR_FRANJA: 'Instala Collector Go en tu teléfono',
+  INSTALAR_LISTO: 'Collector Go quedó instalada',
+  INSTALAR_COPIADA: 'Liga copiada. Pégala en Safari o Chrome',
+  INSTALAR_COPIAR: 'Copiar la liga',
+  INSTALAR_IPHONE: [
+    { icono: 'share-2', texto: 'Toca el botón Compartir del navegador (el cuadro con la flecha hacia arriba).' },
+    { icono: 'square-plus', texto: 'Elige "Agregar a inicio" y toca Agregar.' },
+    { icono: 'device-mobile', texto: 'Collector Go aparece en tu pantalla de inicio como una app.' }
+  ],
+  INSTALAR_MENU: [
+    { icono: 'dots-vertical', texto: 'Toca el menú del navegador (los tres puntos).' },
+    { icono: 'square-plus', texto: 'Elige "Instalar app" o "Agregar a la pantalla principal".' },
+    { icono: 'device-mobile', texto: 'Collector Go aparece en tu pantalla de inicio como una app.' }
+  ],
+  INSTALAR_INTERNO: [
+    { icono: 'alert-triangle', texto: 'Estás dentro de WhatsApp u otra app, y desde aquí no se puede instalar.' },
+    { icono: 'dots-vertical', texto: 'Toca el menú (los tres puntos o el botón de compartir) y elige "Abrir en el navegador".' },
+    { icono: 'device-mobile', texto: 'Ya en Safari o Chrome, vuelve a tocar "Instalar en mi teléfono".' }
+  ],
+
+  // "¡Lo vi!": solo estando en el lugar (la distancia la comprueba la base de datos)
+  VISTO_OK: 'Lo viste en el lugar. Quedó marcado.',
+  VISTO_LEJOS: 'Para marcar que lo viste, tienes que estar en el lugar. Estás a {d}.',
+  VISTO_APROXIMADA: 'Tu teléfono está dando una ubicación aproximada. Activa la ubicación exacta para marcar que lo viste.',
+  VISTO_SIN_GPS: 'Activa el GPS para marcar que lo viste',
+
+  // Quitar una sola foto de la historia de un hallazgo
+  QUITAR_FOTO_CONFIRMAR: '¿Quitar esta foto? El hallazgo y el resto de su historia se conservan.',
+  QUITAR_FOTO_LISTO: 'Foto quitada',
 
   // Ir al punto: la guía en el mapa de la app (sin servicios externos)
   LLEGADA_METROS: 15,
@@ -177,6 +209,8 @@ window.CONFIG = {
       texto: 'Al registrar eliges el ojo (público: lo ve la comunidad) o el candado (privado: solo tú). Lo de un grupo privado solo lo ven sus miembros.' },
     { icono: 'layout-grid', titulo: 'Muro, seguir y reacciones',
       pasos: ['El Muro muestra lo más reciente. Arriba filtras: todos, personas que sigues o un grupo.', 'Abre un perfil y toca el botón de seguir.'] },
+    { icono: 'eye-check', titulo: '¡Lo vi!',
+      texto: 'Solo se marca estando en el lugar, a menos de 50 m del hallazgo. Es la forma de confirmar que sigue ahí.' },
     { icono: 'volume-off', titulo: 'Silenciar',
       texto: 'Si no quieres ver el contenido de alguien, o de un grupo del que no formas parte, abre su perfil y toca silenciar. Deja de aparecer en tu Muro y tu mapa; no se le avisa. No es posible silenciar a quienes comparten un grupo contigo.' },
     { icono: 'users', titulo: 'Grupos',
@@ -198,6 +232,7 @@ window.CONFIG = {
     'Tu nombre, frase y avatar los ve cualquier persona. Tu correo no aparece en la app; solo lo ve la administradora en el panel de la base de datos.',
     'Lo público, incluida su ubicación, lo ve cualquier persona. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
     'Los datos y las fotos se guardan en Supabase. Google solo confirma quién eres al entrar. Para saber el nombre de la colonia, la app envía las coordenadas a OpenStreetMap, que también dibuja el mapa. El recorte de fondo se hace en tu teléfono.',
+    'Al marcar "¡Lo vi!", tu ubicación se usa solo para comprobar que estás cerca y no se guarda.',
     'No vendemos tus datos ni hay publicidad.',
     'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta", en tu perfil, elimina tu perfil, tus hallazgos y tus fotos.',
     'La administradora puede quitar contenido público que alguien reporte y bloquear cuentas que no respeten la comunidad.'
@@ -260,7 +295,7 @@ window.CONFIG = {
   AYUDA: {
     mapa: 'Mapa', muro: 'Muro', nuevo: 'Registrar hallazgo', coleccion: 'Mi colección', perfil: 'Perfil',
     ubicar: 'Mi ubicación', cerca: 'Cerca de mí', filtro_mios: 'Solo lo mío', filtro_todos: 'Todo', filtro_siguiendo: 'Personas que sigo',
-    ir_al_punto: 'Ir al punto', reencuentro: 'Lo volví a ver', editar: 'Editar', borrar: 'Borrar', avisar: 'Avisar a moderación',
+    ir_al_punto: 'Ir al punto', quitar_foto: 'Quitar esta foto', visto: '¡Lo vi!', instalar: 'Instalar en mi teléfono', reencuentro: 'Lo volví a ver', editar: 'Editar', borrar: 'Borrar', avisar: 'Avisar a moderación',
     compartir: 'Compartir', whatsapp: 'Compartir por WhatsApp', privado: 'Privado: solo tú lo ves', publico: 'Público',
     recortar: 'Recortar fondo', original: 'Usar foto original', tabla: 'Tabla general', admin: 'Moderación', salir: 'Cerrar sesión',
     camara: 'Tomar foto', galeria: 'Elegir de la galería', sin_foto: 'Solo marcar, sin foto', guardar: 'Guardar', cerrar: 'Cerrar', atras: 'Atrás',
