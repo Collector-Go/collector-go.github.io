@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.4.0',
+  VERSION: '1.5.1',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -90,12 +90,13 @@ window.CONFIG = {
     herramienta: 'tool', martillo: 'hammer', tijeras: 'scissors', basura: 'trash', bandera: 'flag', corona: 'crown'
   },
 
-  // Reacciones del muro (solo íconos)
+  // Reacciones a las fotos (ícono; "etiqueta" muestra su nombre a la vista; "ayuda" aparece al mantener presionado)
   REACCIONES: [
-    { tipo: 'heart', icono: 'heart', ayuda: 'Me encanta' },
-    { tipo: 'star',  icono: 'star',  ayuda: 'Joya' },
-    { tipo: 'flame', icono: 'flame', ayuda: 'Increíble' },
-    { tipo: 'eye',   icono: 'eye',   ayuda: 'Yo también lo vi' }
+    { tipo: 'heart', icono: 'heart',      ayuda: 'Me encanta' },
+    { tipo: 'flame', icono: 'flame',      ayuda: 'Increíble' },
+    { tipo: 'eye',   icono: 'eye-check',  ayuda: 'Yo también lo vi', etiqueta: 'Yo también lo vi' },
+    { tipo: 'sad',   icono: 'mood-sad',   ayuda: 'Me entristece' },
+    { tipo: 'angry', icono: 'mood-angry', ayuda: 'Me enoja' }
   ],
 
   // Metas del juego
@@ -140,6 +141,12 @@ window.CONFIG = {
            '🏠', '🚪', '🪟', '🗿', '⛲', '🚗', '🚲', '🛵', '🪑', '🛋️', '💡', '🕰️', '👓', '👒', '👗', '👠',
            '💍', '📚', '💿', '🎨', '🖼️', '🧸', '🏺', '🗝️', '🔔', '👻', '⭐', '❤️', '✨', '🦖'],
 
+  // Ir al punto: la guía en el mapa de la app (sin servicios externos)
+  LLEGADA_METROS: 15,
+  GUIA_BUSCANDO: 'Buscando tu ubicación…',
+  GUIA_SIN_GPS: 'Activa el GPS para ver la distancia',
+  GUIA_LLEGASTE: 'Llegaste: está a unos pasos',
+
   // Reencuentros: distancia para sugerir que ya lo habías registrado
   REENCUENTRO_METROS: 40,
   // "Cerca de mí": radio de búsqueda
@@ -160,8 +167,8 @@ window.CONFIG = {
       pasos: ['Regístralo con el mismo nombre en la misma categoría: la app te pregunta si es el mismo.',
               'O abre su ficha y toca el botón de flechas.', 'Cada reencuentro suma una foto, una fecha y un punto a su historia.',
               'Si registraste dos veces lo mismo, edita el nombre de uno igual al otro y la app los junta.'] },
-    { icono: 'route', titulo: 'Volver a encontrarlo en la calle',
-      pasos: ['Abre su ficha y toca el botón de ruta: se abre el camino en el mapa de tu teléfono.',
+    { icono: 'navigation', titulo: 'Volver a encontrarlo en la calle',
+      pasos: ['Abre su ficha y toca la flecha: el mapa de la app muestra el hallazgo, tu ubicación, la distancia y la dirección (por ejemplo, "120 m al noreste"). Nada sale de la app.',
               'En el mapa, el botón de caminar muestra lo que hay cerca de ti, ordenado por distancia.'] },
     { icono: 'cards', titulo: 'Tu colección y tus categorías',
       pasos: ['La pestaña de tarjetas muestra todo lo que has registrado, por categoría.', 'El lápiz abre tus categorías: edítalas, bórralas o crea nuevas (máximo 5).',
@@ -224,7 +231,12 @@ window.CONFIG = {
   AVISOS_CADA_MS: 60000,   // cada cuánto se revisa si hay avisos nuevos
   AVISO_MS: 6000,          // cuánto dura la notificación en pantalla
   AVISOS_NUEVOS: 'Tienes {n} avisos nuevos',
-  AVISOS_VACIO: 'Aquí verás quién reacciona, comenta o vuelve a ver tus hallazgos',
+  AVISOS_VACIO: 'Aquí verás quién reacciona, comenta, vuelve a ver tus hallazgos o empieza a seguirte',
+
+  // Medidor de uso del plan gratuito (escudo de la administradora)
+  USO_AMARILLO: 'Más del 60 %. Cierra el registro de cuentas nuevas en Supabase (Authentication → Sign In / Providers → Allow new users to sign up) y prepara el cambio de almacén de fotos.',
+  USO_ROJO: 'Más del 80 %. Es momento de mover las fotos a un almacén gratuito más grande (ver la guía de administración).',
+  USO_TRANSFERENCIA: 'La transferencia mensual (5 GB) no se puede medir desde la app: revísala en el panel de Supabase, en Usage.',
 
   // Buzón de peticiones a la administradora
   BUZON_MAX: 500,              // caracteres (igual que en migracion-1.4.sql)
@@ -248,7 +260,7 @@ window.CONFIG = {
   AYUDA: {
     mapa: 'Mapa', muro: 'Muro', nuevo: 'Registrar hallazgo', coleccion: 'Mi colección', perfil: 'Perfil',
     ubicar: 'Mi ubicación', cerca: 'Cerca de mí', filtro_mios: 'Solo lo mío', filtro_todos: 'Todo', filtro_siguiendo: 'Personas que sigo',
-    ruta: 'Cómo llegar', reencuentro: 'Lo volví a ver', editar: 'Editar', borrar: 'Borrar', avisar: 'Avisar a moderación',
+    ir_al_punto: 'Ir al punto', reencuentro: 'Lo volví a ver', editar: 'Editar', borrar: 'Borrar', avisar: 'Avisar a moderación',
     compartir: 'Compartir', whatsapp: 'Compartir por WhatsApp', privado: 'Privado: solo tú lo ves', publico: 'Público',
     recortar: 'Recortar fondo', original: 'Usar foto original', tabla: 'Tabla general', admin: 'Moderación', salir: 'Cerrar sesión',
     camara: 'Tomar foto', galeria: 'Elegir de la galería', sin_foto: 'Solo marcar, sin foto', guardar: 'Guardar', cerrar: 'Cerrar', atras: 'Atrás',
@@ -259,6 +271,6 @@ window.CONFIG = {
     grupo_privado: 'Grupo privado', comentar: 'Enviar comentario', borrar_comentario: 'Borrar comentario', nueva_categoria: 'Nueva categoría', borrar_cuenta: 'Borrar mi cuenta', buscar: 'Buscar ícono', emoji: 'Usar un emoji',
     silenciar: 'Silenciar', quitar_silencio: 'Quitar silencio', silenciado: 'silenciado', silenciados: 'Silenciados',
     buzon: 'Buzón: errores e ideas', captura: 'Agregar captura de pantalla (opcional)', quitar_captura: 'Quitar captura',
-    enviar: 'Enviar', responder: 'Guardar respuesta', ver_perfil: 'Ver perfil', avisos: 'Avisos', descargar: 'Descargar imagen'
+    enviar: 'Enviar', responder: 'Guardar respuesta', ver_perfil: 'Ver perfil', avisos: 'Avisos', descargar: 'Descargar imagen', uso: 'Uso del plan'
   }
 };

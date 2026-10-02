@@ -1,5 +1,5 @@
 /* =====================================================================
-   Collector Go · app.js · v1.4
+   Collector Go · app.js · v1.5
    Estructura (para parches rápidos):
      1. Utilidades            6. Pantallas (muro, colección, perfil)
      2. Capa de datos (api)   7. Hojas (ficha, registrar, editar, grupos…)
@@ -182,6 +182,7 @@ function supabaseApi() {
     delRequest: (id) => sb.from('requests').delete().eq('id', id).then(ok),
     avisos: () => sb.rpc('mis_avisos', { lim: 30 }).then(ok).then(firmar),
     avisosVistos: () => sb.rpc('avisos_vistos').then(ok),
+    usoPlan: () => sb.rpc('uso_plan').then(ok),
     comments: (findId) => sb.from('comment_cards').select('*').eq('find_id', findId).order('created_at').then(ok),
     addComment: (findId, body) => sb.from('comments').insert({ find_id: findId, body }).then(ok),
     delComment: (id) => sb.from('comments').delete().eq('id', id).then(ok),
@@ -544,6 +545,54 @@ function ponerYo(p) {
   if (!S.yo) S.yo = L.marker([p.lat, p.lng], { interactive: false, icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(S.map);
   else S.yo.setLatLng([p.lat, p.lng]);
 }
+/* Ir al punto: el mapa de la app lleva hasta un hallazgo. La distancia y la dirección
+   se calculan en el teléfono; la ubicación no se envía a ningún servicio de mapas. */
+const RUMBOS = ['norte', 'noreste', 'este', 'sureste', 'sur', 'suroeste', 'oeste', 'noroeste'];
+function rumbo(a, b) {
+  const r = Math.PI / 180, dl = (b.lng - a.lng) * r;
+  const y = Math.sin(dl) * Math.cos(b.lat * r);
+  const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos(dl);
+  return RUMBOS[Math.round(((Math.atan2(y, x) / r) + 360) % 360 / 45) % 8];
+}
+function irAlPunto(c) {
+  terminarGuia();
+  cerrarTodo(); irA('map');
+  const G = S.guia = { c, pin: null, watch: null, pos: null, centrado: false, sinGps: false };
+  pintarGuia();
+  setTimeout(() => {
+    if (S.guia !== G || !S.map) return;
+    G.pin = L.marker([c.lat, c.lng], { icon: L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36],
+      html: `<div class="pin destino" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` }) }).on('click', () => abrirFicha(c.id)).addTo(S.map);
+    S.map.setView([c.lat, c.lng], 18);
+    if (!navigator.geolocation) { G.sinGps = true; return pintarGuia(); }
+    G.watch = navigator.geolocation.watchPosition((p) => {
+      if (S.guia !== G) return;
+      G.pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+      ponerYo(G.pos);
+      if (!G.centrado) { G.centrado = true; S.map.fitBounds([[G.pos.lat, G.pos.lng], [c.lat, c.lng]], { padding: [70, 70], maxZoom: 18 }); }
+      pintarGuia();
+    }, () => { if (S.guia === G) { G.sinGps = true; pintarGuia(); } }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  }, 60);
+}
+function pintarGuia() {
+  const G = S.guia, el = $('#guia-punto'); if (!el) return;
+  if (!G) { el.hidden = true; el.innerHTML = ''; return; }
+  const d = G.pos ? distancia(G.pos, G.c) : null;
+  const txt = d == null ? (G.sinGps ? C.GUIA_SIN_GPS : C.GUIA_BUSCANDO)
+    : d <= C.LLEGADA_METROS ? C.GUIA_LLEGASTE : `${metros(d)} al ${rumbo(G.pos, G.c)}`;
+  el.hidden = false;
+  el.innerHTML = `<button class="row grow" data-act="ficha" data-id="${G.c.id}" style="text-align:left;min-width:0">
+      <span class="avatar" style="background:${okColor(G.c.cat_color)}">${ic(G.c.cat_icon)}</span>
+      <span class="grow" style="min-width:0"><b class="guia-nombre">${esc(G.c.name)}</b><span class="guia-dist">${ic('navigation')} ${esc(txt)}</span></span></button>
+    ${ib('cerrar_guia', 'x', 'cerrar', '', 'sm')}`;
+}
+function terminarGuia() {
+  const G = S.guia; if (!G) return;
+  if (G.watch != null && navigator.geolocation) navigator.geolocation.clearWatch(G.watch);
+  if (G.pin && S.map) { if (S.map.removeLayer) S.map.removeLayer(G.pin); else if (G.pin.el) G.pin.el.remove(); }
+  S.guia = null; pintarGuia();
+}
+
 async function cargarPines() {
   if (!S.map) return;
   const b = S.map.getBounds().pad(0.3);
@@ -579,6 +628,7 @@ function pintarApp() {
       <div id="map"></div>
       <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'bell', 'avisos', 'data-campana', 'sm')}${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
       <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
+      <div id="guia-punto" class="guia-punto" hidden></div>
     </section>
     <main id="scr" class="screen" hidden></main>
     <nav class="nav">
@@ -593,6 +643,7 @@ function pintarApp() {
   pintarCampana();
 }
 function irA(tab) {
+  if (tab !== 'map') terminarGuia();
   S.tab = tab;
   $$('.nav [data-act="tab"]').forEach((b) => b.classList.toggle('on', b.dataset.v === tab));
   const esMapa = tab === 'map';
@@ -608,14 +659,15 @@ function reaccionesHTML(c) {
   const propio = c.user_id === S.user.id;
   return `<div class="reacts">${C.REACCIONES.map((r) => {
     const n = (c.reactions || {})[r.tipo] || 0, mia = (c.my_reactions || []).includes(r.tipo);
-    if (propio || c.is_private) return n ? `<span class="react" data-tip="${esc(r.ayuda)}">${ic(r.icono)}<span class="n">${n}</span></span>` : '';
-    return `<button class="react ${mia ? 'on' : ''}" data-act="reaccion" data-id="${c.id}" data-v="${r.tipo}" data-tip="${esc(r.ayuda)}" aria-label="${esc(r.ayuda)}">${ic(r.icono)}<span class="n">${n || ''}</span></button>`;
+    const cara = `${ic(r.icono)}${r.etiqueta ? `<span class="react-lbl">${esc(r.etiqueta)}</span>` : ''}${n ? `<span class="n">${n}</span>` : ''}`;
+    if (propio || c.is_private) return n ? `<span class="react ${r.etiqueta ? 'con-texto' : ''}" data-tip="${esc(r.ayuda)}">${cara}</span>` : '';
+    return `<button class="react ${r.etiqueta ? 'con-texto' : ''} ${mia ? 'on' : ''}" data-act="reaccion" data-id="${c.id}" data-v="${r.tipo}" data-tip="${esc(r.ayuda)}" aria-label="${esc(r.ayuda)}">${cara}</button>`;
   }).join('')}</div>`;
 }
 function tarjeta(c) {
   return `<article class="card" data-card="${c.id}">
     <div class="body row"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left">${avatar(c)}<b class="grow">${esc(c.user_name)}</b></button>${etiquetaDe(c)}</div>
-    ${c.photo || c.thumb ? `<img class="photo" src="${foto(c)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
+    ${c.photo || c.thumb ? `<img class="photo" src="${foto(c, true)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
     <div class="body"><div class="row between"><div class="grow"><h3>${esc(c.name)}</h3>
       <div class="tiny">${c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}${c.comments_count ? ` · ${ic('message-circle')} ${c.comments_count}` : ''}</div></div></div>
       <div style="margin-top:8px">${reaccionesHTML(c)}</div></div></article>`;
@@ -624,7 +676,7 @@ function tarjeta(c) {
 function tarjetaReencuentro(it) {
   return `<article class="card novedad" data-item="${it.item_id}">
     <div class="body row"><button class="row grow" data-act="perfil" data-id="${it.actor_id}" style="text-align:left">${avatar({ avatar: it.actor_avatar, avatar_color: it.actor_color })}<b class="grow">${esc(it.actor_name)}</b></button>${etiquetaDe(it)}</div>
-    <img class="photo" src="${api.photoUrl(it.photo || it.thumb)}" alt="${esc(it.name)}" loading="lazy" data-act="ficha" data-id="${it.find_id}">
+    <img class="photo" src="${api.photoUrl(it.thumb || it.photo)}" alt="${esc(it.name)}" loading="lazy" data-act="ficha" data-id="${it.find_id}">
     <div class="body"><h3>${esc(it.name)}</h3>
       <div class="tiny row">${ic('repeat')} Visto de nuevo · ${it.vez}ª vez${it.colonia ? ` · ${esc(it.colonia)}` : ''} · ${hace(it.at)}</div></div></article>`;
 }
@@ -747,7 +799,15 @@ async function pintarPerfil() {
     const [me, st] = await Promise.all([api.getProfile(S.user.id), api.stats(S.user.id)]);
     S.me = me || S.me; S.stats = st;
     if (S.tab === 'perfil') { scr.innerHTML = perfilHTML(S.me, st, true, null); cuandoDesocupado(() => prepararMosaico(S.user.id)); }
+    if (S.me.is_admin) avisoUsoPerfil();
   } catch (e) { fallo(e); }
+}
+// En el perfil de la administradora: franja de aviso si el plan pasa del 60 %
+async function avisoUsoPerfil() {
+  let u; try { u = await api.usoPlan(); } catch (e) { return; }
+  const peor = (u.recursos || []).reduce((m, r) => (pctUso(r) > m.p ? { p: pctUso(r), r } : m), { p: 0, r: null });
+  const scr = $('#scr'); if (S.tab !== 'perfil' || !scr || !peor.r || !nivelUso(peor.p) || $('.banner.uso', scr)) return;
+  scr.insertAdjacentHTML('afterbegin', `<button class="banner uso ${nivelUso(peor.p)}" data-act="admin_uso" style="width:100%;margin-bottom:12px;text-align:left">${ic('gauge')}<span>Uso del plan: ${esc(RECURSOS[peor.r.recurso] || peor.r.recurso)} al ${peor.p} %</span></button>`);
 }
 async function abrirPerfil(uid) {
   if (uid === S.user.id) { cerrarTodo(); irA('perfil'); return; }
@@ -860,8 +920,7 @@ function fichaHTML(c, H) {
     ${!c.is_private ? `<div style="margin:12px 0">${reaccionesHTML(c)}</div>` : ''}
     ${!c.is_private ? comentariosHTML(c, H) : ''}
     <div class="row wrap" style="margin-top:14px">
-      ${ib('ruta', 'route', 'ruta', `data-id="${c.id}"`, 'on')}
-      ${ib('ver_mapa', 'map-pin', 'ver_mapa', `data-id="${c.id}"`)}
+      ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'on')}
       ${!c.is_private ? ib('whatsapp', 'brand-whatsapp', 'whatsapp', `data-id="${c.id}"`) : ''}
       ${puedoReencontrar(c) ? ib('reencuentro', 'repeat', 'reencuentro', `data-id="${c.id}"`) : ''}
       ${propio ? ib('editar_hallazgo', 'pencil', 'editar', `data-id="${c.id}"`) : ''}
@@ -1242,9 +1301,11 @@ async function ofrecerJuntar(c, nombre, cat, grupo) {
     if (!otro) return aviso('Ese nombre ya existe aquí', 'alert-triangle');
     guarda([otro]);
     if (otro.user_id !== S.user.id) return aviso(`"${otro.name}" ya existe en el grupo. Usa otro nombre`, 'alert-triangle');
-    const si = await confirmar(`Ya existe "${otro.name}". ¿Juntarlos en uno solo? Sus fotos quedan en la misma historia.`, 'git-merge', otro.thumb || otro.photo ? foto(otro, true) : '', 'git-merge');
+    const cambia = !!c.is_private !== !!otro.is_private;
+    const si = await confirmar(`Ya existe "${otro.name}". ¿Juntarlos en uno solo? Sus fotos quedan en la misma historia.${cambia ? (otro.is_private ? ' Todo quedará privado.' : ' Todo quedará público, con su ubicación.') : ''}`, 'git-merge', otro.thumb || otro.photo ? foto(otro, true) : '', 'git-merge');
     if (!si) return aviso('Cambia el nombre', 'pencil');
     await api.merge(c.id, otro.id);
+    await moverFotosHallazgo(otro.id, !!otro.is_private).catch((e) => console.error(e));
     S.cache.delete(c.id); S.stats = null;
     const nueva = await api.card(otro.id); if (nueva) guarda([nueva]);
     cerrarTodo(); aviso('Juntados en uno solo', 'git-merge');
@@ -1264,7 +1325,7 @@ function cercaDeMi() {
     ${D.estado === 'ok' ? (D.lista.filter((c) => !D.mios || c.user_id === S.user.id).map((c) => `<div class="li" style="margin-bottom:10px">
         ${c.thumb ? `<img class="thumb" src="${foto(c, true)}" alt="" data-act="ficha" data-id="${c.id}">` : `<span class="thumb" data-act="ficha" data-id="${c.id}">${ic(c.cat_icon)}</span>`}
         <div class="grow" data-act="ficha" data-id="${c.id}"><b>${esc(c.name)}</b><div class="tiny">${ic(c.cat_icon)} ${metros(c.dist)} · ${esc(c.user_name)}</div></div>
-        ${ib('ruta', 'route', 'ruta', `data-id="${c.id}"`, 'sm')}</div>`).join('') || `<div class="empty">${ic('walk')}<p>Nada registrado a menos de ${metros(C.CERCA_METROS)}</p></div>`) : ''}`;
+        ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'sm')}</div>`).join('') || `<div class="empty">${ic('walk')}<p>Nada registrado a menos de ${metros(C.CERCA_METROS)}</p></div>`) : ''}`;
   const hoja = { render, after: (r) => { r._cerca = D; }, tipo: 'cerca' };
   pila.push(hoja); dibujarHoja();
   getPos().then(async (p) => {
@@ -1686,19 +1747,54 @@ async function ponerCaptura(D, file) {
   } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
 }
 
-/* Avisos: quién reaccionó, comentó o volvió a ver tus hallazgos (solo con la app abierta) */
-const claveAviso = (a) => `${a.kind}|${a.find_id}|${a.actor_id}|${a.reaccion || ''}|${a.at}`;
+// Las fotos de hallazgos privados guardadas antes de la versión 1.4 pasan al almacén cerrado (una sola vez)
+async function protegerFotosAntiguas() {
+  const k = 'cg_privadas_' + S.user.id;
+  try { if (localStorage.getItem(k)) return; } catch (e) { /* sin almacenamiento: se revisa cada vez */ }
+  try {
+    const mias = await api.userCards(S.user.id);
+    const pend = mias.filter((c) => c.is_private && [c.photo, c.thumb].some((x) => x && !String(x).startsWith('priv:')));
+    for (const c of pend) await moverFotosHallazgo(c.id, true);
+    if (pend.length) { S.cache.clear(); refrescarActual(); }
+    try { localStorage.setItem(k, '1'); } catch (e) { /* nada */ }
+  } catch (e) { console.error(e); }
+}
+
+/* Avisos (solo con la app abierta): reacciones, comentarios, reencuentros y seguidores;
+   para la administradora también personas nuevas, buzón, moderación y uso del plan */
+const claveAviso = (a) => `${a.kind}|${a.find_id}|${a.actor_id}|${a.reaccion || ''}|${a.texto || ''}|${a.at}`;
+const RECURSOS = { fotos: 'fotos', base: 'base de datos' };
 function textoAviso(a) {
-  if (a.kind === 'comentario') return `${a.actor_name} comentó en ${a.find_name}: «${a.texto}»`;
-  if (a.kind === 'reencuentro') return `${a.actor_name} volvió a ver ${a.find_name}`;
+  const k = a.kind;
+  if (k === 'comentario') return `${a.actor_name} comentó en ${a.find_name}: «${a.texto}»`;
+  if (k === 'reencuentro') return `${a.actor_name} volvió a ver ${a.find_name}`;
+  if (k === 'seguidor') return `${a.actor_name} empezó a seguirte`;
+  if (k === 'nuevo_miembro') return `Nueva persona en la comunidad: ${a.actor_name}`;
+  if (k === 'buzon') return `${a.actor_name} escribió al buzón: «${a.texto}»`;
+  if (k === 'reporte') return `Aviso a moderación: ${a.find_name || 'un hallazgo'}`;
+  if (k === 'uso') { const [rec, , pct] = String(a.texto || '').split(':'); return `Uso del plan: ${RECURSOS[rec] || rec} al ${pct} %`; }
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
   return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
 }
 function iconoAviso(a) {
-  if (a.kind === 'comentario') return 'message-circle';
-  if (a.kind === 'reencuentro') return 'repeat';
+  const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge' };
+  if (fijo[a.kind]) return fijo[a.kind];
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
 }
+const nivelAviso = (a) => (a.kind === 'uso' && /:80:/.test(a.texto || '') ? 'rojo' : a.kind === 'uso' ? 'amarillo' : '');
+// Qué abre cada aviso: la ficha, un perfil o una pestaña del escudo
+function destinoAviso(a) {
+  if (['seguidor', 'nuevo_miembro'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (a.kind === 'buzon') return 'data-kind="admin" data-id="buzon"';
+  if (a.kind === 'reporte') return 'data-kind="admin" data-id="avisos"';
+  if (a.kind === 'uso') return 'data-kind="admin" data-id="uso"';
+  return `data-kind="ficha" data-id="${a.find_id}"`;
+}
+function caraAviso(a) {
+  return a.actor_id ? avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })
+    : `<span class="avatar ${nivelAviso(a)}" style="background:var(--tinta)">${ic('shield')}</span>`;
+}
+const marcaAdmin = (a) => (a.admin ? `<span class="marca-admin" aria-label="Administración">${ic('shield')}</span>` : '');
 function pintarCampana() {
   const n = S.avisos.filter((a) => a.nuevo).length;
   $$('[data-campana]').forEach((b) => {
@@ -1709,10 +1805,10 @@ function pintarCampana() {
   });
 }
 let tNotif;
-function notificar(html, act, id) {
+function notificar(html, act, attrs) {
   let el = $('#notif');
   if (!el) { el = document.createElement('div'); el.id = 'notif'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
-  el.innerHTML = `<button class="notif-cuerpo row" data-act="${act}" data-id="${esc(id || '')}">${html}</button>${ib('cerrar_notif', 'x', 'cerrar', '', 'sm ghost')}`;
+  el.innerHTML = `<button class="notif-cuerpo row" data-act="${act}" ${attrs || ''}>${html}</button>${ib('cerrar_notif', 'x', 'cerrar', '', 'sm ghost')}`;
   el.classList.add('show');
   clearTimeout(tNotif); tNotif = setTimeout(() => el.classList.remove('show'), C.AVISO_MS);
 }
@@ -1729,16 +1825,16 @@ async function revisarAvisos() {
   if (!nuevos.length) return;
   if (primera && nuevos.length > 1) return notificar(`${ic('bell')}<span class="grow">${esc(C.AVISOS_NUEVOS.replace('{n}', nuevos.length))}</span>`, 'avisos');
   const a = nuevos[0];
-  notificar(`${avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })}<span class="grow">${ic(iconoAviso(a))} ${esc(textoAviso(a))}${nuevos.length > 1 ? ` <b>+${nuevos.length - 1}</b>` : ''}</span>
-    ${a.thumb ? `<img class="notif-img" src="${api.photoUrl(a.thumb)}" alt="">` : ''}`, nuevos.length > 1 ? 'avisos' : 'aviso_abrir', a.find_id);
+  notificar(`${caraAviso(a)}<span class="grow">${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}${nuevos.length > 1 ? ` <b>+${nuevos.length - 1}</b>` : ''}</span>
+    ${a.thumb && a.find_id ? `<img class="notif-img" src="${api.photoUrl(a.thumb)}" alt="">` : ''}`, nuevos.length > 1 ? 'avisos' : 'aviso_abrir', nuevos.length > 1 ? '' : destinoAviso(a));
 }
 function hojaAvisos() {
   cerrarNotif();
   const D = { lista: S.avisos.slice() };
   const render = () => `${cabeza(`${ic('bell')} ${esc(C.AYUDA.avisos)}`)}
-    ${D.lista.length ? `<div class="list">${D.lista.map((a) => `<button class="li aviso ${a.nuevo ? 'nuevo' : ''}" data-act="aviso_abrir" data-id="${a.find_id}" style="text-align:left">
-      ${avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })}<div class="grow"><div>${ic(iconoAviso(a))} ${esc(textoAviso(a))}</div><div class="tiny">${esc(hace(a.at))}</div></div>
-      ${a.thumb ? `<img class="thumb" src="${api.photoUrl(a.thumb)}" alt="">` : ''}</button>`).join('')}</div>`
+    ${D.lista.length ? `<div class="list">${D.lista.map((a) => `<button class="li aviso ${a.nuevo ? 'nuevo' : ''} ${a.admin ? 'de-admin' : ''}" data-act="aviso_abrir" ${destinoAviso(a)} style="text-align:left">
+      ${caraAviso(a)}<div class="grow"><div>${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}</div><div class="tiny">${esc(hace(a.at))}</div></div>
+      ${a.thumb && a.find_id ? `<img class="thumb" src="${api.photoUrl(a.thumb)}" alt="">` : ''}</button>`).join('')}</div>`
       : `<div class="empty">${ic('bell')}<p>${esc(C.AVISOS_VACIO)}</p></div>`}`;
   abrirHoja(render, null, 'avisos');
   api.avisosVistos().then(() => { S.avisos = S.avisos.map((a) => Object.assign({}, a, { nuevo: false })); pintarCampana(); }).catch(() => null);
@@ -1753,14 +1849,34 @@ function vigilarAvisos() {
 document.addEventListener('visibilitychange', () => { if (!document.hidden) revisarAvisos(); });
 
 /* Moderación: avisos de contenido y buzón */
-function hojaAdmin() {
-  const D = { vista: 'avisos', avisos: null, bloqueados: [], peticiones: null };
+const tamano = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(2)} GB` : `${Math.round(b / 1048576)} MB`);
+const pctUso = (r) => Math.round(100 * r.usado / Math.max(1, r.limite));
+const nivelUso = (p) => (p >= 80 ? 'rojo' : p >= 60 ? 'amarillo' : '');
+function usoHTML(u) {
+  if (!u) return `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  const rs = u.recursos || [], peor = Math.max(0, ...rs.map(pctUso));
+  return `${rs.map((r) => { const p = pctUso(r); return `<div class="medidor">
+      <div class="row between"><b>${esc(RECURSOS[r.recurso] || r.recurso)}</b><span class="tiny">${tamano(r.usado)} de ${tamano(r.limite)} · <b>${p} %</b></span></div>
+      <div class="barra ${nivelUso(p)}"><div style="width:${Math.min(100, p)}%"></div></div></div>`; }).join('')}
+    ${nivelUso(peor) ? `<div class="banner uso ${nivelUso(peor)}">${ic('alert-triangle')}<span>${esc(peor >= 80 ? C.USO_ROJO : C.USO_AMARILLO)}</span></div>` : ''}
+    <div class="stats" style="margin-top:14px">
+      <div class="stat">${ic('photo')}<div class="v">${u.fotos_n}</div><div class="lbl">fotos</div></div>
+      <div class="stat">${ic('users')}<div class="v">${u.personas}</div><div class="lbl">personas · +${u.personas_semana} esta semana</div></div>
+      <div class="stat">${ic('activity')}<div class="v">${u.activas_semana}</div><div class="lbl">activas esta semana</div></div>
+      <div class="stat">${ic('camera')}<div class="v">${u.hallazgos_semana}</div><div class="lbl">hallazgos esta semana</div></div>
+      <div class="stat">${ic('repeat')}<div class="v">${u.reencuentros_semana}</div><div class="lbl">reencuentros esta semana</div></div>
+      <div class="stat">${ic('cards')}<div class="v">${u.hallazgos}</div><div class="lbl">hallazgos en total</div></div></div>
+    <p class="tiny" style="margin-top:12px">${esc(C.USO_TRANSFERENCIA)}</p>`;
+}
+function hojaAdmin(vista) {
+  const D = { vista: vista || 'avisos', avisos: null, bloqueados: [], peticiones: null, uso: null };
   const pendientes = () => (D.peticiones || []).filter((r) => r.status === 'recibido').length;
   const hoja = { render: () => `${cabeza(ic('shield'))}
     <div class="toggle" style="margin-bottom:14px">
       <button type="button" data-act="admin_vista" data-v="avisos" class="${D.vista === 'avisos' ? 'on' : ''}" aria-label="Avisos">${ic('flag')}<span style="font-size:15px">${D.avisos ? D.avisos.length : ''}</span></button>
-      <button type="button" data-act="admin_vista" data-v="buzon" class="${D.vista === 'buzon' ? 'on' : ''}" aria-label="${esc(C.AYUDA.buzon)}">${ic('mail')}<span style="font-size:15px">${pendientes() || ''}</span></button></div>
-    ${D.vista === 'buzon' ? (D.peticiones === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+      <button type="button" data-act="admin_vista" data-v="buzon" class="${D.vista === 'buzon' ? 'on' : ''}" aria-label="${esc(C.AYUDA.buzon)}">${ic('mail')}<span style="font-size:15px">${pendientes() || ''}</span></button>
+      <button type="button" data-act="admin_vista" data-v="uso" class="${D.vista === 'uso' ? 'on' : ''}" aria-label="${esc(C.AYUDA.uso)}" data-tip="${esc(C.AYUDA.uso)}">${ic('gauge')}</button></div>
+    ${D.vista === 'uso' ? usoHTML(D.uso) : D.vista === 'buzon' ? (D.peticiones === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
       : D.peticiones.length ? `<div class="list">${D.peticiones.map((r) => peticionHTML(r, true)).join('')}</div>` : `<div class="empty">${ic('mail')}<p>Sin mensajes</p></div>`) : `
     <div class="sec" style="margin-top:0"><h3>${ic('flag')} ${D.avisos ? D.avisos.length : ''}</h3>
     ${!D.avisos ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.avisos.length ? `<div class="list">${D.avisos.map((a) => a.card ? `
@@ -1771,6 +1887,7 @@ function hojaAdmin() {
     <div class="sec"><h3>${ic('ban')} ${D.bloqueados.length}</h3><div class="list">${D.bloqueados.map((p) => `
       <div class="li">${avatar(p)}<b class="grow">${esc(p.name)}</b>${ib('desbloquear', 'lock-open', 'desbloquear', `data-id="${p.id}"`, 'sm')}</div>`).join('')}</div></div>`}`,
     after: (r) => { r._admin = D; }, tipo: 'admin' };
+  hoja.datos = D;
   pila.push(hoja); dibujarHoja();
   D.cargar = async () => {
     try {
@@ -1782,6 +1899,7 @@ function hojaAdmin() {
       D.bloqueados = await api.blockedList();
     } catch (e) { D.avisos = []; fallo(e); }
     try { D.peticiones = await api.allRequests(); } catch (e) { D.peticiones = []; fallo(e); }
+    try { D.uso = await api.usoPlan(); } catch (e) { D.uso = { recursos: [] }; fallo(e); }
     if (pila.includes(hoja)) dibujarHoja();
   };
   D.cargar();
@@ -1883,15 +2001,8 @@ const ACCIONES = {
     try { await api.react(c.id, tipo, !mia, S.user.id); }
     catch (e) { guarda([c]); refrescarFicha(c.id); fallo(e); }
   },
-  ruta(b) {
-    const c = S.cache.get(b.dataset.id); if (!c) return;
-    window.open(`https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}`, '_blank', 'noopener');
-  },
-  ver_mapa(b) {
-    const c = S.cache.get(b.dataset.id); if (!c) return;
-    cerrarTodo(); irA('map');
-    setTimeout(() => S.map.setView([c.lat, c.lng], 18), 60);
-  },
+  ir_al_punto(b) { const c = S.cache.get(b.dataset.id); if (c) irAlPunto(c); },
+  cerrar_guia: () => terminarGuia(),
   whatsapp: (b) => { const c = S.cache.get(b.dataset.id); if (c) compartirHallazgo(c, b); },
   whatsapp_perfil(b) {
     const M = MOSAICOS.get(b.dataset.id);
@@ -2099,7 +2210,15 @@ const ACCIONES = {
 
   /* avisos */
   avisos: () => hojaAvisos(),
-  aviso_abrir(b) { cerrarNotif(); const id = b.dataset.id; if (!id) return hojaAvisos(); S.cache.delete(id); abrirFicha(id); },
+  aviso_abrir(b) {
+    cerrarNotif();
+    const id = b.dataset.id, k = b.dataset.kind;
+    if (!id) return hojaAvisos();
+    if (k === 'perfil') return abrirPerfil(id);
+    if (k === 'admin') { if (!S.me.is_admin) return; const adm = adminAbierto(); if (adm) { while (hojaArriba() !== adm) pila.pop(); adm.datos.vista = id; dibujarHoja(); return; } return hojaAdmin(id); }
+    S.cache.delete(id); abrirFicha(id);
+  },
+  admin_uso: () => hojaAdmin('uso'),
   cerrar_notif: () => cerrarNotif(),
   tabla_metrica(b) { const D = $('.sheet')._tabla; D.metric = b.dataset.v; D.cargar(); },
   async salir() { if (await confirmar('¿Cerrar sesión?', 'logout')) { await api.logout().catch(() => null); location.hash = ''; location.reload(); } },
@@ -2169,6 +2288,7 @@ async function arrancar(user) {
     S.cats = cats; S.groups = groups; S.following = new Set(following);
     S.mutes = await api.muteList().catch(() => []);
     vigilarAvisos();
+    cuandoDesocupado(protegerFotosAntiguas);
     if (!S.cats.length) return pedirCategorias();
     pintarApp(); rutaHash();
   } catch (e) { fallo(e); S.user = null; pantallaEntrada(); }
@@ -2209,6 +2329,6 @@ async function iniciar() {
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
-window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio };
+window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas };
 iniciar();
 })();

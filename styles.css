@@ -90,10 +90,14 @@ h1{font-size:28px} h2{font-size:22px} h3{font-size:18px}
 .avatar{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:var(--papel);border:var(--borde);flex:none;font-size:18px}
 .avatar.lg{width:76px;height:76px;font-size:38px;box-shadow:var(--sombra)}
 .catb{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;color:var(--papel);font-size:13px;font-weight:600;border:1px solid var(--tinta)}
-.reacts{display:flex;gap:6px}
-.react{display:inline-flex;align-items:center;gap:4px;height:36px;padding:0 10px;border-radius:18px;border:1.5px solid var(--tinta);background:var(--papel);font-size:15px}
+.reacts{display:flex;gap:5px;align-items:stretch}
+.react{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-height:38px;padding:0 9px;border-radius:19px;
+  border:1.5px solid var(--tinta);background:var(--papel);font-size:16px;flex:none;padding:0 8px}
+/* solo "Yo también lo vi" lleva su nombre a la vista */
+.react.con-texto{flex:1 1 auto;min-width:0;padding:0 8px}
+.react-lbl{font-size:12px;line-height:1.1;min-width:0;max-width:5.6em}
 .react.on{background:var(--mostaza)}
-.react .n{min-width:.6em}
+.react .n{min-width:.5em;font-size:14px}
 .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 .tile{position:relative;aspect-ratio:1/1;border-radius:12px;border:var(--borde);background:var(--papel2);overflow:hidden;cursor:pointer;box-shadow:2px 2px 0 var(--tinta)}
 .tile img{width:100%;height:100%;object-fit:contain;display:block}
@@ -287,3 +291,25 @@ label.ib{cursor:pointer}
 .li.aviso.nuevo{background:#F6E3B4}
 @media (prefers-reduced-motion:reduce){#notif{transition:none}.invita.pulso{animation:none}}
 .catb-btn{display:inline-flex;flex:none}
+
+/* 1.5 · medidor de uso y avisos de administración */
+.medidor{display:flex;flex-direction:column;gap:6px;margin-bottom:14px}
+.barra{height:14px;border:var(--borde);border-radius:7px;overflow:hidden;background:var(--papel2)}
+.barra>div{height:100%;background:var(--oliva)}
+.barra.amarillo>div{background:var(--mostaza)}
+.barra.rojo>div{background:var(--terracota)}
+.banner.uso{background:var(--papel3);font-size:14px}
+.banner.uso.amarillo{background:#F6E3B4}
+.banner.uso.rojo{background:var(--terracota);color:var(--papel)}
+.marca-admin{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--tinta);color:var(--papel);font-size:12px;margin-right:4px;vertical-align:-.3em}
+.li.aviso.de-admin{border-style:dashed}
+.stat .lbl{font-size:12px;line-height:1.2}
+
+/* 1.5.1 · Ir al punto (guía dentro de la app) */
+.guia-punto{position:absolute;left:10px;right:66px;bottom:calc(var(--nav) + var(--safe-b) + 16px);z-index:450;display:flex;align-items:center;gap:6px;
+  padding:8px;border:var(--borde);border-radius:var(--r);background:var(--papel3);box-shadow:var(--sombra)}
+.guia-nombre{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.guia-dist{display:flex;align-items:center;gap:4px;font-size:15px;color:var(--terracota);font-weight:600}
+.pin.destino{animation:destino 1.6s ease-in-out infinite}
+@keyframes destino{0%,100%{box-shadow:2px 2px 0 var(--tinta),0 0 0 0 rgba(196,83,47,.55)}50%{box-shadow:2px 2px 0 var(--tinta),0 0 0 12px rgba(196,83,47,0)}}
+@media (prefers-reduced-motion:reduce){.pin.destino{animation:none}}
