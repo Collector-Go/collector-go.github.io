@@ -225,7 +225,7 @@ textarea.in{min-height:70px;resize:vertical}
 .celebra-card h2{margin-top:4px}
 .celebra-card p{margin:4px 0 0;color:var(--tinta2)}
 .pin.cae{animation:cae .7s cubic-bezier(.3,1.5,.5,1) both}
-.unlock{position:relative;overflow:hidden}
+.unlock{position:relative;overflow:hidden;overflow:clip}
 .unlock-t{font-size:30px;margin:0 0 12px;animation:pop .5s cubic-bezier(.2,1.6,.4,1)}
 .burst{position:absolute;left:50%;top:40%;width:340px;height:340px;margin:-170px 0 0 -170px;border-radius:50%;pointer-events:none;
   background:radial-gradient(circle,rgba(217,162,27,.55) 0%,rgba(217,162,27,0) 65%);animation:brilla 1.4s ease-out both}
@@ -326,3 +326,35 @@ label.ib{cursor:pointer}
   padding:6px 6px 6px 12px;border:var(--borde);border-radius:var(--r);background:var(--mostaza);box-shadow:var(--sombra);font-weight:600}
 .pasos-instalar{list-style:none;padding:0;margin:0 0 14px;display:flex;flex-direction:column;gap:12px}
 .pasos-instalar li{display:flex;gap:10px;align-items:flex-start}
+
+/* 1.7 · premios en el pin */
+.pinw{position:relative;width:36px;height:36px}
+.pin.aro{box-shadow:0 0 0 4px #FFC21A,0 0 0 6px var(--tinta)}
+.pinw .brillo{position:absolute;right:-11px;top:-9px;line-height:0;pointer-events:none}
+.pinw .premio{position:absolute;left:50%;bottom:33px;transform:translateX(-50%);line-height:0;pointer-events:none}
+.pinw.con-aro .premio{bottom:39px}
+.pinw .destellos{position:absolute;left:50%;bottom:44px;width:66px;margin-left:-33px;height:20px;pointer-events:none}
+.pinw .destellos i{position:absolute;line-height:0}
+.pinw .destellos i:first-child{right:0;top:-6px}
+.pinw .destellos i:last-child{left:2px;top:6px}
+.pin-muestra{display:flex;justify-content:center;padding:48px 0 22px;transform:scale(1.7);transform-origin:center 70%;margin:10px 0 16px}
+.premio-nuevo{border:var(--borde);border-radius:var(--r);background:var(--papel3);padding:12px;margin-top:14px;text-align:center}
+.premio-nuevo p{margin:6px 0}
+.premio-colores{justify-content:center}
+.medal .m{position:relative}
+.medal .regalo{position:absolute;right:-7px;top:-7px;width:20px;height:20px;border-radius:50%;background:#FFC21A;color:var(--tinta);
+  border:1.5px solid var(--tinta);display:grid;place-items:center;font-size:12px}
+.banner.coleccion-nueva{margin-top:12px;background:#FFE7A3}
+
+/* 1.7 · buzón entre amigas */
+.li.conv.nuevo{background:#F6E3B4}
+.conv-ultimo{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge-n.fijo{position:static;display:inline-block}
+.li.aviso{flex-wrap:wrap}
+.btn.sm{min-height:36px;padding:0 12px;font-size:14px;box-shadow:2px 2px 0 var(--tinta)}
+.chat{display:flex;flex-direction:column;gap:8px;max-height:52vh;overflow-y:auto;padding:4px 2px}
+.burbuja{max-width:80%;align-self:flex-start;background:var(--papel3);border:var(--borde);border-radius:14px 14px 14px 4px;padding:8px 10px}
+.burbuja.mia{align-self:flex-end;background:#F6E3B4;border-radius:14px 14px 4px 14px}
+.burbuja p{margin:0 0 2px;white-space:pre-wrap;overflow-wrap:anywhere}
+.chat-escribir{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.li.etiqueta-op.on{background:#F6E3B4}

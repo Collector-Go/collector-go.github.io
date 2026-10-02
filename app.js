@@ -1,5 +1,5 @@
 /* =====================================================================
-   Collector Go · app.js · v1.6
+   Collector Go · app.js · v1.7
    Estructura (para parches rápidos):
      1. Utilidades            6. Pantallas (muro, colección, perfil)
      2. Capa de datos (api)   7. Hojas (ficha, registrar, editar, grupos…)
@@ -83,7 +83,10 @@ function uuid() {
 const errTexto = (e) => String((e && (e.message || e.code)) || e || '');
 function mensajeError(e) {
   const m = errTexto(e);
-  if (m.includes('MAX_CATEGORIAS')) return `Máximo ${C.MAX_CATEGORIAS} categorías`;
+  if (m.includes('MAX_CATEGORIAS')) return `Máximo ${limiteCategorias()} categorías`;
+  if (m.includes('MAX_ETIQUETAS')) return `Máximo ${C.ETIQUETAS_MAX} personas por hallazgo`;
+  if (m.includes('messages_body_check')) return `Máximo ${C.MENSAJE_MAX} caracteres`;
+  if (m.includes('"messages"')) return C.CHAT_BLOQUEADO;
   if (m.includes('NOMBRE_REPETIDO')) return 'Ese nombre ya existe aquí';
   if (m.includes('MAX_COMENTARIOS')) return `Máximo ${C.COMENTARIOS_POR_PERSONA} comentarios por hallazgo`;
   if (m.includes('comments_body_check')) return `Máximo ${C.COMENTARIO_MAX} caracteres`;
@@ -183,6 +186,30 @@ function supabaseApi() {
     avisos: () => sb.rpc('mis_avisos', { lim: 30 }).then(ok).then(firmar),
     avisosVistos: () => sb.rpc('avisos_vistos').then(ok),
     usoPlan: () => sb.rpc('uso_plan').then(ok),
+    colorPremioGrupo: (gid, color) => sb.rpc('color_premio_grupo', { grupo: gid, color }).then(ok),
+    conversaciones: () => sb.rpc('mis_conversaciones').then(ok),
+    async hilo(uid) {
+      const { data: { user } } = await sb.auth.getUser();
+      const yo = user && user.id;
+      const r = ok(await sb.from('messages').select('*')
+        .or(`and(sender.eq.${yo},recipient.eq.${uid}),and(sender.eq.${uid},recipient.eq.${yo})`)
+        .order('created_at', { ascending: false }).limit(100));
+      return (r || []).reverse();
+    },
+    enviarMensaje: (uid, body) => sb.from('messages').insert({ recipient: uid, body }).then(ok),
+    marcarLeidos: (uid) => sb.rpc('marcar_leidos', { con: uid }).then(ok),
+    puedoEscribir: (uid) => sb.rpc('puedo_escribir', { destino: uid }).then(ok),
+    puedoEtiquetar: () => sb.rpc('puedo_etiquetar').then(ok),
+    async misEtiquetas(findId) {
+      const { data: { user } } = await sb.auth.getUser();
+      return ok(await sb.from('tags').select('user_id').eq('find_id', findId).eq('tagger', user && user.id)).map((x) => x.user_id);
+    },
+    etiquetar: (findId, ids) => (ids.length ? sb.from('tags').insert(ids.map((u) => ({ find_id: findId, user_id: u }))).then(ok) : Promise.resolve()),
+    async desetiquetar(findId, ids) {
+      if (!ids.length) return;
+      const { data: { user } } = await sb.auth.getUser();
+      ok(await sb.from('tags').delete().eq('find_id', findId).eq('tagger', user && user.id).in('user_id', ids));
+    },
     marcarVisto: (findId, p) => sb.rpc('marcar_visto', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
     comments: (findId) => sb.from('comment_cards').select('*').eq('find_id', findId).order('created_at').then(ok),
     addComment: (findId, body) => sb.from('comments').insert({ find_id: findId, body }).then(ok),
@@ -305,6 +332,8 @@ function logros(st) {
   if (!st) return L;
   (st.categorias || []).forEach((c) => C.METAS_CATEGORIA.forEach((m) => L.push({
     k: `cat:${c.id}:${m}`, on: c.total >= m, m, v: c.total, icon: okIcon(c.icon), color: okColor(c.color), titulo: c.name, tipo: 'cat', cat: c.id })));
+  (st.premios_grupos || []).forEach((g) => C.METAS_CATEGORIA.forEach((m) => L.push({
+    k: `grupo:${g.id}:${m}`, on: g.total >= m, m, v: g.total, icon: okIcon(g.icon), color: okColor(g.color), titulo: g.name, tipo: 'grupo', grupo: g.id })));
   const nCol = (st.colonias || []).length;
   C.METAS_COLONIAS.forEach((m) => L.push({ k: 'col:' + m, on: nCol >= m, m, v: nCol, icon: 'map-pin', color: C.COLORES.oliva, titulo: C.TITULOS_MEDALLAS.col, tipo: 'col' }));
   C.METAS_RACHA_SEMANAS.forEach((m) => L.push({ k: 'racha:' + m, on: (st.racha_mejor || 0) >= m, m, v: st.racha_mejor || 0, icon: 'flame', color: C.COLORES.terracota, titulo: C.TITULOS_MEDALLAS.racha, tipo: 'racha' }));
@@ -314,20 +343,25 @@ function logros(st) {
 function novedades(antes, despues) {
   const ya = new Set(logros(antes).filter((l) => l.on).map((l) => l.k));
   const nuevos = logros(despues).filter((l) => l.on && !ya.has(l.k));
+  const limA = (antes && antes.limite_categorias) || C.MAX_CATEGORIAS, limD = (despues && despues.limite_categorias) || limA;
+  const colecciones = limD > limA ? limD : null;
   const colAntes = new Set(((antes && antes.colonias) || []).map((c) => c.colonia));
   const colonias = ((despues && despues.colonias) || []).map((c) => c.colonia).filter((c) => !colAntes.has(c));
   const records = [];
   if (antes && despues && despues.mejor_dia && (!antes.mejor_dia || despues.mejor_dia.n > antes.mejor_dia.n) && despues.mejor_dia.n > 1)
     records.push({ icon: 'calendar', texto: `Récord: ${despues.mejor_dia.n} en un día` });
-  return { nuevos, colonias, records };
+  return { nuevos, colonias, records, colecciones };
 }
+const premioDe = (l) => ((l.tipo === 'cat' || l.tipo === 'grupo') ? C.PREMIOS[l.m] : null);
 function textoMedalla(l) {
   const unidad = l.tipo === 'racha' ? ' semanas' : '';
+  const pr = premioDe(l);
+  if (pr) return l.on ? `${l.titulo}: meta de ${l.m} lograda · Premio: ${pr.nombre}` : `${l.titulo}: ${l.v} de ${l.m} · Hay un premio`;
   return l.on ? `${l.titulo}: meta de ${l.m}${unidad} lograda` : `${l.titulo}: ${l.v} de ${l.m}${unidad}`;
 }
 function medalla(l) {
   return `<button class="medal ${l.on ? '' : 'off'}" data-act="medalla" data-info="${esc(textoMedalla(l))}" data-icon="${esc(l.icon)}" aria-label="${esc(textoMedalla(l))}">
-    <span class="m" style="background:${l.color}">${ic(l.icon)}</span><span>${l.m}</span></button>`;
+    <span class="m" style="background:${l.color}">${ic(l.icon)}${premioDe(l) ? `<span class="regalo">${ic('gift')}</span>` : ''}</span><span>${l.m}</span></button>`;
 }
 
 /* ---------------------------------------------------------------------
@@ -529,9 +563,39 @@ function mapaPuntos(el, puntos, color, icono) {
 /* ---------------------------------------------------------------------
    5. MAPA
    --------------------------------------------------------------------- */
+/* Premios en el pin: patito (10), brote (25), aro de oro con brillo (50), corona (100),
+   corona mayor y destellos (250), sombrero vaquero (500). Solo dibujo, sin imágenes. */
+const TINTA = '#2E2A26';
+const colorPremio = (k) => C.COLORES_PREMIO[k] || C.COLORES_PREMIO.oro;
+const trazoPremio = (k) => (k === 'negro' ? '#6B635A' : TINTA);
+function svgPremio(id, k) {
+  const c = colorPremio(k), o = trazoPremio(k);
+  const joya = k === 'negro' ? '#FFC21A' : k === 'oro' ? '#FF5A3C' : '#FFF3B0';
+  if (id === 'patito') return `<svg viewBox="0 0 40 30" width="30" height="23" aria-hidden="true"><ellipse cx="23" cy="20" rx="14" ry="8" fill="#FFD23F" stroke="${TINTA}" stroke-width="2"/><path d="M34 16 L39 9 L37 21 Z" fill="#FFD23F" stroke="${TINTA}" stroke-width="2" stroke-linejoin="round"/><circle cx="13" cy="10" r="7" fill="#FFD23F" stroke="${TINTA}" stroke-width="2"/><path d="M6.5 9 L1 11.5 L6.5 14 Z" fill="#FF8A1F" stroke="${TINTA}" stroke-width="1.5" stroke-linejoin="round"/><circle cx="11" cy="8.5" r="1.4" fill="${TINTA}"/><path d="M18 19 Q23 23.5 29 19" fill="none" stroke="${TINTA}" stroke-width="1.5"/></svg>`;
+  if (id === 'brote') return `<svg viewBox="0 0 40 32" width="28" height="22" aria-hidden="true"><path d="M20 29 V14" stroke="#4E7D2E" stroke-width="3"/><ellipse cx="11" cy="13" rx="9" ry="5" fill="#7DB83A" stroke="${TINTA}" stroke-width="2" transform="rotate(-15 11 13)"/><ellipse cx="29" cy="9" rx="10" ry="5.5" fill="#7DB83A" stroke="${TINTA}" stroke-width="2" transform="rotate(-10 29 9)"/><ellipse cx="20" cy="29" rx="8" ry="2.6" fill="#8A5A44" stroke="${TINTA}" stroke-width="1.5"/></svg>`;
+  if (id === 'corona') return `<svg viewBox="0 0 40 30" width="26" height="20" aria-hidden="true"><path d="M5 26 V10 L13 18 L20 5 L27 18 L35 10 V26 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/><circle cx="5" cy="8" r="3" fill="${c}" stroke="${o}" stroke-width="2"/><circle cx="20" cy="4" r="3" fill="${c}" stroke="${o}" stroke-width="2"/><circle cx="35" cy="8" r="3" fill="${c}" stroke="${o}" stroke-width="2"/></svg>`;
+  if (id === 'corona2') return `<svg viewBox="0 0 56 40" width="38" height="27" aria-hidden="true"><path d="M5 30 V9 L14 21 L21 5 L28 19 L35 5 L42 21 L51 9 V30 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/><rect x="5" y="28" width="46" height="9" fill="${c}" stroke="${o}" stroke-width="2.5"/><circle cx="17" cy="32.5" r="2.6" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="28" cy="32.5" r="3.6" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="39" cy="32.5" r="2.6" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="5" cy="8" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="21" cy="4" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="35" cy="4" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="51" cy="8" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/></svg>`;
+  if (id === 'sombrero') return `<svg viewBox="0 0 70 34" width="44" height="22" aria-hidden="true"><path d="M20 24 L18 8 Q24 2 30 6 Q35 9 40 6 Q46 2 52 8 L50 24 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/><path d="M19 18 H51" stroke="${k === 'negro' ? '#F3EBDD' : TINTA}" stroke-width="3"/><path d="M2 14 Q8 26 35 27 Q62 26 68 14 Q66 30 35 32 Q4 30 2 14 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/></svg>`;
+  return '';
+}
+const DESTELLO = (t) => `<svg viewBox="0 0 20 20" width="${t}" height="${t}" aria-hidden="true"><path d="M10 0 L12.5 7.5 L20 10 L12.5 12.5 L10 20 L7.5 12.5 L0 10 L7.5 7.5 Z" fill="#FFFFFF" stroke="${TINTA}" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
+const BRILLO = `<svg viewBox="0 0 20 20" width="11" height="11" aria-hidden="true"><path d="M10 0 L12.5 7.5 L20 10 L12.5 12.5 L10 20 L7.5 12.5 L0 10 L7.5 7.5 Z" fill="#FFD84D" stroke="${TINTA}" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
+function nivelPremio(n) { return [500, 250, 100, 50, 25, 10].find((m) => n >= m) || 0; }
+// HTML del pin con su premio (también se usa grande en las celebraciones)
+function pinHTML(color, icono, nivel, colorK, pinCls) {
+  const n = nivelPremio(nivel || 0);
+  const arriba = n >= 500 ? 'sombrero' : n >= 250 ? 'corona2' : n >= 100 ? 'corona' : n >= 50 ? '' : n >= 25 ? 'brote' : n >= 10 ? 'patito' : '';
+  return `<div class="pinw ${n >= 50 ? 'con-aro' : ''}">
+    <div class="pin ${n >= 50 ? 'aro' : ''} ${pinCls || ''}" style="background:${okColor(color)}">${ic(icono)}</div>
+    ${n >= 50 ? `<span class="brillo">${BRILLO}</span>` : ''}
+    ${arriba ? `<span class="premio p-${arriba}">${svgPremio(arriba, colorK)}</span>` : ''}
+    ${n >= 250 ? `<span class="destellos"><i>${DESTELLO(14)}</i><i>${DESTELLO(9)}</i></span>` : ''}</div>`;
+}
 function pinIcono(c) {
+  const n = c.premio_nivel || 0;
+  const base = `<div class="pin ${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>`;
   return L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36],
-    html: `<div class="pin ${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` });
+    html: n >= 10 ? pinHTML(c.cat_color, c.cat_icon, n, c.premio_color, `${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}`) : base });
 }
 function crearMapa() {
   document.documentElement.style.setProperty('--map-filter', C.MAPA_FILTRO);
@@ -693,7 +757,7 @@ function pintarApp() {
   $('#app').innerHTML = `
     <section id="scr-map" class="screen map-screen">
       <div id="map"></div>
-      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'bell', 'avisos', 'data-campana', 'sm')}${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
+      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
       <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
       <div id="guia-punto" class="guia-punto" hidden></div>
       <div id="instalar-franja" class="instalar-franja" hidden><button class="row grow" data-act="instalar" style="text-align:left">${ic('device-mobile')}<span class="grow">${esc(C.INSTALAR_FRANJA)}</span></button>${ib('instalar_no', 'x', 'cerrar', '', 'sm ghost')}</div>
@@ -761,7 +825,7 @@ async function pintarMuro(masViejo) {
   const scr = $('#scr');
   if (!masViejo) {
     scr.innerHTML = `<div class="row between" style="margin-bottom:10px"><h1 class="serif">Collector Go</h1>
-      <div class="row">${ib('avisos', 'bell', 'avisos', 'data-campana')}${ib('tabla', 'trophy', 'tabla')}${ib('refrescar', 'refresh', 'Actualizar')}</div></div>
+      <div class="row">${ib('avisos', 'mail-heart', 'avisos', 'data-campana')}${ib('tabla', 'trophy', 'tabla')}${ib('refrescar', 'refresh', 'Actualizar')}</div></div>
       <div class="chips" id="chips-muro" style="margin-bottom:12px">${chipsFiltro(S.muro, 'muro_filtro', false)}</div>
       <div class="feed" id="feed"><div class="empty"><span class="spin">${ic('loader-2')}</span></div></div>`;
     S.feed = []; S.feedFin = false;
@@ -839,6 +903,7 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
       ${propio ? ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`) : ''}
       ${ib('tabla', 'trophy', 'tabla')}
       ${!propio && o.comparte === false ? (silencio ? ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${silencio.id}"`, 'on') : ib('silenciar', 'volume-off', 'silenciar', `data-user="${p.id}"`)) : ''}
+      ${!propio && o.puedeChat ? ib('chat', 'messages', 'mensaje', `data-id="${p.id}"`, 'on') : ''}
       ${propio ? ib('silenciados', 'volume-off', 'silenciados') + ib('buzon', 'mail', 'buzon') + (tipoInstalacion() ? ib('instalar', 'device-mobile', 'instalar') : '') : ''}
       ${propio && S.me.is_admin ? ib('admin', 'shield', 'admin') : ''}
       ${!propio && S.me.is_admin && !p.is_admin ? ib(p.blocked ? 'desbloquear' : 'bloquear', p.blocked ? 'lock-open' : 'ban', p.blocked ? 'desbloquear' : 'bloquear', `data-id="${p.id}"`) : ''}
@@ -853,6 +918,9 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
       <div class="stat" data-tip="Reacciones recibidas">${ic('heart')}<div class="v">${st.reacciones || 0}</div><div class="lbl">reacciones</div></div>
     </div>
     <div class="sec"><h3>${ic('medal')} Medallas por categoría</h3><div class="list">${porCat || '<div class="muted">—</div>'}</div></div>
+    ${(st.premios_grupos || []).length ? `<div class="sec"><h3>${ic('users')} Medallas en grupos</h3><div class="list">${(st.premios_grupos || []).map((g) => `<div class="li" style="flex-direction:column;align-items:stretch">
+      <div class="row between">${catBadge(g.name, g.icon, g.color)}<span class="muted">${g.total} ${g.total === 1 ? 'hallazgo' : 'hallazgos'}</span></div>
+      <div class="medals">${ls.filter((l) => l.tipo === 'grupo' && l.grupo === g.id).map(medalla).join('')}</div></div>`).join('')}</div></div>` : ''}
     <div class="sec"><h3>${ic('map-pin')} ${esc(C.TITULOS_MEDALLAS.col)}</h3><div class="medals">${grupo('col')}</div>
       <div class="chips" style="flex-wrap:wrap;margin-top:10px">${(st.colonias || []).map((c) => `<span class="chip" data-tip="${esc(fecha(c.first_at))}">${esc(c.colonia)} · ${c.n}</span>`).join('')}</div></div>
     <div class="sec"><h3>${ic('flame')} ${esc(C.TITULOS_MEDALLAS.racha)}</h3><div class="medals">${grupo('racha')}</div></div>
@@ -881,13 +949,14 @@ async function avisoUsoPerfil() {
 async function abrirPerfil(uid) {
   if (uid === S.user.id) { cerrarTodo(); irA('perfil'); return; }
   const datos = { p: null, st: null, cards: null };
-  abrirHoja(() => datos.p ? cabeza('') + perfilHTML(datos.p, datos.st, false, datos.cards, { comparte: datos.comparte }) : cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`,
+  abrirHoja(() => datos.p ? cabeza('') + perfilHTML(datos.p, datos.st, false, datos.cards, { comparte: datos.comparte, puedeChat: datos.puedeChat }) : cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`,
     (r) => { r._perfil = datos; }, 'perfil');
   datos.cargar = async () => {
     try {
-      const [p, st, cards, comparte] = await Promise.all([api.getProfile(uid), api.stats(uid), api.userCards(uid), api.comparteGrupo(uid).catch(() => null)]);
+      const [p, st, cards, comparte, puedeChat] = await Promise.all([api.getProfile(uid), api.stats(uid), api.userCards(uid),
+        api.comparteGrupo(uid).catch(() => null), api.puedoEscribir(uid).catch(() => false)]);
       if (!p) { cerrarHoja(); return aviso('Perfil no disponible', 'alert-triangle'); }
-      Object.assign(datos, { p, st, cards: guarda(cards), comparte }); if (hojaArriba() && hojaArriba().tipo === 'perfil') dibujarHoja();
+      Object.assign(datos, { p, st, cards: guarda(cards), comparte, puedeChat }); if (hojaArriba() && hojaArriba().tipo === 'perfil') dibujarHoja();
     } catch (e) { fallo(e); }
   };
   datos.cargar();
@@ -1017,6 +1086,7 @@ function fichaHTML(c, H) {
       ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'on')}
       ${propio && !c.is_private ? ib('whatsapp', 'brand-whatsapp', 'whatsapp', `data-id="${c.id}"`) : ''}
       ${puedoReencontrar(c) ? ib('reencuentro', 'repeat', 'reencuentro', `data-id="${c.id}"`) : ''}
+      ${!c.is_private ? ib('etiquetar', 'tag', 'etiquetar', `data-id="${c.id}"`) : ''}
       ${propio ? ib('editar_hallazgo', 'pencil', 'editar', `data-id="${c.id}"`) : ''}
       <span class="grow"></span>
       ${!propio ? ib('avisar', 'flag', 'avisar', `data-id="${c.id}"`) : ''}
@@ -1048,7 +1118,7 @@ function nuevoRegistro(destino) {
   const destIni = S.filtro.modo === 'grupo' && S.tab === 'map' ? 'g:' + S.filtro.id
     : (S.coleccionCat ? 'c:' + S.coleccionCat : (S.cats[0] ? 'c:' + S.cats[0].id : null));
   Object.assign(R, { original: null, recorte: null, usarRecorte: false, sinFoto: false, pos: null, gps: 'buscando', vistaUrl: null,
-    candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false });
+    candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false, etiquetas: [], etiquetasNombres: [] });
   abrirHoja(registroHTML, montarRegistro, 'registro');
   leerGPS();
 }
@@ -1077,6 +1147,8 @@ function registroHTML() {
     <div class="field"><label for="f-nota">${ic('info-circle')} Nota</label><textarea id="f-nota" class="in" maxlength="140" placeholder="Duerme sobre el puesto de periódicos">${esc(R.nota)}</textarea></div>
     ${R.destino ? '' : `<div class="field" id="campo-priv" ${esGrupo ? 'hidden' : ''}><label>${ic('eye')}</label>
       <div class="toggle" data-pick="priv"><button type="button" data-act="elegir" data-v="0" class="${R.priv ? '' : 'on'}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button><button type="button" data-act="elegir" data-v="1" class="${R.priv ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div></div>`}
+    ${R.destino ? '' : `<div class="field" id="campo-etiquetas" ${R.priv ? 'hidden' : ''}><label>${ic('tag')} ${esc(C.AYUDA.etiquetar)}</label>
+      <button type="button" class="btn alt" data-act="etiquetar_registro" style="justify-content:flex-start">${ic('tag')} ${R.etiquetas.length ? esc(R.etiquetasNombres.join(', ') || R.etiquetas.length + ' personas') : 'Elegir personas'}</button></div>`}
     <div class="field"><label class="row between"><span class="row">${ic('map-pin')} <span id="gps-estado">${gpsTexto()}</span></span>${ib('releer_gps', 'current-location', 'gps', '', 'sm')}</label>
       <div class="minimap" id="mini-reg"></div></div>
     <div id="candidatos"></div>
@@ -1243,6 +1315,7 @@ async function guardarHallazgo(btn) {
       nuevoId = await api.addFind({ category_id: cat, group_id: grupo, name: nombre, note: nota || null, is_private: grupo ? false : R.priv,
         lat: R.pos.lat, lng: R.pos.lng, accuracy: R.pos.acc, colonia, photo: pFoto, thumb: pMini });
     } catch (e) { api.removeFiles([pFoto, pMini]).catch(() => null); throw e; }
+    if (R.etiquetas.length && !(grupo ? false : R.priv)) await api.etiquetar(nuevoId, R.etiquetas).catch((e) => fallo(e));
     const despues = await api.stats(S.user.id);
     S.stats = despues;
     cerrarTodo();
@@ -1310,26 +1383,50 @@ function celebrarHallazgo(d, luego) {
 }
 // Siguiente meta de la misma serie de una medalla
 function siguienteMeta(l) {
-  const serie = { cat: C.METAS_CATEGORIA, col: C.METAS_COLONIAS, racha: C.METAS_RACHA_SEMANAS, reen: C.METAS_REENCUENTROS }[l.tipo] || [];
+  const serie = { cat: C.METAS_CATEGORIA, grupo: C.METAS_CATEGORIA, col: C.METAS_COLONIAS, racha: C.METAS_RACHA_SEMANAS, reen: C.METAS_REENCUENTROS }[l.tipo] || [];
   return serie.find((m) => m > l.m) || null;
 }
 function celebrar(n, textoBase) {
-  const hay = n.nuevos.length || n.colonias.length || n.records.length;
+  const hay = n.nuevos.length || n.colonias.length || n.records.length || n.colecciones;
   if (!hay) { if (textoBase) aviso(textoBase); return; }
   // Si una serie ganó varias metas a la vez, se muestra la más alta
-  const mejores = Object.values(n.nuevos.reduce((a, l) => { const k = l.tipo + (l.cat || ''); if (!a[k] || a[k].m < l.m) a[k] = l; return a; }, {}));
+  const mejores = Object.values(n.nuevos.reduce((a, l) => { const k = l.tipo + (l.cat || l.grupo || ''); if (!a[k] || a[k].m < l.m) a[k] = l; return a; }, {}));
+  const premios = mejores.filter((l) => l.on && nivelPremio(l.m) === l.m && premioDe(l));
   const titulo = n.nuevos.length > 1 ? `¡${n.nuevos.length} nuevas medallas!` : n.nuevos.length ? '¡Nueva medalla!' : '¡Nuevo récord!';
   abrirHoja(() => `${cabeza('')}<div class="unlock">
     <div class="burst" aria-hidden="true"></div>
     <h1 class="serif unlock-t">${titulo}</h1>
     ${n.colonias.map((c) => `<div class="banner" style="margin-bottom:10px;justify-content:center">${ic('map-pin')} Nueva colonia: <b>${esc(c)}</b></div>`).join('')}
     <div class="medals nuevas">${n.nuevos.map(medalla).join('')}</div>
+    ${premios.map((l) => premioNuevoHTML(l)).join('')}
+    ${n.colecciones ? `<div class="banner coleccion-nueva">${ic('cards')}<span>${esc(n.colecciones >= C.COLECCIONES_MAX ? C.COLECCION_MAXIMO : C.COLECCION_NUEVA.replace('{n}', n.colecciones))}</span></div>` : ''}
     ${mejores.map((l) => { const sig = siguienteMeta(l); return `<div class="meta-sig"><div class="row between tiny"><span>${esc(l.titulo)}</span>
       <span>${sig ? `${l.v} / ${sig}` : 'meta máxima'}</span></div><div class="progress"><div style="width:${sig ? Math.min(100, Math.round(l.v / sig * 100)) : 100}%"></div></div></div>`; }).join('')}
     ${n.records.map((r) => `<p class="row" style="justify-content:center">${ic(r.icon)} ${esc(r.texto)}</p>`).join('')}
     <button class="btn block" data-act="cerrar" style="margin-top:18px">${ic('check')}</button></div>`, null, 'logro');
   confeti(160, 2200);
 }
+
+// Bloque de la celebración: el pin con su premio nuevo y, desde la corona, el color a elegir
+function colorPremioActual(tipo, id) {
+  if (tipo === 'cat') { const c = S.cats.find((x) => x.id === id); return (c && c.premio_color) || 'oro'; }
+  const g = ((S.stats && S.stats.premios_grupos) || []).find((x) => x.id === id); return (g && g.premio_color) || 'oro';
+}
+function selectorColorPremio(tipo, id, actual) {
+  return `<div class="swatches premio-colores" role="group" aria-label="${esc(C.AYUDA.color_premio)}">${Object.keys(C.COLORES_PREMIO).map((k) =>
+    `<button type="button" data-act="color_premio" data-tipo="${tipo}" data-id="${id}" data-v="${k}" class="${k === actual ? 'on' : ''}" style="background:${C.COLORES_PREMIO[k]}" aria-label="${esc(C.NOMBRES_PREMIO[k])}" data-tip="${esc(C.NOMBRES_PREMIO[k])}"></button>`).join('')}</div>`;
+}
+function premioNuevoHTML(l) {
+  const pr = premioDe(l), tipo = l.tipo, id = l.cat || l.grupo, k = colorPremioActual(tipo, id);
+  return `<div class="premio-nuevo"><div class="pin-muestra">${pinHTML(l.color, l.icon, l.m, k)}</div>
+    <p><b>${esc(C.PREMIO_GANADO.replace('{titulo}', l.titulo).replace('{premio}', pr.nombre))}</b></p>
+    ${l.m >= 100 ? `<p class="tiny">${esc(C.AYUDA.color_premio)}</p>${selectorColorPremio(tipo, id, k)}` : ''}</div>`;
+}
+const limiteCategorias = () => (S.stats && S.stats.limite_categorias) || C.MAX_CATEGORIAS;
+const nivelDe = (tipo, id) => {
+  const lista = tipo === 'cat' ? ((S.stats && S.stats.categorias) || []) : ((S.stats && S.stats.premios_grupos) || []);
+  const x = lista.find((y) => y.id === id); return x ? x.total : 0;
+};
 
 /* Editar hallazgo (si el nombre ya existe, ofrece juntarlos) */
 function editarHallazgo(id) {
@@ -1456,11 +1553,12 @@ function hojaCategorias(alTerminar) {
       <div class="tiny row wrap"><span class="row">${ic('pencil')} editar</span><span class="row">${ic('trash')} borrar</span><span class="row">${ic('plus')} nueva categoría</span></div></div>
     <div class="list">${S.cats.map((c) => `<div class="li"><span class="avatar" style="background:${okColor(c.color)}">${ic(c.icon)}</span>
       <b class="grow">${esc(c.name)}</b>${ib('editar_categoria', 'pencil', 'editar', `data-id="${c.id}"`, 'sm')}${ib('borrar_categoria', 'trash', 'borrar', `data-id="${c.id}"`, 'sm')}</div>`).join('')}</div>
-    <p class="tiny" style="margin:10px 0">${S.cats.length} / ${C.MAX_CATEGORIAS}</p>
-    ${S.cats.length < C.MAX_CATEGORIAS ? `<button class="btn alt block" data-act="editar_categoria" data-id="" aria-label="${esc(C.AYUDA.nueva_categoria)}" data-tip="${esc(C.AYUDA.nueva_categoria)}">${ic('plus')}</button>` : ''}
+    <p class="tiny" style="margin:10px 0">${S.cats.length} / ${limiteCategorias()}${S.cats.length >= C.COLECCIONES_MAX ? ` · ${esc(C.COLECCION_MAXIMO_CORTO)}` : ''}</p>
+    ${S.cats.length < limiteCategorias() ? `<button class="btn alt block" data-act="editar_categoria" data-id="" aria-label="${esc(C.AYUDA.nueva_categoria)}" data-tip="${esc(C.AYUDA.nueva_categoria)}">${ic('plus')}</button>` : ''}
     ${alTerminar ? `<button class="btn block" data-act="listo_categorias" style="margin-top:12px" ${S.cats.length ? '' : 'disabled'}>${ic('check')} Listo</button>` : ''}`;
   abrirHoja(render, null, 'categorias', !!alTerminar);
-  hojaArriba().listo = alTerminar;
+  const hoja = hojaArriba(); hoja.listo = alTerminar;
+  if (!S.stats && S.user && S.me) api.stats(S.user.id).then((st) => { S.stats = st; if (hojaArriba() === hoja) dibujarHoja(); }).catch(() => null);
 }
 function editarCategoria(id) {
   const c = S.cats.find((x) => x.id === id) || { id: '', name: '', icon: C.ICONOS_GRUPOS[0].iconos[0], color: C.COLORES_CATEGORIA[S.cats.length % C.COLORES_CATEGORIA.length] };
@@ -1468,18 +1566,21 @@ function editarCategoria(id) {
     <div class="field"><label for="c-nombre">${ic('pencil')} Nombre</label><input id="c-nombre" class="in" maxlength="30" value="${esc(c.name)}" placeholder="Gatos, puertas, autos…"></div>
     <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, c.color, 'color')}</div>
     <div class="field"><label>${ic('sparkles')}</label>${iconPicker(c.icon)}</div>
+    ${c.id && nivelDe('cat', c.id) >= 100 ? `<div class="field"><label>${ic('crown')} ${esc(C.AYUDA.color_premio)}</label>
+      <div class="swatches" data-pick="premio">${Object.keys(C.COLORES_PREMIO).map((k) => `<button type="button" data-act="elegir" data-v="${k}" class="${k === (c.premio_color || 'oro') ? 'on' : ''}" style="background:${C.COLORES_PREMIO[k]}" aria-label="${esc(C.NOMBRES_PREMIO[k])}"></button>`).join('')}</div></div>` : ''}
     <button class="btn block" data-act="guardar_categoria" data-id="${c.id}">${ic('check')} Guardar</button>`, null, 'categoria');
 }
 async function guardarCategoria(btn, id) {
   const raiz = $('.sheet');
   const d = { name: $('#c-nombre', raiz).value.trim(), icon: iconoElegido(raiz), color: valor(raiz, 'color') };
+  const pc = valor(raiz, 'premio'); if (pc) d.premio_color = pc;
   if (!d.name) return aviso('Ponle un nombre', 'pencil');
   if (!esIcono(d.icon) || !d.color) return aviso('Elige ícono y color', 'palette');
   ocupado(btn, true);
   try {
     if (id) await api.updateCat(id, d); else await api.addCat(d);
     S.cats = await api.listCats(S.user.id);
-    S.stats = null;
+    S.stats = await api.stats(S.user.id).catch(() => null);
     cerrarHoja(); aviso('Guardado');
     if (!$('#scr-map')) return;
     if (S.tab !== 'map') irA(S.tab); else $('#chips-mapa').innerHTML = chipsFiltro(S.filtro, 'filtro', true);
@@ -1508,6 +1609,7 @@ function abrirGrupo(gid) {
         <span class="grow"></span>
         ${soyMiembro && !soyDuena ? ib('salir_grupo', 'door-exit', 'salir_grupo', `data-id="${g.id}"`) : ''}
       </div>
+      ${soyMiembro && nivelDe('grupo', g.id) >= 100 ? `<div class="field"><label>${ic('crown')} ${esc(C.AYUDA.color_premio)}</label>${selectorColorPremio('grupo', g.id, colorPremioActual('grupo', g.id))}</div>` : ''}
       ${D.miembros ? `<div class="chips" style="flex-wrap:wrap;margin-bottom:14px">${D.miembros.map((m) => `<button class="chip" data-act="perfil" data-id="${m.user_id}">${avatar(m)}${esc(m.name || '')}</button>`).join('')}</div>` : ''}
       ${D.cards === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.cards.length ? rejilla(D.cards, false)
         : `<div class="empty">${ic('camera')}<p>Aún no hay hallazgos en este grupo</p></div>`}`;
@@ -1517,6 +1619,7 @@ function abrirGrupo(gid) {
   D.cargar = async () => {
     try {
       const [g, miembros, cards] = await Promise.all([api.getGroup(gid), api.groupMembers(gid), api.groupCards(gid)]);
+      if (!S.stats) S.stats = await api.stats(S.user.id).catch(() => null);
       if (!g) { if (hojaArriba() === hoja) cerrarHoja(); return aviso('Este grupo ya no está disponible', 'alert-triangle'); }
       Object.assign(D, { g, miembros, cards: guarda(cards) });
     } catch (e) { fallo(e); D.cards = D.cards || []; }
@@ -1863,6 +1966,8 @@ function textoAviso(a) {
   if (k === 'comentario') return `${a.actor_name} comentó en ${a.find_name}: «${a.texto}»`;
   if (k === 'reencuentro') return `${a.actor_name} volvió a ver ${a.find_name}`;
   if (k === 'seguidor') return `${a.actor_name} empezó a seguirte`;
+  if (k === 'etiqueta') return `${a.actor_name} te etiquetó en ${a.find_name}`;
+  if (k === 'mensaje') return `${a.actor_name} te escribió: «${a.texto}»`;
   if (k === 'nuevo_miembro') return `Nueva persona en la comunidad: ${a.actor_name}`;
   if (k === 'buzon') return `${a.actor_name} escribió al buzón: «${a.texto}»`;
   if (k === 'reporte') return `Aviso a moderación: ${a.find_name || 'un hallazgo'}`;
@@ -1871,7 +1976,7 @@ function textoAviso(a) {
   return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
 }
 function iconoAviso(a) {
-  const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge' };
+  const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages' };
   if (fijo[a.kind]) return fijo[a.kind];
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
 }
@@ -1879,6 +1984,7 @@ const nivelAviso = (a) => (a.kind === 'uso' && /:80:/.test(a.texto || '') ? 'roj
 // Qué abre cada aviso: la ficha, un perfil o una pestaña del escudo
 function destinoAviso(a) {
   if (['seguidor', 'nuevo_miembro'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (a.kind === 'mensaje') return `data-kind="chat" data-id="${a.actor_id}"`;
   if (a.kind === 'buzon') return 'data-kind="admin" data-id="buzon"';
   if (a.kind === 'reporte') return 'data-kind="admin" data-id="avisos"';
   if (a.kind === 'uso') return 'data-kind="admin" data-id="uso"';
@@ -1912,28 +2018,126 @@ async function revisarAvisos() {
   let lista;
   try { lista = await api.avisos(); } catch (e) { return; } // sin avisos si falla: no interrumpe
   S.avisos = lista || [];
-  const nuevos = S.avisos.filter((a) => a.nuevo && !S.avisosVistos.has(claveAviso(a)));
+  let nuevos = S.avisos.filter((a) => a.nuevo && !S.avisosVistos.has(claveAviso(a)));
   nuevos.forEach((a) => S.avisosVistos.add(claveAviso(a)));
   const primera = !S.avisosListo; S.avisosListo = true;
   pintarCampana();
   if (!nuevos.length) return;
-  if (primera && nuevos.length > 1) return notificar(`${ic('bell')}<span class="grow">${esc(C.AVISOS_NUEVOS.replace('{n}', nuevos.length))}</span>`, 'avisos');
+  // Si la conversación con esa persona está abierta, el mensaje aparece ahí mismo
+  const top = hojaArriba();
+  if (top && top.tipo === 'chat' && top.datos && nuevos.some((a) => a.kind === 'mensaje' && a.actor_id === top.datos.uid)) top.datos.cargar();
+  const aNotificar = nuevos.filter((a) => !(top && top.tipo === 'chat' && top.datos && a.kind === 'mensaje' && a.actor_id === top.datos.uid));
+  if (!aNotificar.length) return;
+  if (top && top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+  nuevos = aNotificar;
+  if (primera && nuevos.length > 1) return notificar(`${ic('mail-heart')}<span class="grow">${esc(C.AVISOS_NUEVOS.replace('{n}', nuevos.length))}</span>`, 'avisos');
   const a = nuevos[0];
   notificar(`${caraAviso(a)}<span class="grow">${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}${nuevos.length > 1 ? ` <b>+${nuevos.length - 1}</b>` : ''}</span>
     ${a.thumb && a.find_id ? `<img class="notif-img" src="${api.photoUrl(a.thumb)}" alt="">` : ''}`, nuevos.length > 1 ? 'avisos' : 'aviso_abrir', nuevos.length > 1 ? '' : destinoAviso(a));
 }
+// Buzón: una sola lista con las conversaciones (una fila por amiga) y los avisos, de lo más reciente a lo más antiguo.
+// Los avisos desaparecen 12 h después de verlos; las conversaciones se quedan.
+function filaAviso(a) {
+  const seguirVuelta = a.kind === 'seguidor' && !S.following.has(a.actor_id);
+  return `<div class="li aviso ${a.nuevo ? 'nuevo' : ''} ${a.admin ? 'de-admin' : ''}">
+    <button class="row grow" data-act="aviso_abrir" ${destinoAviso(a)} style="text-align:left;min-width:0">
+      ${caraAviso(a)}<div class="grow" style="min-width:0"><div>${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}</div><div class="tiny">${esc(hace(a.at))}</div></div>
+      ${a.thumb && a.find_id ? `<img class="thumb" src="${api.photoUrl(a.thumb)}" alt="">` : ''}</button>
+    ${seguirVuelta ? `<button class="btn sm" data-act="seguir" data-id="${a.actor_id}">${ic('user-plus')} ${esc(C.AYUDA.seguir_vuelta)}</button>` : ''}</div>`;
+}
+function filaConversacion(c) {
+  return `<button class="li conv ${c.sin_leer ? 'nuevo' : ''}" data-act="chat" data-id="${c.persona}" style="text-align:left">
+    ${avatar(c)}<div class="grow" style="min-width:0"><b>${esc(c.name)}</b>
+      <div class="tiny conv-ultimo">${ic('messages')} ${c.ultimo_mio ? 'Tú: ' : ''}${esc(c.ultimo || '')}</div></div>
+    <span class="tiny">${esc(hace(c.ultimo_at))}</span>${c.sin_leer ? `<span class="badge-n fijo">${c.sin_leer > 9 ? '9+' : c.sin_leer}</span>` : ''}</button>`;
+}
 function hojaAvisos() {
   cerrarNotif();
-  const D = { lista: S.avisos.slice() };
-  const render = () => `${cabeza(`${ic('bell')} ${esc(C.AYUDA.avisos)}`)}
-    ${D.lista.length ? `<div class="list">${D.lista.map((a) => `<button class="li aviso ${a.nuevo ? 'nuevo' : ''} ${a.admin ? 'de-admin' : ''}" data-act="aviso_abrir" ${destinoAviso(a)} style="text-align:left">
-      ${caraAviso(a)}<div class="grow"><div>${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}</div><div class="tiny">${esc(hace(a.at))}</div></div>
-      ${a.thumb && a.find_id ? `<img class="thumb" src="${api.photoUrl(a.thumb)}" alt="">` : ''}</button>`).join('')}</div>`
-      : `<div class="empty">${ic('bell')}<p>${esc(C.AVISOS_VACIO)}</p></div>`}`;
-  abrirHoja(render, null, 'avisos');
-  api.avisosVistos().then(() => { S.avisos = S.avisos.map((a) => Object.assign({}, a, { nuevo: false })); pintarCampana(); }).catch(() => null);
-  if (!S.avisos.length) revisarAvisos().then(() => { D.lista = S.avisos.slice(); if (hojaArriba() && hojaArriba().tipo === 'avisos') dibujarHoja(); });
+  const D = { conv: null };
+  const hoja = { render: () => {
+      const avisos = S.avisos.filter((a) => a.kind !== 'mensaje');
+      const conv = D.conv || [];
+      const filas = conv.filter((c) => c.ultimo_at).map((c) => ({ at: c.ultimo_at, html: filaConversacion(c) }))
+        .concat(avisos.map((a) => ({ at: a.at, html: filaAviso(a) })))
+        .sort((x, y) => String(y.at).localeCompare(String(x.at)));
+      const amigasSin = conv.filter((c) => !c.ultimo_at && c.amigas);
+      return `${cabeza(`${ic('mail-heart')} ${esc(C.AYUDA.buzon_amigos)}`)}
+        ${D.conv === null && !avisos.length ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+          : filas.length ? `<div class="list">${filas.map((f) => f.html).join('')}</div>` : `<div class="empty">${ic('mail-heart')}<p>${esc(C.AVISOS_VACIO)}</p></div>`}
+        ${amigasSin.length ? `<div class="sec"><h3>${ic('messages')} ${esc(C.BUZON_EMPEZAR)}</h3><div class="chips" style="flex-wrap:wrap">${amigasSin.map((c) =>
+          `<button class="chip" data-act="chat" data-id="${c.persona}">${avatar(c)}${esc(c.name)} ${ic('messages')}</button>`).join('')}</div></div>` : ''}`;
+    }, tipo: 'buzon_amigos' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => {
+    try {
+      const [conv, avisos] = await Promise.all([api.conversaciones(), api.avisos()]);
+      D.conv = conv; S.avisos = avisos || [];
+      S.avisos.forEach((x) => S.avisosVistos.add(claveAviso(x))); // lo que ya se ve aquí no vuelve a notificarse
+      pintarCampana();
+    } catch (e) { D.conv = D.conv || []; }
+    if (hojaArriba() === hoja) dibujarHoja();
+  };
+  D.cargar().then(() => api.avisosVistos()).then(() => {
+    S.avisos = S.avisos.map((a) => (a.kind === 'mensaje' ? a : Object.assign({}, a, { nuevo: false }))); pintarCampana();
+  }).catch(() => null);
 }
+
+// Conversación con una amiga: solo texto, hasta 300 caracteres
+function hojaChat(uid) {
+  cerrarNotif();
+  const D = { uid, p: null, msgs: null, puede: null, borrador: '' };
+  const hoja = { render: () => {
+      const p = D.p;
+      const cab = p ? `<button class="row" data-act="perfil" data-id="${uid}">${avatar(p)}<b>${esc(p.name)}</b></button>` : '';
+      return `${cabeza(cab)}
+        <div class="chat" id="chat-lista">${D.msgs === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+          : D.msgs.length ? D.msgs.map((m) => `<div class="burbuja ${m.sender === S.user.id ? 'mia' : ''}"><p>${esc(m.body)}</p><span class="tiny">${esc(hace(m.created_at))}</span></div>`).join('')
+          : `<p class="muted" style="text-align:center">${esc(C.CHAT_VACIO)}</p>`}</div>
+        ${D.puede === false ? `<div class="banner" style="margin-top:12px">${ic('lock')}<span class="grow">${esc(C.CHAT_BLOQUEADO)}</span>
+            ${!S.following.has(uid) ? `<button class="btn sm" data-act="seguir" data-id="${uid}">${ic('user-plus')} ${esc(C.AYUDA.seguir)}</button>` : ''}</div>`
+          : D.puede ? `<div class="chat-escribir"><textarea id="chat-in" class="in" maxlength="${C.MENSAJE_MAX}" rows="2" placeholder="${esc(C.CHAT_PISTA)}">${esc(D.borrador)}</textarea>
+            <div class="row between"><span class="tiny"><span id="chat-n">${D.borrador.length}</span>/${C.MENSAJE_MAX}</span>
+            <button class="btn" data-act="enviar_mensaje" data-id="${uid}">${ic('send')} ${esc(C.AYUDA.enviar)}</button></div></div>` : ''}`;
+    },
+    after: (r) => { const l = $('#chat-lista', r); if (l) l.scrollTop = l.scrollHeight; }, tipo: 'chat' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => {
+    try {
+      const [p, msgs, puede] = await Promise.all([api.getProfile(uid), api.hilo(uid), api.puedoEscribir(uid)]);
+      Object.assign(D, { p, msgs, puede: !!puede });
+      if (msgs.some((m) => m.recipient === S.user.id && !m.read_at)) await api.marcarLeidos(uid).catch(() => null);
+      S.avisos = S.avisos.filter((a) => !(a.kind === 'mensaje' && a.actor_id === uid)); pintarCampana();
+    } catch (e) { D.msgs = D.msgs || []; fallo(e); }
+    if (hojaArriba() === hoja) { const t = $('#chat-in'); if (t) D.borrador = t.value; dibujarHoja(); }
+  };
+  D.cargar();
+}
+
+// Etiquetar: elige hasta 5 personas que sigues o te siguen
+function hojaEtiquetar(findId, inicial, alGuardar) {
+  const D = { gente: null, sel: new Set(inicial || []), antes: new Set(inicial || []) };
+  const hoja = { render: () => `${cabeza(`${ic('tag')} ${esc(C.AYUDA.etiquetar)}`)}
+      <p class="muted" style="margin:0 0 12px">${esc(C.ETIQUETAR_TEXTO)}</p>
+      ${D.gente === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.gente.length ? `<div class="list">${D.gente.map((g) =>
+        `<button class="li etiqueta-op ${D.sel.has(g.persona) ? 'on' : ''}" data-act="etiqueta_toggle" data-id="${g.persona}" style="text-align:left">${avatar(g)}<b class="grow">${esc(g.name)}</b>${ic(D.sel.has(g.persona) ? 'circle-check' : 'circle')}</button>`).join('')}</div>`
+        : `<div class="empty">${ic('user-plus')}<p>${esc(C.ETIQUETAR_VACIO)}</p></div>`}
+      <p class="tiny" style="margin:10px 0">${D.sel.size} / ${C.ETIQUETAS_MAX}</p>
+      <button class="btn block" data-act="guardar_etiquetas">${ic('check')} Guardar</button>`, tipo: 'etiquetar' };
+  hoja.datos = D;
+  D.guardar = alGuardar;
+  pila.push(hoja); dibujarHoja();
+  (async () => {
+    try {
+      const [gente, mias] = await Promise.all([api.puedoEtiquetar(), findId ? api.misEtiquetas(findId) : Promise.resolve(null)]);
+      D.gente = gente;
+      if (mias) { D.sel = new Set(mias); D.antes = new Set(mias); }
+    } catch (e) { D.gente = []; fallo(e); }
+    if (hojaArriba() === hoja) dibujarHoja();
+  })();
+}
+
 let tAvisos;
 function vigilarAvisos() {
   clearInterval(tAvisos);
@@ -2038,6 +2242,7 @@ const ACCIONES = {
   elegir(b) {
     const g = b.closest('[data-pick]'); $$('[data-v]', g).forEach((x) => x.classList.toggle('on', x === b));
     if (g.dataset.pick === 'dest') { const p = $('#campo-priv'); if (p) p.hidden = b.dataset.v.startsWith('g:'); R.dest = b.dataset.v; buscarCandidatos(); }
+    if (g.dataset.pick === 'priv') { R.priv = b.dataset.v === '1'; const e = $('#campo-etiquetas'); if (e) e.hidden = R.priv; }
   },
   medalla: (b) => aviso(b.dataset.info, b.dataset.icon || 'medal'),
 
@@ -2247,6 +2452,7 @@ const ACCIONES = {
       if (sigo) S.following.delete(uid); else S.following.add(uid);
       aviso(sigo ? 'Dejaste de seguir' : 'Siguiendo', sigo ? 'user-x' : 'user-check');
       const top = hojaArriba(); if (top && top.tipo === 'perfil') { const D = $('.sheet')._perfil; if (D) D.cargar(); }
+      if (top && (top.tipo === 'buzon_amigos' || top.tipo === 'chat') && top.datos) { dibujarHoja(); top.datos.cargar(); }
     } catch (e) { ocupado(b, false); fallo(e); }
   },
   tabla: () => tablaGeneral(),
@@ -2317,10 +2523,59 @@ const ACCIONES = {
     const id = b.dataset.id, k = b.dataset.kind;
     if (!id) return hojaAvisos();
     if (k === 'perfil') return abrirPerfil(id);
+    if (k === 'chat') return hojaChat(id);
     if (k === 'admin') { if (!S.me.is_admin) return; const adm = adminAbierto(); if (adm) { while (hojaArriba() !== adm) pila.pop(); adm.datos.vista = id; dibujarHoja(); return; } return hojaAdmin(id); }
     S.cache.delete(id); abrirFicha(id);
   },
   admin_uso: () => hojaAdmin('uso'),
+  chat: (b) => hojaChat(b.dataset.id),
+  async enviar_mensaje(b) {
+    const t = $('#chat-in'), texto = (t ? t.value : '').trim(), top = hojaArriba();
+    if (!texto) { if (t) t.focus(); return aviso('Escribe tu mensaje', 'messages'); }
+    if (texto.length > C.MENSAJE_MAX) return aviso(`Máximo ${C.MENSAJE_MAX} caracteres`, 'messages');
+    ocupado(b, true);
+    try { await api.enviarMensaje(b.dataset.id, texto); if (top && top.datos) { top.datos.borrador = ''; if (t) t.value = ''; await top.datos.cargar(); } }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  etiquetar(b) { const c = S.cache.get(b.dataset.id); if (c && !c.is_private) hojaEtiquetar(c.id, null, null); },
+  etiquetar_registro() {
+    recordarFormulario();
+    hojaEtiquetar(null, R.etiquetas, (ids, gente) => { R.etiquetas = ids; R.etiquetasNombres = gente.filter((g) => ids.includes(g.persona)).map((g) => g.name); });
+  },
+  etiqueta_toggle(b) {
+    const D = hojaArriba() && hojaArriba().datos; if (!D) return;
+    const id = b.dataset.id;
+    if (D.sel.has(id)) D.sel.delete(id);
+    else { if (D.sel.size >= C.ETIQUETAS_MAX) return aviso(`Máximo ${C.ETIQUETAS_MAX} personas por hallazgo`, 'tag'); D.sel.add(id); }
+    dibujarHoja();
+  },
+  async guardar_etiquetas(b) {
+    const top = hojaArriba(), D = top && top.datos; if (!D) return;
+    const ids = [...D.sel];
+    if (D.guardar) { D.guardar(ids, D.gente || []); cerrarHoja(); return; }
+    const fid = (fichaH && fichaH.id) || null; if (!fid) return;
+    ocupado(b, true);
+    try {
+      await api.etiquetar(fid, ids.filter((x) => !D.antes.has(x)));
+      await api.desetiquetar(fid, [...D.antes].filter((x) => !D.sel.has(x)));
+      cerrarHoja(); aviso(ids.length ? C.ETIQUETAS_LISTO : 'Etiquetas quitadas', 'tag');
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async color_premio(b) {
+    const { tipo, id, v } = b.dataset;
+    try {
+      if (tipo === 'cat') { await api.updateCat(id, { premio_color: v }); S.cats = await api.listCats(S.user.id); }
+      else {
+        await api.colorPremioGrupo(id, v);
+        const g = ((S.stats && S.stats.premios_grupos) || []).find((x) => x.id === id); if (g) g.premio_color = v;
+      }
+      $$('[data-act="color_premio"]', b.parentNode).forEach((x) => x.classList.toggle('on', x === b));
+      const muestra = b.closest('.premio-nuevo');
+      if (muestra) $$('.premio', muestra).forEach((el) => { el.innerHTML = svgPremio(el.className.replace(/.*p-/, '').trim(), v); });
+      aviso(C.COLOR_PREMIO_LISTO, 'crown');
+      if (S.tab === 'map') cargarPines();
+    } catch (e) { fallo(e); }
+  },
   instalar: () => instalarApp(),
   instalar_no() { noMostrarInstalar(); pintarInstalar(); },
   async copiar_liga() {
@@ -2366,6 +2621,7 @@ document.addEventListener('click', (ev) => {
 let tBuscar;
 document.addEventListener('input', (ev) => {
   if (ev.target.id === 'coment-in') { if (fichaH) fichaH.borrador = ev.target.value; const n = $('#coment-n'); if (n) n.textContent = ev.target.value.length; }
+  if (ev.target.id === 'chat-in') { const top = hojaArriba(); if (top && top.datos) top.datos.borrador = ev.target.value; const n = $('#chat-n'); if (n) n.textContent = ev.target.value.length; }
   if (ev.target.id === 'buzon-in') { const D = $('.sheet') && $('.sheet')._buzon; if (D) D.texto = ev.target.value; const n = $('#buzon-n'); if (n) n.textContent = ev.target.value.length; }
   if (ev.target.matches('[data-in="buscar-icono"]')) { clearTimeout(tBuscar); const v = ev.target.value; tBuscar = setTimeout(() => buscarIconos(v), 300); }
 });

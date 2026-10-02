@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.6.0',
+  VERSION: '1.7.0',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -34,7 +34,7 @@ window.CONFIG = {
     mostaza: '#D9A21B'
   },
   // Colores que se pueden elegir para categorías, grupos y avatares
-  COLORES_CATEGORIA: ['#C4532F', '#6E7B3A', '#D9A21B', '#2E2A26', '#3F6E73', '#8A5A44', '#7A4E7E', '#5C8A6E'],
+  COLORES_CATEGORIA: ['#C4532F', '#6E7B3A', '#D9A21B', '#2E2A26', '#3F6E73', '#8A5A44', '#7A4E7E', '#5C8A6E', '#B5687A', '#4B5C8E'],
 
   // Íconos (colección abierta Tabler Icons, se carga solo lo que se usa)
   ICONOS_URL: 'https://cdn.jsdelivr.net/npm/@tabler/icons@3.48.0/icons/outline/',
@@ -100,7 +100,26 @@ window.CONFIG = {
   ],
 
   // Metas del juego
-  METAS_CATEGORIA: [1, 5, 10, 25, 50, 100],
+  METAS_CATEGORIA: [1, 5, 10, 25, 50, 100, 250, 500],
+  // Premios en el pin (por categoría y, en los grupos, por persona). Las medallas solo muestran un regalo:
+  // el premio se descubre al llegar.
+  PREMIOS: {
+    10:  { id: 'patito',  nombre: 'un patito' },
+    25:  { id: 'brote',   nombre: 'un brote' },
+    50:  { id: 'aro',     nombre: 'un aro de oro' },
+    100: { id: 'corona',  nombre: 'una corona' },
+    250: { id: 'corona2', nombre: 'una corona mayor' },
+    500: { id: 'sombrero', nombre: 'un sombrero vaquero' }
+  },
+  // Colores de premio: solo se ganan (corona, corona mayor y sombrero)
+  COLORES_PREMIO: { oro: '#FFC21A', coral: '#FF5A3C', negro: '#1C1917' },
+  COLECCIONES_MAX: 7,
+  NOMBRES_PREMIO: { oro: 'Oro', coral: 'Coral', negro: 'Negro' },
+  PREMIO_GANADO: 'Tus pines de {titulo} ganan {premio}.',
+  COLECCION_NUEVA: 'Desbloqueaste una nueva colección: ahora puedes tener {n}.',
+  COLECCION_MAXIMO: 'Desbloqueaste tu séptima colección. Llegaste al máximo de colecciones.',
+  COLECCION_MAXIMO_CORTO: 'llegaste al máximo de colecciones',
+  COLOR_PREMIO_LISTO: 'Color guardado',
   METAS_COLONIAS: [1, 3, 5, 10, 20, 50],
   METAS_RACHA_SEMANAS: [2, 4, 8, 12, 26, 52],
   METAS_REENCUENTROS: [1, 5, 20, 50],
@@ -211,8 +230,10 @@ window.CONFIG = {
       pasos: ['El Muro muestra lo más reciente. Arriba filtras: todos, personas que sigues o un grupo.', 'Abre un perfil y toca el botón de seguir.'] },
     { icono: 'eye-check', titulo: '¡Lo vi!',
       texto: 'Solo se marca estando en el lugar, a menos de 50 m del hallazgo. Es la forma de confirmar que sigue ahí.' },
+    { icono: 'mail-heart', titulo: 'Buzón',
+      texto: 'Si se siguen mutuamente, pueden escribirse en el buzón. Puedes etiquetar en un hallazgo a quien sigues o te sigue.' },
     { icono: 'volume-off', titulo: 'Silenciar',
-      texto: 'Si no quieres ver el contenido de alguien, o de un grupo del que no formas parte, abre su perfil y toca silenciar. Deja de aparecer en tu Muro y tu mapa; no se le avisa. No es posible silenciar a quienes comparten un grupo contigo.' },
+      texto: 'Si no quieres ver el contenido de alguien, o de un grupo del que no formas parte, abre su perfil y toca silenciar. Deja de aparecer en tu Muro y tu mapa, y no puede escribirte ni etiquetarte; no se le avisa. No es posible silenciar a quienes comparten un grupo contigo.' },
     { icono: 'users', titulo: 'Grupos',
       pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Invita por WhatsApp: quien abra el enlace y entre con Google queda dentro.',
               'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.'] },
@@ -233,6 +254,7 @@ window.CONFIG = {
     'Lo público, incluida su ubicación, lo ve cualquier persona. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
     'Los datos y las fotos se guardan en Supabase. Google solo confirma quién eres al entrar. Para saber el nombre de la colonia, la app envía las coordenadas a OpenStreetMap, que también dibuja el mapa. El recorte de fondo se hace en tu teléfono.',
     'Al marcar "¡Lo vi!", tu ubicación se usa solo para comprobar que estás cerca y no se guarda.',
+    'Los mensajes del buzón solo los ven las dos personas de la conversación. Como el resto de los datos, se guardan en la base de datos de Collector Go.',
     'No vendemos tus datos ni hay publicidad.',
     'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta", en tu perfil, elimina tu perfil, tus hallazgos y tus fotos.',
     'La administradora puede quitar contenido público que alguien reporte y bloquear cuentas que no respeten la comunidad.'
@@ -265,8 +287,18 @@ window.CONFIG = {
   // Sin sonido ni vibración.
   AVISOS_CADA_MS: 60000,   // cada cuánto se revisa si hay avisos nuevos
   AVISO_MS: 6000,          // cuánto dura la notificación en pantalla
-  AVISOS_NUEVOS: 'Tienes {n} avisos nuevos',
-  AVISOS_VACIO: 'Aquí verás quién reacciona, comenta, vuelve a ver tus hallazgos o empieza a seguirte',
+  AVISOS_NUEVOS: 'Tienes {n} novedades en tu buzón',
+  AVISOS_VACIO: 'Aquí verás tus conversaciones y quién reacciona, comenta, te etiqueta o empieza a seguirte',
+  // Buzón entre amigas (se siguen mutuamente)
+  MENSAJE_MAX: 300,
+  ETIQUETAS_MAX: 5,
+  CHAT_BLOQUEADO: 'Para conversar, se tienen que seguir mutuamente.',
+  ETIQUETAR_TEXTO: 'Puedes etiquetar a quien sigues o te sigue (hasta 5 personas).',
+  ETIQUETAR_VACIO: 'Sigue a alguien para poder etiquetarle.',
+  ETIQUETAS_LISTO: 'Etiquetas guardadas',
+  CHAT_VACIO: 'Aún no hay mensajes. Escribe el primero.',
+  BUZON_EMPEZAR: 'Empieza una conversación',
+  CHAT_PISTA: 'Escribe un mensaje…',
 
   // Medidor de uso del plan gratuito (escudo de la administradora)
   USO_AMARILLO: 'Más del 60 %. Cierra el registro de cuentas nuevas en Supabase (Authentication → Sign In / Providers → Allow new users to sign up) y prepara el cambio de almacén de fotos.',
@@ -305,7 +337,7 @@ window.CONFIG = {
     grupo_nuevo: 'Crear grupo', invitar: 'Invitar por WhatsApp', salir_grupo: 'Salir del grupo', grupo_publico: 'Grupo público',
     grupo_privado: 'Grupo privado', comentar: 'Enviar comentario', borrar_comentario: 'Borrar comentario', nueva_categoria: 'Nueva categoría', borrar_cuenta: 'Borrar mi cuenta', buscar: 'Buscar ícono', emoji: 'Usar un emoji',
     silenciar: 'Silenciar', quitar_silencio: 'Quitar silencio', silenciado: 'silenciado', silenciados: 'Silenciados',
-    buzon: 'Buzón: errores e ideas', captura: 'Agregar captura de pantalla (opcional)', quitar_captura: 'Quitar captura',
-    enviar: 'Enviar', responder: 'Guardar respuesta', ver_perfil: 'Ver perfil', avisos: 'Avisos', descargar: 'Descargar imagen', uso: 'Uso del plan'
+    buzon: 'Escribir a la administradora', buzon_amigos: 'Buzón', color_premio: 'Color de tu corona', mensaje: 'Enviar mensaje', etiquetar: 'Etiquetar', seguir_vuelta: 'Seguir de vuelta', captura: 'Agregar captura de pantalla (opcional)', quitar_captura: 'Quitar captura',
+    enviar: 'Enviar', responder: 'Guardar respuesta', ver_perfil: 'Ver perfil', avisos: 'Buzón', descargar: 'Descargar imagen', uso: 'Uso del plan'
   }
 };
