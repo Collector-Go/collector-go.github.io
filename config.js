@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.8.0',
+  VERSION: '1.9.1',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -138,7 +138,30 @@ window.CONFIG = {
   MINIATURA_LADO: 320,
   MINIATURA_CALIDAD: 0.7,
   // Margen que se deja alrededor del sujeto al recortar el fondo (0.08 = 8 %)
-  RECORTE_MARGEN: 0.08,
+  RECORTE_OCUPA: 0.9,          // con el fondo quitado, el objeto ocupa el 90 % del cuadro, centrado
+  ENCUADRE_FUENTE: 2400,       // lado máximo de la foto mientras se encuadra
+  ENCUADRE_ZOOM_MAX: 4,
+  AVISO_RAPIDO_TITULO: 'Avisar a mi grupo',
+  AVISO_RAPIDO_A: 'Enviar a',
+  AVISO_RAPIDO_ENVIAR: 'Enviar',
+  AVISO_RAPIDO_ENVIAR_N: 'Enviar a {n} grupos',
+  AVISO_RAPIDO_ELIGE: 'Elige al menos un grupo',
+  AVISO_RAPIDO_NO_SALIO: 'No se envió a:',
+  AVISO_RAPIDO_ESPERA: 'Espera unos segundos y vuelve a intentarlo.',
+  AVISO_RAPIDO_SIN_GRUPOS: 'Para avisar rápido, primero crea un grupo de encuentro o únete a uno.',
+  GALERIA_DE: 'Colección de {c}',
+  GALERIA_VACIA: 'Aún no hay hallazgos públicos con foto en esta colección',
+  GALERIA_VITRINA: 'Ver toda su vitrina',
+  CANDIDATO_PREGUNTA: '¿Lo volviste a ver? Tócalo para sumarlo como reencuentro',
+  ENCUADRE_PISTA: 'Arrastra y pellizca para encuadrar',
+  NOMBRE_PISTA: 'Nombre (Michi naranja)',
+  NOTA_PISTA: 'Nota (opcional)',
+  PUNTO_PISTA: 'Nombre del punto',
+  MIRA_PISTA: '¿Qué hay aquí? (Reparten agua)',
+  GPS_A_MANO: 'A mano',
+  GPS_SIN: 'Sin GPS',
+  GPS_TOCA_MAPA: 'Sin GPS: toca el mapa para marcar',
+  GPS_MARCADO_A_MANO: 'Marcado a mano en el mapa. Para volver al GPS, toca el botón del mapa',
 
   // Recorte de fondo (se descarga solo al usarlo)
   RECORTE_URL: 'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm',
@@ -214,8 +237,8 @@ window.CONFIG = {
     { icono: 'map-2', titulo: '¿Qué es Collector Go?',
       texto: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo. Empiezas con 5 colecciones por categoría (gatos, puertas, letreros, lo que quieras) y puedes llegar a 15 a medida que crecen.' },
     { icono: 'camera', titulo: 'Registrar un hallazgo',
-      pasos: ['Toca la cámara del centro, abajo.', 'Toma la foto o elígela de tu galería. Si quieres, toca las tijeras para quitar el fondo.',
-              'Elige la categoría (o un grupo) y ponle un nombre.', 'Revisa el punto en el mapa: puedes tocarlo para corregirlo.', 'Toca Guardar y celebra.'] },
+      pasos: ['Toca la cámara del centro, abajo.', 'Toma la foto o elígela de tu galería. Encuádrala con los dedos; si quieres, toca las tijeras para quitar el fondo.',
+              'Elige la categoría (o un grupo) y ponle un nombre.', 'Toca Guardar. Si el punto no quedó bien, corrígelo en el mapa de abajo antes de guardar.'] },
     { icono: 'repeat', titulo: 'Volver a verlo (reencuentros)',
       pasos: ['Regístralo con el mismo nombre en la misma categoría: la app te pregunta si es el mismo.',
               'O abre su ficha y toca el botón de flechas.', 'Cada reencuentro suma una foto, una fecha y un punto a su historia.',
@@ -336,13 +359,13 @@ window.CONFIG = {
     resuelto: { icono: 'circle-check', nombre: 'Resuelto' }
   },
 
-  // Grupos de encuentro: una sola plantilla; el uso solo sugiere nombres de puntos y un acuerdo
+  // Grupos de encuentro: una sola plantilla; el uso solo sugiere el texto del acuerdo
   ENCUENTRO_USOS: [
-    { id: 'viaje',    nombre: 'Viaje',    icono: 'luggage',      puntos: ['Hotel', 'Punto de reunión del día'], acuerdo: 'Salida a las …' },
-    { id: 'rally',    nombre: 'Rally',    icono: 'flag',         puntos: [], acuerdo: '' },
-    { id: 'marcha',   nombre: 'Marcha',   icono: 'speakerphone', puntos: ['Dónde nos vemos antes', 'A dónde vamos si nos separamos'], acuerdo: 'Si nos separamos, nos vemos en … a las …' },
-    { id: 'festival', nombre: 'Festival', icono: 'music',        puntos: ['Escenario principal', 'Entrada', 'Donde hay agua'], acuerdo: 'Si te pierdes, aquí a las 11' },
-    { id: 'sismo',    nombre: 'Sismo',    icono: 'home-shield',  puntos: ['Casa', 'Escuela', 'Trabajo', 'Punto alterno'], acuerdo: 'Si no hay señal, nos vemos en el punto principal' }
+    { id: 'viaje',    nombre: 'Viaje',    icono: 'luggage',      acuerdo: 'Salida a las …' },
+    { id: 'rally',    nombre: 'Rally',    icono: 'flag',         acuerdo: '' },
+    { id: 'marcha',   nombre: 'Marcha',   icono: 'speakerphone', acuerdo: 'Si nos separamos, nos vemos en … a las …' },
+    { id: 'festival', nombre: 'Festival', icono: 'music',        acuerdo: 'Si te pierdes, aquí a las 11' },
+    { id: 'sismo',    nombre: 'Sismo',    icono: 'home-shield',  acuerdo: 'Si no hay señal, nos vemos en el punto principal' }
   ],
   ENCUENTRO_MAX_MIEMBROS: 50,
   ENCUENTRO_REFRESCO_MS: 20000,   // cada cuánto se actualiza el grupo abierto
@@ -352,8 +375,8 @@ window.CONFIG = {
   ENCUENTRO_NOTA_MAX: 140,
   ENCUENTRO_TIPO_TEXTO: 'Privado y oculto: solo lo ven sus miembros. Para viajes, rallies, marchas, festivales o un sismo.',
   ENCUENTRO_ESTADOS: {
-    bien:  { nombre: 'Todo bien',      icono: 'circle-check', listo: 'Tu grupo ya sabe que todo está bien' },
-    ayuda: { nombre: 'Necesito ayuda', icono: 'urgent',       listo: 'Tu grupo ya sabe que necesitas ayuda' }
+    bien:  { nombre: 'Todo bien',      corto: 'Todo bien', icono: 'circle-check', listo: 'Tu grupo ya sabe que todo está bien' },
+    ayuda: { nombre: 'Necesito ayuda', corto: 'Ayuda',     icono: 'urgent',       listo: 'Tu grupo ya sabe que necesitas ayuda' }
   },
   ENCUENTRO_MIRA: 'Mira esto',
   ENCUENTRO_EXACTA: 'Compartir mi ubicación exacta con el grupo',
@@ -366,6 +389,8 @@ window.CONFIG = {
   ENCUENTRO_SIN_MIRA: 'Aún no hay nada marcado',
   ENCUENTRO_COMPARTIENDO: 'Compartiendo tu ubicación · quedan {m} min',
   ENCUENTRO_COMPARTIR: 'Compartir mi ubicación',
+  ENCUENTRO_COMPARTIR_CORTO: 'Compartir',
+  ENCUENTRO_PUNTOS_TEXTO: 'Cualquiera puede proponer uno',
   ENCUENTRO_SALIR: '¿Salir del grupo? Se borra todo lo tuyo aquí: avisos, "Mira esto", puntos y ubicación.',
   ENCUENTRO_BORRAR_MIO: '¿Borrar todo lo tuyo en este grupo? Avisos, "Mira esto", puntos y ubicación. Sigues en el grupo.',
   ENCUENTRO_VOTAR: '¿Proponer borrar el grupo completo? Se borra cuando más de la mitad está de acuerdo.',
@@ -381,9 +406,10 @@ window.CONFIG = {
     { icono: 'lifebuoy', titulo: '¿Qué es?', texto: 'Un grupo privado y oculto con puntos de encuentro. Solo lo ven sus miembros.' },
     { icono: 'flag', titulo: 'Puntos de encuentro', texto: 'Cualquier miembro puede proponer uno; ponle foto para reconocerlo. "Ir al punto" te guía aunque no tengas datos.' },
     { icono: 'circle-check', titulo: 'Avisos', texto: '"Todo bien" y "Necesito ayuda" avisan al grupo. Al pedir ayuda puedes compartir tu ubicación exacta. Después puedes enviarlo también por WhatsApp.' },
+    { icono: 'lifebuoy', titulo: 'Aviso rápido', texto: 'El botón de ayuda (el salvavidas entre signos de exclamación) del mapa, o el que está junto al grupo en Colección, manda "Todo bien" o "Necesito ayuda" a tus grupos de encuentro de una vez. En Android también aparece al dejar presionado el ícono de la app.' },
     { icono: 'eye', titulo: 'Mira esto', texto: 'Marca algo en el mapa del grupo. Si el juego está encendido, suma premios dentro del grupo.' },
     { icono: 'sparkles', titulo: 'Tema de colección', texto: 'Quien administra puede proponer uno. Es posible cambiarlo sin límites.' },
-    { icono: 'current-location', titulo: 'Mi ubicación', texto: 'Compártela por 15 o 30 minutos mientras la app está abierta.' },
+    { icono: 'current-location', titulo: 'Mi ubicación', texto: 'El botón del mapa te muestra solo a ti dónde estás. Para que el grupo te vea, compártela por 15 o 30 minutos mientras la app está abierta.' },
     { icono: 'trash', titulo: 'Borrar', texto: 'Borra lo tuyo cuando quieras. El grupo se borra si la mayoría lo vota.' },
     { icono: 'bulb', titulo: 'Ideas para aprovecharlo', pasos: [
       'Viaje: el hotel y el punto del día; "Mira esto" para guardar lo que descubren.',
@@ -457,6 +483,7 @@ window.CONFIG = {
     encuentro_guia: 'Cómo funciona el grupo de encuentro', encuentro_ajustes: 'Juego, tema y acuerdos', punto_nuevo: 'Proponer un punto',
     principal: 'Hacer punto principal', borrar_lo_mio: 'Borrar lo mío', votar_borrado: 'Proponer borrar el grupo', quitar_voto: 'Retirar mi voto',
     eliminar_inactivo: 'Eliminar por inactividad', refrescar: 'Actualizar', ver_en_mapa: 'Ver en el mapa', miembro: 'Opciones de esta persona',
-    coadmin: 'Coadministradora', duena: 'Creó el grupo', dejar_compartir: 'Dejar de compartir', subir_ahora: 'Subir ahora'
+    coadmin: 'Coadministradora', duena: 'Creó el grupo', dejar_compartir: 'Dejar de compartir', subir_ahora: 'Subir ahora',
+    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
   }
 };

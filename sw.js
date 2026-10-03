@@ -1,11 +1,11 @@
 /* =====================================================================
-   Collector Go · trabajador del teléfono (service worker) · v1.8.0
+   Collector Go · trabajador del teléfono (service worker) · v1.9.1
    1. La app abre al instante y sin conexión (archivos guardados en el teléfono).
    2. Copias para ver sin conexión: datos, fotos (tope ~50 MB) y mapa ya visto.
    3. Notificaciones: el texto es genérico y se escribe aquí, en el teléfono.
    Cada parche cambia VERSION: así el teléfono sabe que hay una versión nueva.
    ===================================================================== */
-const VERSION = '1.8.0';
+const VERSION = '1.9.1';
 self.window = self;
 importScripts('config.js');
 const C = self.CONFIG;
@@ -15,7 +15,7 @@ const CACHE_ICONOS = 'cg-iconos', CACHE_MAPA = 'cg-mapa', CACHE_FOTOS = 'cg-foto
 const TOPE_FOTOS = C.OFFLINE_FOTOS_MB * 1048576;
 const TOPE_TESELAS = C.OFFLINE_TESELAS;
 const ESPERA_RED_MS = C.OFFLINE_ESPERA_MS;
-const ARCHIVOS = ['./', 'index.html', 'app.js', 'config.js', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
+const ARCHIVOS = ['./', 'index.html', 'app.js', 'config.js', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'icon-ayuda.png', 'icon-registrar.png'];
 const EXTERNOS = C.OFFLINE_EXTERNOS;
 // Consultas de solo lectura que se guardan para verlas sin conexión
 const LECTURAS = ['profile_stats', 'leaderboard', 'mis_avisos', 'mis_conversaciones', 'estado_encuentro', 'puedo_etiquetar',

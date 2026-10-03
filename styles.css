@@ -127,7 +127,8 @@ h1{font-size:28px} h2{font-size:22px} h3{font-size:18px}
 /* hojas inferiores */
 .overlay{position:fixed;inset:0;background:rgba(46,42,38,.45);z-index:1000;display:flex;align-items:flex-end;justify-content:center}
 .sheet{width:100%;max-width:560px;max-height:92vh;overflow-y:auto;background:var(--papel);border:var(--borde);border-bottom:0;
-  border-radius:20px 20px 0 0;padding:14px 16px calc(24px + var(--safe-b));animation:up .18s ease-out}
+  border-radius:20px 20px 0 0;padding:14px 16px calc(24px + var(--safe-b))}
+.sheet.entra{animation:up .18s ease-out}
 @keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
 .sheet-head{display:flex;align-items:center;gap:8px;margin-bottom:12px}
 .sheet .big{width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--papel2);border:var(--borde);border-radius:var(--r);display:block}
@@ -142,7 +143,7 @@ textarea.in{min-height:70px;resize:vertical}
 .swatches{display:flex;gap:10px;flex-wrap:wrap}
 .swatches button{width:40px;height:40px;border-radius:50%;border:2px solid var(--tinta)}
 .swatches button.on{outline:3px solid var(--mostaza);outline-offset:2px}
-.minimap{height:200px;border:var(--borde);border-radius:var(--r);overflow:hidden;position:relative}
+.minimap{height:200px;border:var(--borde);border-radius:var(--r);overflow:hidden;position:relative;isolation:isolate}
 .toggle{display:inline-flex;border:var(--borde);border-radius:12px;overflow:hidden}
 .toggle button{height:44px;min-width:52px;padding:0 12px;display:inline-flex;align-items:center;gap:6px;font-size:20px;background:var(--papel3)}
 .toggle button.on{background:var(--tinta);color:var(--papel)}
@@ -362,20 +363,41 @@ label.ib{cursor:pointer}
 /* 1.8 · grupos de encuentro */
 .tipo-grupo{display:flex;width:100%}
 .tipo-grupo button{flex:1;justify-content:center;font-size:15px}
-.enc-cabeza{margin-bottom:10px}
-.banner.tema{background:#FFE7A3;margin-bottom:10px}
-.acuerdo{margin:0 0 10px;display:flex;gap:8px;align-items:flex-start;color:var(--tinta2)}
-.enc-botones{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:6px 0 12px}
-.enc-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:88px;padding:8px 4px;border-radius:14px;
-  border:var(--borde);box-shadow:var(--sombra);font-weight:700;font-size:15px;line-height:1.15;text-align:center}
-.enc-btn .ic{font-size:30px}
+.enc-cabeza{margin-bottom:8px;gap:8px}
+/* 1.9 · tema y acuerdo en una línea; al tocarlos se leen completos */
+.enc-linea{display:flex;align-items:flex-start;gap:6px;width:100%;margin:0 0 6px;padding:6px 10px;border:var(--borde);border-radius:10px;background:var(--papel3);text-align:left;font-size:14px;line-height:1.35}
+.enc-linea:first-of-type{background:#FFE7A3}
+.enc-linea>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.enc-linea.abierta>span{white-space:normal}
+.enc-mapa-caja{position:relative;margin:8px 0 10px}
+.enc-mapa{height:min(48vh,400px);min-height:240px}
+.mapa-lado{position:absolute;right:8px;top:8px;z-index:500;display:flex;flex-direction:column;gap:6px}
+.mapa-lado .ib{background:var(--papel);box-shadow:2px 2px 0 var(--tinta)}
+.mapa-lado .ib.on{background:var(--tinta);color:var(--papel)}
+.enc-compartir{position:absolute;left:8px;bottom:8px;right:56px;z-index:500;pointer-events:none}
+.pastilla{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 5px 4px 10px;border:var(--borde);border-radius:14px;background:var(--papel);font-size:13px;font-weight:600;box-shadow:2px 2px 0 var(--tinta)}
+.pastilla>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pastilla button{min-width:34px;height:28px;padding:0 6px;border:var(--borde);border-radius:9px;background:var(--papel3);font-weight:700;display:inline-grid;place-items:center}
+.pastilla.on{background:var(--tinta);color:var(--papel)}
+.pastilla.on button{background:var(--papel);color:var(--tinta)}
+.mi-punto{display:block;width:20px;height:20px;border-radius:50%;background:#3E6A8A;border:3px solid #FBF6EC;box-shadow:0 0 0 2px var(--tinta),0 0 0 8px rgba(62,106,138,.25)}
+/* 1.9 · avisos compactos en una fila */
+.enc-botones{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px}
+.enc-btn{display:flex;align-items:center;justify-content:center;gap:6px;min-height:46px;padding:0 6px;border-radius:12px;
+  border:var(--borde);box-shadow:2px 2px 0 var(--tinta);font-weight:700;font-size:14px;line-height:1.1;white-space:nowrap;overflow:hidden}
+.enc-btn .ic{font-size:20px}
 .enc-btn.bien{background:var(--oliva);color:var(--papel)}
 .enc-btn.ayuda{background:var(--terracota);color:var(--papel)}
 .enc-btn.mira{background:#3F6E73;color:var(--papel)}
 .enc-btn:active{transform:translate(2px,2px);box-shadow:none}
-.enc-mapa{height:240px}
-.enc-ubicacion{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 4px;padding:8px 10px;border:var(--borde);border-radius:12px;background:var(--papel3)}
-.enc-ubicacion .grow{min-width:0;font-size:15px}
+/* 1.9 · pestañas del grupo */
+.enc-tabs{display:flex;border:var(--borde);border-radius:12px;overflow:hidden;margin-bottom:10px}
+.enc-tabs button{flex:1;min-width:0;height:40px;display:inline-flex;align-items:center;justify-content:center;gap:4px;font-size:14px;background:var(--papel3);border-left:1px solid var(--tinta)}
+.enc-tabs button:first-child{border-left:0}
+.enc-tabs button.on{background:var(--tinta);color:var(--papel);font-weight:700}
+.enc-tabs i{font-style:normal;opacity:.7;font-variant-numeric:tabular-nums}
+.enc-tabs .cuenta{min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--terracota);color:var(--papel);font-size:12px;line-height:18px}
+.enc-sub{margin-bottom:8px;gap:8px}
 .li.miembro.pide-ayuda{background:#F7D2C4;border-color:var(--terracota);border-width:2px}
 .premio-mini{display:inline-flex;align-items:center;transform:scale(.7);transform-origin:left center;margin-left:2px}
 .pin.enc-punto.principal{box-shadow:0 0 0 3px var(--mostaza),0 0 0 5px var(--tinta)}
@@ -401,3 +423,62 @@ label.check input{width:22px;height:22px;margin:1px 0 0;flex:none;accent-color:v
 .li.pendiente.duda{background:#F6E3B4}
 .li.pendiente.error{border-style:dashed}
 #sec-offline h4,#pendientes h4{margin:6px 0 8px;font-size:15px}
+
+/* 1.9 · formularios compactos y foto cuadrada */
+.foto-caja{position:relative;margin-bottom:10px}
+.encuadre{display:block;width:100%;aspect-ratio:1/1;max-width:100%;border:var(--borde);border-radius:var(--r);background:var(--papel2);touch-action:none;cursor:grab}
+.encuadre:active{cursor:grabbing}
+.foto-caja .pista{position:absolute;left:50%;top:10px;transform:translateX(-50%);display:inline-flex;align-items:center;gap:5px;max-width:calc(100% - 20px);
+  padding:3px 10px;border-radius:12px;border:1px solid var(--tinta);background:rgba(251,246,236,.92);font-size:12px;white-space:nowrap;pointer-events:none}
+.foto-prog{position:absolute;left:10px;right:10px;top:10px}
+.foto-herr{position:absolute;left:8px;right:8px;bottom:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.toggle.mini{background:var(--papel3);box-shadow:2px 2px 0 var(--tinta)}
+.toggle.mini button{height:36px;min-width:40px;padding:0 9px;font-size:18px}
+.ib.mini{width:40px;height:38px;font-size:18px;border-radius:10px;position:relative}
+.ib.mini .cuenta,.ib .cuenta{position:absolute;top:-7px;right:-7px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--terracota);color:var(--papel);
+  border:1px solid var(--tinta);font-size:11px;line-height:16px;font-style:normal}
+.ib.mini.on{background:var(--tinta);color:var(--papel)}
+.campo-fila{margin:0 0 8px;min-width:0;display:flex;align-items:center;gap:6px}
+.chips.una-fila{flex-wrap:nowrap;width:100%;padding-bottom:4px}
+.chips.una-fila .chip{height:34px;padding:0 10px;font-size:14px}
+.campo-ic{display:flex;align-items:flex-start;gap:8px;margin:0 0 8px;padding:0 0 0 10px;border:var(--borde);border-radius:12px;background:var(--papel3);min-width:0}
+.campo-ic>.ic{margin-top:12px;color:var(--tinta2);font-size:18px}
+.campo-ic:focus-within{outline:3px solid var(--mostaza);outline-offset:1px}
+.in.compacto{border:0;background:none;min-height:44px;padding:10px 10px 10px 0;font-size:16px;flex:1;min-width:0}
+.in.compacto:focus{outline:none}
+textarea.in.crece{min-height:44px;height:44px;resize:none;overflow:hidden;line-height:1.4}
+.guardar-fila{display:flex;gap:8px;align-items:stretch;margin:4px 0 10px}
+.gps-chip{flex:none;display:inline-flex;align-items:center;gap:5px;max-width:45%;padding:0 10px;border:var(--borde);border-radius:12px;background:var(--papel3);
+  font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden}
+.gps-chip>span:last-child{overflow:hidden;text-overflow:ellipsis}
+.gps-chip.alerta{background:#F6E3B4}
+.btn.guardar{flex:1;min-height:50px;font-weight:700;box-shadow:3px 3px 0 var(--tinta)}
+.mapa-caja{position:relative}
+.mapa-caja .mapa-lado .ib{z-index:500}
+.minimap.grande{height:min(42vh,320px);min-height:220px}
+.fotos-fila{display:flex;align-items:center;gap:8px;margin:0 0 8px}
+.foto-mini{width:44px;height:44px;border:var(--borde);border-radius:10px;overflow:hidden;padding:0;background:var(--papel2);flex:none}
+.foto-mini img{width:100%;height:100%;object-fit:cover;display:block}
+.galeria-persona{display:flex;align-items:center;gap:10px;width:100%;margin:2px 0 12px}
+.cand-titulo{display:flex;align-items:center;gap:5px;margin:0 0 4px;color:var(--tinta2)}
+.cand-fila{display:flex;gap:8px;overflow-x:auto;padding:0 2px 6px;margin-bottom:4px;scrollbar-width:none}
+.cand-fila::-webkit-scrollbar{display:none}
+.banner.cand{flex:none;display:inline-flex;align-items:center;gap:8px;max-width:78%;margin:0;padding:5px 10px 5px 5px;text-align:left}
+.banner.cand img{width:34px;height:34px;object-fit:cover;border-radius:7px;flex:none}
+.banner.cand b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+
+/* 1.9.1 · aviso rápido: el salvavidas entre signos de exclamación, mismo color y diseño que los demás botones */
+.ic-ayuda{display:inline-flex;align-items:center;gap:1px;line-height:1}
+.ic-ayuda b{font-weight:800;font-size:.8em;font-family:Georgia,serif}
+.ib.ayuda-atajo{width:auto;min-width:36px;padding:0 6px}
+.atajo-ayuda{display:contents}
+.li.grupo-enc{padding-right:8px}
+.aviso-tipos{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+.enc-btn.apagado{background:var(--papel3);color:var(--tinta);box-shadow:none}
+.aviso-a{margin-bottom:6px;color:var(--tinta2)}
+.aviso-grupos{gap:8px;margin-bottom:10px}
+.li.check-grupo{width:100%;text-align:left}
+.li.check-grupo .caja{width:22px;height:22px;border-radius:6px;border:1.5px solid var(--tinta);display:grid;place-items:center;background:var(--papel3);flex:none;font-size:14px}
+.li.check-grupo.on .caja{background:var(--oliva);color:var(--papel)}
+.li.check-grupo:not(.on){opacity:.75}
+.avatar.sm{width:30px;height:30px;font-size:16px}

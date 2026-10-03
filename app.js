@@ -40,7 +40,10 @@ function catBadge(name, icon, color) {
 // En lo de un grupo, la etiqueta abre el grupo (ahí se puede silenciar si es público y no eres parte)
 function etiquetaDe(c) {
   const b = catBadge(c.cat_name, c.cat_icon, c.cat_color);
-  return c.group_id ? `<button class="catb-btn" data-act="grupo" data-id="${c.group_id}" aria-label="${esc(c.cat_name)}">${b.replace('</span>', ` ${ic('users')}</span>`)}</button>` : b;
+  if (c.group_id) return `<button class="catb-btn" data-act="grupo" data-id="${c.group_id}" aria-label="${esc(c.cat_name)}">${b.replace('</span>', ` ${ic('users')}</span>`)}</button>`;
+  // Tocar la categoría abre esa colección: la tuya, o la galería pública de la otra persona
+  const duena = c.owner_id || c.user_id;
+  return c.category_id && duena ? `<button class="catb-btn" data-act="galeria_cat" data-id="${duena}" data-cat="${c.category_id}" aria-label="${esc(c.cat_name)}" data-tip="${esc(C.AYUDA.galeria_cat)}">${b}</button>` : b;
 }
 const sinAcentos = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
 function primerGrafema(t) {
@@ -436,11 +439,15 @@ function dibujarHoja() {
   if (!pila.length) { root.innerHTML = ''; return; }
   const top = pila[pila.length - 1];
   const antes = $('.sheet', root), arriba = antes && dibujarHoja.ultima === top ? antes.scrollTop : 0;
-  root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet" role="dialog" aria-modal="true">${top.render()}</div></div>`;
+  // La animación de entrada solo al abrir una hoja nueva; al volver a dibujar la misma, nada se mueve (evita el parpadeo)
+  const nueva = dibujarHoja.ultima !== top || !antes;
+  root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet${nueva ? ' entra' : ''}" role="dialog" aria-modal="true">${top.render()}</div></div>`;
   dibujarHoja.ultima = top;
   liberarTexto();
-  if (arriba) $('.sheet', root).scrollTop = arriba;
-  if (top.after) top.after($('.sheet', root));
+  const hoja = $('.sheet', root);
+  crecerTextos(hoja); mostrarElegido(hoja);
+  if (arriba) hoja.scrollTop = arriba;
+  if (top.after) top.after(hoja);
 }
 // El mapa bloquea la selección de texto mientras se arrastra y en iPhone a veces no la libera,
 // lo que impide escribir en los campos. Se libera siempre que aparece una hoja.
@@ -449,6 +456,15 @@ function liberarTexto() {
   const h = document.documentElement.style; if (h.userSelect === 'none' || h.webkitUserSelect === 'none') { h.userSelect = ''; h.webkitUserSelect = ''; }
 }
 document.addEventListener('focusin', (ev) => { if (ev.target.matches && ev.target.matches('input, textarea')) liberarTexto(); });
+// Las notas empiezan en un renglón y crecen con el texto
+function crecer(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 220) + 'px'; }
+function crecerTextos(raiz) { if (raiz) $$('textarea.crece', raiz).forEach((t) => { if (t.value) crecer(t); }); }
+document.addEventListener('input', (ev) => { if (ev.target.matches && ev.target.matches('textarea.crece')) crecer(ev.target); });
+// En las filas que se deslizan, la opción elegida queda a la vista
+function mostrarElegido(raiz) {
+  if (!raiz) return;
+  $$('.chips.una-fila', raiz).forEach((f) => { const b = $('.on', f); if (b && f.scrollWidth > f.clientWidth) f.scrollLeft = Math.max(0, b.offsetLeft - f.offsetLeft - 12); });
+}
 function cerrarHoja() { pila.pop(); dibujarHoja(); }
 function cerrarTodo() { pila.length = 0; dibujarHoja(); }
 const hojaArriba = () => pila[pila.length - 1];
@@ -530,7 +546,7 @@ function selector(nombre, opciones, actual, tipo) {
 function selectorDestino(actual) {
   const chip = (v, color, icon, nombre, grupo) => `<button type="button" class="chip ${v === actual ? 'on' : ''}" data-act="elegir" data-v="${v}">
     <span class="dot" style="background:${okColor(color)}"></span>${ic(icon)}${esc(nombre)}${grupo ? ` ${ic('users')}` : ''}</button>`;
-  return `<div class="chips" data-pick="dest" style="flex-wrap:wrap">
+  return `<div class="chips una-fila" data-pick="dest">
     ${S.cats.map((c) => chip('c:' + c.id, c.color, c.icon, c.name)).join('')}
     ${gruposColeccion().map((g) => chip('g:' + g.id, g.color, g.icon, g.name, true)).join('')}</div>`;
 }
@@ -611,7 +627,8 @@ function miniMapa(el, pos, alMover) {
   mk.on('dragend', () => { const p = mk.getLatLng(); alMover({ lat: p.lat, lng: p.lng, acc: null }); });
   m.on('click', (e) => { mk.setLatLng(e.latlng); alMover({ lat: e.latlng.lat, lng: e.latlng.lng, acc: null }); });
   S.mini = m;
-  return { mover(p) { mk.setLatLng([p.lat, p.lng]); m.setView([p.lat, p.lng], 17); } };
+  let vivo = true; m.on('unload', () => { vivo = false; });
+  return { mover(p) { if (!vivo || m.removed) return; try { mk.setLatLng([p.lat, p.lng]); m.setView([p.lat, p.lng], 17); } catch (e) { /* el mapa ya se cerró */ } } };
 }
 // Mapa de solo lectura con varios puntos (historia de un hallazgo)
 function mapaPuntos(el, puntos, color, icono) {
@@ -822,7 +839,7 @@ function pintarApp() {
   $('#app').innerHTML = `
     <section id="scr-map" class="screen map-screen">
       <div id="map"></div>
-      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
+      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}<span id="atajo-ayuda" class="atajo-ayuda">${gruposEncuentro().length ? botonAyuda() : ''}</span>${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
       <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
       <div id="guia-punto" class="guia-punto" hidden></div>
       <div id="instalar-franja" class="instalar-franja" hidden><button class="row grow" data-act="instalar" style="text-align:left">${ic('device-mobile')}<span class="grow">${esc(C.INSTALAR_FRANJA)}</span></button>${ib('instalar_no', 'x', 'cerrar', '', 'sm ghost')}</div>
@@ -934,10 +951,13 @@ async function pintarColeccion() {
       ${vis.length ? rejilla(vis, true) : `<div class="empty">${ic('camera')}<p>Registra tu primer hallazgo</p><button class="btn" data-act="nuevo">${ic('camera')}</button></div>`}
       <div class="sec"><div class="row between"><h3 class="row">${ic('users')} Grupos</h3>
         <span class="row"><span class="tiny" data-tip="Grupos que creaste">${gruposCreados()} / ${C.MAX_GRUPOS}</span>${ib('grupo_nuevo', 'plus', 'grupo_nuevo')}</span></div>
-        <div class="list" style="margin-top:10px">${S.groups.map((g) => `<button class="li" data-act="grupo" data-id="${g.id}" style="text-align:left">
+        <div class="list" style="margin-top:10px">${S.groups.map((g) => esEncuentro(g)
+          // Grupo de encuentro: el nombre abre el grupo; el botón de ayuda abre el aviso rápido con ese grupo
+          ? `<div class="li grupo-enc"><button class="row grow" data-act="grupo" data-id="${g.id}" style="text-align:left;min-width:0">
+              <span class="avatar" style="background:${okColor(g.color)}">${ic(g.icon)}</span><b class="grow">${esc(g.name)}</b></button>${botonAyuda(`data-id="${g.id}"`)}</div>`
+          : `<button class="li" data-act="grupo" data-id="${g.id}" style="text-align:left">
           <span class="avatar" style="background:${okColor(g.color)}">${ic(g.icon)}</span><b class="grow">${esc(g.name)}</b>
-          ${esEncuentro(g) ? `<span class="muted" data-tip="${esc(C.ENCUENTRO_TIPO_TEXTO)}">${ic('lifebuoy')}</span>`
-            : `<span class="muted" data-tip="${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}">${ic(g.is_public ? 'world' : 'lock')}</span>`}</button>`).join('')
+          <span class="muted" data-tip="${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}">${ic(g.is_public ? 'world' : 'lock')}</span></button>`).join('')
           || `<p class="muted">Crea un grupo para coleccionar con tus amigos en el mismo mapa.</p>`}</div></div>`;
   } catch (e) { fallo(e); }
 }
@@ -1185,13 +1205,15 @@ function refrescarFicha(id) {
 /* Registrar hallazgo o reencuentro */
 const R = {};
 function nuevoRegistro(destino) {
+  const viejo = R.enc;
   if (S.me.blocked) return aviso('Tu cuenta está bloqueada', 'ban');
   const destIni = S.filtro.modo === 'grupo' && S.tab === 'map' ? 'g:' + S.filtro.id
     : (S.coleccionCat ? 'c:' + S.coleccionCat : (S.cats[0] ? 'c:' + S.cats[0].id : null));
   Object.assign(R, { original: null, recorte: null, usarRecorte: false, sinFoto: false, pos: null, gps: 'buscando', vistaUrl: null,
-    candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false, etiquetas: [], etiquetasNombres: [] });
+    candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false, etiquetas: [], etiquetasNombres: [], enc: null, encPromesa: null });
   abrirHoja(registroHTML, montarRegistro, 'registro');
   leerGPS();
+  if (viejo) soltarLienzo(viejo.img);
 }
 function registroHTML() {
   const titulo = R.destino ? `${ic('repeat')} ${esc(R.destino.name)}` : ic('camera');
@@ -1203,27 +1225,37 @@ function registroHTML() {
     ${R.destino ? `<div class="row" style="justify-content:center;margin-bottom:12px">${ib('sin_foto', 'map-pin', 'sin_foto')}</div>` : ''}
     <div class="tiny row" id="gps-estado">${gpsTexto()}</div>`;
   const esGrupo = (R.dest || '').startsWith('g:');
-  return `${cabeza(titulo)}
-    ${R.original ? `<img class="big" id="vista" src="${R.vistaUrl}" alt="">
-    <div class="row" style="margin:10px 0">
-      <div class="toggle">
+  // Sobre la foto: original o sin fondo, público o secreto y etiquetar, en botones pequeños
+  const herr = `<div class="foto-herr">
+      <div class="toggle mini">
         <button type="button" class="${!R.usarRecorte ? 'on' : ''}" data-act="usar_original" data-tip="${C.AYUDA.original}" aria-label="${C.AYUDA.original}">${ic('photo')}</button>
-        <button type="button" class="${R.usarRecorte ? 'on' : ''}" data-act="recortar" data-tip="${C.AYUDA.recortar}" aria-label="${C.AYUDA.recortar}">${ic('scissors')}</button>
-      </div>
-      <div class="grow"><div class="progress" id="prog" hidden><div></div></div></div>
-    </div>` : ''}
-    ${R.destino ? '' : `
-    <div class="field"><label>${ic('cards')}</label>${selectorDestino(R.dest)}</div>
-    <div class="field"><label for="f-nombre">${ic('pencil')} Nombre</label><input id="f-nombre" class="in" maxlength="60" placeholder="Michi naranja" autocomplete="off" value="${esc(R.nombre)}"></div>`}
-    <div class="field"><label for="f-nota">${ic('info-circle')} Nota</label><textarea id="f-nota" class="in" maxlength="140" placeholder="Duerme sobre el puesto de periódicos">${esc(R.nota)}</textarea></div>
-    ${R.destino ? '' : `<div class="field" id="campo-priv" ${esGrupo ? 'hidden' : ''}><label>${ic('eye')}</label>
-      <div class="toggle" data-pick="priv"><button type="button" data-act="elegir" data-v="0" class="${R.priv ? '' : 'on'}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button><button type="button" data-act="elegir" data-v="1" class="${R.priv ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div></div>`}
-    ${R.destino ? '' : `<div class="field" id="campo-etiquetas" ${R.priv ? 'hidden' : ''}><label>${ic('tag')} ${esc(C.AYUDA.etiquetar)}</label>
-      <button type="button" class="btn alt" data-act="etiquetar_registro" style="justify-content:flex-start">${ic('tag')} ${R.etiquetas.length ? esc(R.etiquetasNombres.join(', ') || R.etiquetas.length + ' personas') : 'Elegir personas'}</button></div>`}
-    <div class="field"><label class="row between"><span class="row">${ic('map-pin')} <span id="gps-estado">${gpsTexto()}</span></span>${ib('releer_gps', 'current-location', 'gps', '', 'sm')}</label>
-      <div class="minimap" id="mini-reg"></div></div>
+        <button type="button" class="${R.usarRecorte ? 'on' : ''}" data-act="recortar" data-tip="${C.AYUDA.recortar}" aria-label="${C.AYUDA.recortar}">${ic('scissors')}</button></div>
+      ${R.destino ? '' : `<div class="toggle mini" data-pick="priv" id="campo-priv" ${esGrupo ? 'hidden' : ''}>
+        <button type="button" data-act="elegir" data-v="0" class="${R.priv ? '' : 'on'}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button><button type="button" data-act="elegir" data-v="1" class="${R.priv ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div>
+      <button type="button" class="ib mini ${R.etiquetas.length ? 'on' : ''}" id="campo-etiquetas" ${R.priv ? 'hidden' : ''} data-act="etiquetar_registro" data-tip="${esc(R.etiquetas.length ? (R.etiquetasNombres.join(', ') || R.etiquetas.length + ' personas') : C.AYUDA.etiquetar)}" aria-label="${esc(C.AYUDA.etiquetar)}">${ic('tag')}${R.etiquetas.length ? `<b class="cuenta">${R.etiquetas.length}</b>` : ''}</button>`}
+    </div>`;
+  return `${cabeza(titulo)}
+    ${R.original ? `<div class="foto-caja">${R.usarRecorte ? `<img class="big" id="vista" src="${R.vistaUrl}" alt="">`
+      : `<canvas class="encuadre" id="encuadre" aria-label="${esc(C.AYUDA.encuadrar)}"></canvas><span class="pista">${ic('arrows-move')} ${esc(C.ENCUADRE_PISTA)}</span>`}
+      <div class="progress foto-prog" id="prog" hidden><div></div></div>${herr}</div>` : ''}
+    ${R.destino ? '' : `<div class="campo-fila">${selectorDestino(R.dest)}</div>
+    <label class="campo-ic">${ic('pencil')}<input id="f-nombre" class="in compacto" maxlength="60" placeholder="${esc(C.NOMBRE_PISTA)}" aria-label="Nombre" autocomplete="off" value="${esc(R.nombre)}"></label>`}
+    <label class="campo-ic">${ic('info-circle')}<textarea id="f-nota" class="in compacto crece" rows="1" maxlength="140" placeholder="${esc(C.NOTA_PISTA)}" aria-label="Nota">${esc(R.nota)}</textarea></label>
     <div id="candidatos"></div>
-    <button class="btn block" data-act="guardar_hallazgo" style="margin-top:14px">${ic('check')} Guardar</button>`;
+    ${filaGuardar('guardar_hallazgo', R, 'gps-estado')}
+    <div class="mapa-caja"><div class="minimap" id="mini-reg"></div><div class="mapa-lado">${ib('releer_gps', 'current-location', 'gps', '', 'sm')}</div></div>`;
+}
+// Guardar va antes del mapa, junto a la precisión del GPS
+function filaGuardar(act, X, idGps, attrs = '') {
+  return `<div class="guardar-fila">${X ? `<button type="button" class="gps-chip ${X.pos && esAproximada(X.pos) ? 'alerta' : ''}" id="${idGps}" data-act="gps_chip" data-tip="${esc(C.AYUDA.gps_estado)}">${gpsCorto(X)}</button>` : ''}
+    <button class="btn guardar" data-act="${act}" ${attrs}>${ic('check')} Guardar</button></div>`;
+}
+function gpsCorto(X) {
+  if (X.gps === 'buscando') return `<span class="spin">${ic('loader-2')}</span><span>GPS</span>`;
+  if (X.pos) return X.pos.acc == null ? `${ic('hand-finger')}<span>${esc(C.GPS_A_MANO)}</span>`
+    : `${ic(esAproximada(X.pos) ? 'alert-triangle' : 'map-pin')}<span>±${metros(X.pos.acc)}</span>`;
+  if (X.gps === 'error') return `${ic('map-pin-off')}<span>${esc(C.GPS_SIN)}</span>`;
+  return `${ic('map-pin')}<span>GPS</span>`;
 }
 function gpsTexto(X = R) {
   if (X.gps === 'buscando') return `<span class="spin">${ic('loader-2')}</span> GPS`;
@@ -1242,6 +1274,8 @@ function recordarFormulario() {
 }
 function montarRegistro(raiz) {
   $$('[data-in="foto"]', raiz).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && tomarFoto(inp.files[0])));
+  const cv = $('#encuadre', raiz);
+  if (cv && R.enc) montarEncuadre(cv, R.enc, () => { R.recorte = null; generarCuadro(); });
   const el = $('#mini-reg', raiz);
   if (el) {
     const mm = miniMapa(el, R.pos, (p) => { R.pos = p; R.gps = 'ok'; pintarGPS(); buscarCandidatos(); });
@@ -1249,7 +1283,11 @@ function montarRegistro(raiz) {
     buscarCandidatos();
   }
 }
-function pintarGPS() { const e = $('#gps-estado'); if (e) e.innerHTML = gpsTexto(); }
+function pintarGPS() {
+  const e = $('#gps-estado'); if (!e) return;
+  if (e.classList.contains('gps-chip')) { e.innerHTML = gpsCorto(R); e.classList.toggle('alerta', !!(R.pos && esAproximada(R.pos))); }
+  else e.innerHTML = gpsTexto();
+}
 function leerGPS() {
   R.gps = 'buscando'; pintarGPS();
   getPos().then((p) => { R.pos = p; R.gps = 'ok'; pintarGPS(); if (R.moverMini) R.moverMini(p); buscarCandidatos(); })
@@ -1266,24 +1304,110 @@ async function buscarCandidatos() {
     const cerca = guarda(await api.cardsInBox(cajaAlrededor(R.pos, C.REENCUENTRO_METROS), filtro));
     if ((valor($('.sheet'), 'dest') || R.dest) !== dest) return;
     R.candidatos = cerca.filter((c) => distancia(R.pos, c) <= C.REENCUENTRO_METROS);
-    box.innerHTML = R.candidatos.map((c) => `<div class="banner" style="margin-top:10px">
-      ${c.thumb ? `<img src="${foto(c, true)}" alt="" style="width:44px;height:44px;object-fit:contain;border-radius:8px">` : ic(c.cat_icon)}
-      <div class="grow"><b>${esc(c.name)}</b><div class="tiny">${ic('repeat')} ¿Lo volviste a ver?</div></div>
-      ${ib('usar_candidato', 'repeat', 'reencuentro', `data-id="${c.id}"`, 'sm')}</div>`).join('');
+    // Una sola fila que se desliza: así Guardar no se va hacia abajo
+    box.innerHTML = R.candidatos.length ? `<div class="cand-titulo tiny">${ic('repeat')} ${esc(C.CANDIDATO_PREGUNTA)}</div><div class="cand-fila">${R.candidatos.map((c) => `<button type="button" class="banner cand" data-act="usar_candidato" data-id="${c.id}" aria-label="${esc(C.AYUDA.reencuentro)}: ${esc(c.name)}">
+      ${c.thumb ? `<img src="${foto(c, true)}" alt="">` : ic(c.cat_icon)}<b>${esc(c.name)}</b>${ic('repeat')}</button>`).join('')}</div>` : '';
   } catch (e) { /* sin sugerencias, no pasa nada */ }
 }
 async function tomarFoto(file) {
   try {
     recordarFormulario();
     const img = await cargarImagen(file);
-    R.original = await lienzoABlob(escalar(img, C.FOTO_LADO), C.FOTO_CALIDAD, false);
+    if (R.enc) soltarLienzo(R.enc.img);
+    R.enc = nuevoEncuadre(escalar(img, C.ENCUADRE_FUENTE));
     R.recorte = null; R.usarRecorte = false; R.sinFoto = false;
-    ponerVista(R.original);
+    await generarCuadro();
     dibujarHoja(); leerGPSsiFalta();
   } catch (e) { fallo(e); }
 }
 function leerGPSsiFalta() { if (!R.pos && R.gps !== 'buscando') leerGPS(); }
 function ponerVista(blob) { if (R.vistaUrl) URL.revokeObjectURL(R.vistaUrl); R.vistaUrl = URL.createObjectURL(blob); const v = $('#vista'); if (v) v.src = R.vistaUrl; }
+// La foto encuadrada (cuadrada) es la que se guarda; se rehace al soltar el dedo
+function generarCuadro() {
+  const E = R.enc; if (!E) return Promise.resolve(R.original);
+  E.sucio = false;
+  const cv = cuadroDe(E, C.FOTO_LADO), ver = E.ver || 0;
+  R.encPromesa = lienzoABlob(cv, C.FOTO_CALIDAD, false).then((b) => {
+    soltarLienzo(cv);
+    if (R.enc !== E || (E.ver || 0) !== ver) return b;
+    R.original = b; if (!R.usarRecorte) ponerVista(b); return b;
+  });
+  return R.encPromesa;
+}
+// Si el encuadre cambió y aún no se rehízo la foto (por ejemplo, Guardar justo al soltar), se rehace ahora
+async function cuadroAlDia() {
+  if (R.enc && R.enc.sucio) return generarCuadro();
+  return R.encPromesa || R.original;
+}
+// En iPhone los lienzos ocupan memoria aparte: se liberan en cuanto ya no hacen falta
+function soltarLienzo(cv) { try { if (cv) { cv.width = 0; cv.height = 0; } } catch (e) { /* nada */ } }
+
+/* Encuadre cuadrado: arrastrar para mover, pellizcar (o la rueda del ratón) para acercar.
+   El cuadro siempre queda lleno de foto: no hay bandas vacías. */
+function nuevoEncuadre(img) { const w = img.width, h = img.height; return { img, w, h, z: 1, cx: w / 2, cy: h / 2 }; }
+const ladoVisible = (E) => Math.min(E.w, E.h) / E.z;
+function limitarEncuadre(E) {
+  E.z = Math.min(C.ENCUADRE_ZOOM_MAX, Math.max(1, E.z));
+  const l = ladoVisible(E) / 2;
+  E.cx = Math.min(E.w - l, Math.max(l, E.cx)); E.cy = Math.min(E.h - l, Math.max(l, E.cy));
+}
+function pintarEncuadre(cv, E) {
+  const l = ladoVisible(E), cx = cv.getContext('2d');
+  cx.imageSmoothingQuality = 'high';
+  cx.drawImage(E.img, E.cx - l / 2, E.cy - l / 2, l, l, 0, 0, cv.width, cv.height);
+}
+function cuadroDe(E, lado) {
+  limitarEncuadre(E);
+  const n = Math.max(1, Math.round(Math.min(lado, ladoVisible(E))));
+  const cv = document.createElement('canvas'); cv.width = n; cv.height = n;
+  pintarEncuadre(cv, E);
+  return cv;
+}
+function montarEncuadre(cv, E, alSoltar) {
+  const ancho = () => cv.getBoundingClientRect().width || 300;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = cv.height = Math.max(1, Math.round(ancho() * dpr));
+  limitarEncuadre(E); pintarEncuadre(cv, E);
+  const dedos = new Map();
+  let base = null, cuadro = 0, tSoltar = 0;
+  const repintar = () => { E.sucio = true; E.ver = (E.ver || 0) + 1; if (cuadro) return; cuadro = requestAnimationFrame(() => { cuadro = 0; pintarEncuadre(cv, E); }); };
+  const soltar = () => { clearTimeout(tSoltar); tSoltar = setTimeout(alSoltar, 120); };
+  const estado = () => {
+    const p = [...dedos.values()], k = ladoVisible(E) / ancho();
+    const mx = p.reduce((a, q) => a + q.x, 0) / p.length, my = p.reduce((a, q) => a + q.y, 0) / p.length;
+    const d = p.length > 1 ? Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) : 0;
+    return { mx, my, d, k, z: E.z, cx: E.cx, cy: E.cy };
+  };
+  cv.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    if (E.ocupado) return;
+    try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* nada */ }
+    dedos.set(ev.pointerId, { x: ev.clientX, y: ev.clientY }); base = estado();
+  });
+  cv.addEventListener('pointermove', (ev) => {
+    if (!dedos.has(ev.pointerId) || !base) return;
+    dedos.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    const ahora = estado();
+    if (dedos.size > 1 && base.d > 0) E.z = base.z * (ahora.d / base.d);
+    const k = ladoVisible(E) / ancho();
+    E.cx = base.cx - (ahora.mx - base.mx) * k; E.cy = base.cy - (ahora.my - base.my) * k;
+    limitarEncuadre(E); repintar();
+  });
+  const fin = (ev) => {
+    if (!dedos.has(ev.pointerId)) return;
+    dedos.delete(ev.pointerId);
+    base = dedos.size ? estado() : null;
+    if (!dedos.size) soltar();
+  };
+  cv.addEventListener('pointerup', fin); cv.addEventListener('pointercancel', fin);
+  cv.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    if (E.ocupado) return;
+    E.z = E.z * Math.exp(-ev.deltaY * 0.0015); limitarEncuadre(E); repintar(); soltar();
+  }, { passive: false });
+  cv.addEventListener('dblclick', () => { if (E.ocupado) return; E.z = 1; limitarEncuadre(E); repintar(); soltar(); });
+}
+
 
 /* Fotos: redimensionar, recortar y comprimir en el teléfono */
 function cargarImagen(blob) {
@@ -1306,7 +1430,7 @@ function lienzoABlob(cv, calidad, alfa) {
   const a = (tipo) => new Promise((res) => cv.toBlob((b) => res(b), tipo, calidad));
   return a('image/webp').then((b) => (b && b.type === 'image/webp') ? b : a(alfa ? 'image/png' : 'image/jpeg'));
 }
-// Quita el espacio transparente alrededor del sujeto y deja un margen
+// Quita el espacio transparente y centra el objeto en un cuadro: ocupa el 90 %, con el mismo margen alrededor
 async function recortarVacio(blob) {
   const img = await cargarImagen(blob);
   const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
@@ -1318,10 +1442,10 @@ async function recortarVacio(blob) {
     if (d[(y * w + x) * 4 + 3] > 12) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   }
   if (x1 < 0) return blob;
-  const m = Math.round(Math.max(x1 - x0, y1 - y0) * C.RECORTE_MARGEN);
-  x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(w - 1, x1 + m); y1 = Math.min(h - 1, y1 + m);
-  const out = document.createElement('canvas'); out.width = x1 - x0 + 1; out.height = y1 - y0 + 1;
-  out.getContext('2d').drawImage(cv, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  const lado = Math.max(1, Math.round(Math.max(bw, bh) / C.RECORTE_OCUPA));
+  const out = document.createElement('canvas'); out.width = lado; out.height = lado;
+  out.getContext('2d').drawImage(cv, x0, y0, bw, bh, Math.round((lado - bw) / 2), Math.round((lado - bh) / 2), bw, bh);
   return new Promise((res) => out.toBlob((b) => res(b || blob), 'image/png'));
 }
 async function recortarFondo(blob, alProgreso) {
@@ -1334,6 +1458,7 @@ async function recortarFondo(blob, alProgreso) {
   return recortarVacio(r);
 }
 async function prepararFotos() {
+  await cuadroAlDia();
   const alfa = R.usarRecorte && R.recorte;
   const fuente = alfa ? R.recorte : R.original;
   const img = await cargarImagen(fuente);
@@ -1517,16 +1642,18 @@ function editarHallazgo(id) {
   const c = S.cache.get(id); if (!c) return;
   const E = { pos: { lat: c.lat, lng: c.lng, acc: c.accuracy }, movido: false };
   abrirHoja(() => `${cabeza(ic('pencil'))}
-    ${c.group_id ? `<div class="field"><label>${ic('users')}</label>${catBadge(c.cat_name, c.cat_icon, c.cat_color)}</div>`
-      : `<div class="field"><label>${ic('cards')}</label><div class="chips" data-pick="cat" style="flex-wrap:wrap">${S.cats.map((x) =>
+    ${c.group_id ? `<div class="campo-fila">${catBadge(c.cat_name, c.cat_icon, c.cat_color)} ${ic('users')}</div>`
+      : `<div class="campo-fila"><div class="chips una-fila" data-pick="cat">${S.cats.map((x) =>
         `<button type="button" class="chip ${x.id === c.category_id ? 'on' : ''}" data-act="elegir" data-v="${x.id}"><span class="dot" style="background:${okColor(x.color)}"></span>${ic(x.icon)}${esc(x.name)}</button>`).join('')}</div></div>`}
-    <div class="field"><label for="e-nombre">${ic('pencil')} Nombre</label><input id="e-nombre" class="in" maxlength="60" value="${esc(c.name)}"></div>
-    <div class="field"><label for="e-nota">${ic('info-circle')} Nota</label><textarea id="e-nota" class="in" maxlength="140">${esc(c.note || '')}</textarea></div>
-    ${c.group_id ? '' : `<div class="field"><label>${ic('eye')}</label><div class="toggle" data-pick="priv">
-      <button type="button" data-act="elegir" data-v="0" class="${!c.is_private ? 'on' : ''}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button>
-      <button type="button" data-act="elegir" data-v="1" class="${c.is_private ? 'on' : ''}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div></div>`}
-    <div class="field"><label>${ic('map-pin')}</label><div class="minimap" id="mini-ed"></div></div>
-    <button class="btn block" data-act="guardar_edicion" data-id="${c.id}">${ic('check')} Guardar</button>`,
+    <div class="row" style="gap:8px;align-items:stretch">
+      <label class="campo-ic grow">${ic('pencil')}<input id="e-nombre" class="in compacto" maxlength="60" value="${esc(c.name)}" aria-label="Nombre"></label>
+      ${c.group_id ? '' : `<div class="toggle mini" data-pick="priv">
+        <button type="button" data-act="elegir" data-v="0" class="${!c.is_private ? 'on' : ''}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button>
+        <button type="button" data-act="elegir" data-v="1" class="${c.is_private ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div>`}
+    </div>
+    <label class="campo-ic">${ic('info-circle')}<textarea id="e-nota" class="in compacto crece" rows="1" maxlength="140" placeholder="${esc(C.NOTA_PISTA)}" aria-label="Nota">${esc(c.note || '')}</textarea></label>
+    ${filaGuardar('guardar_edicion', null, '', `data-id="${c.id}"`)}
+    <div class="mapa-caja"><div class="minimap" id="mini-ed"></div></div>`,
   (raiz) => { miniMapa($('#mini-ed', raiz), E.pos, (p) => { E.pos = p; E.movido = true; }); raiz._edicion = E; }, 'editar');
 }
 async function guardarEdicion(btn, id) {
@@ -1672,7 +1799,7 @@ async function guardarCategoria(btn, id) {
 }
 
 /* Grupos */
-async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); }
+async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); pintarAtajoMapa(); }
 const gruposCreados = () => S.groups.filter((g) => g.owner === S.user.id).length;
 function abrirGrupo(gid) {
   if (esEncuentro(miGrupo(gid))) return abrirEncuentro(gid);
@@ -1799,11 +1926,13 @@ function premioMini(n, k) {
 }
 function abrirEncuentro(gid, foco) {
   const ya = pila.find((h) => h.tipo === 'encuentro' && h.datos && h.datos.gid === gid);
-  if (ya) { while (hojaArriba() !== ya) pila.pop(); if (foco) ya.datos.foco = foco; dibujarHoja(); ya.datos.cargar(); return; }
-  const D = { gid, e: null, foco: foco || null, error: false, vista: null, premio: null };
+  if (ya) { while (hojaArriba() !== ya) pila.pop(); if (foco) ya.datos.foco = foco; dibujarHoja(); ya.datos.cargar(true); return; }
+  const D = { gid, e: null, foco: foco || null, error: false, vista: null, premio: null, tab: 'tablero', abierto: {}, firma: '', miPos: null };
   const hoja = { render: () => encuentroHTML(D), after: (r) => montarEncuentro(r, D), tipo: 'encuentro', datos: D };
   pila.push(hoja); dibujarHoja();
-  D.cargar = async () => {
+  // Cada 20 s se revisa; la pantalla solo cambia si llegó algo nuevo, y el mapa no se vuelve a crear
+  D.cargar = async (forzar) => {
+    const antes = D.firma;
     try {
       const e = await api.estadoEncuentro(gid);
       if (!e) {
@@ -1815,7 +1944,10 @@ function abrirEncuentro(gid, foco) {
       D.e = e; D.error = false;
       revisarPremioMira(D);
     } catch (err) { D.error = true; if (!D.e) { if (pila.includes(hoja)) { pila.splice(pila.indexOf(hoja), 1); dibujarHoja(); } return fallo(err); } }
-    if (hojaArriba() === hoja) dibujarHoja();
+    D.firma = JSON.stringify(D.e) + '|' + D.error;
+    if (hojaArriba() !== hoja) return;
+    if (forzar || D.firma !== antes || D.foco) actualizarEncuentro(D);
+    else pintarCompartirEncuentro(D);
   };
   D.cargar();
   clearInterval(S.tEncuentro);
@@ -1824,37 +1956,71 @@ function abrirEncuentro(gid, foco) {
     if (!document.hidden && hojaArriba() === hoja) D.cargar();
   }, C.ENCUENTRO_REFRESCO_MS);
 }
+// Cambia solo lo que cambió: textos, listas y marcadores; el mapa y el scroll se quedan donde estaban
+function actualizarEncuentro(D) {
+  const raiz = $('.sheet'), top = hojaArriba();
+  const vivo = raiz && top && top.datos === D && D.mapa && $('#mapa-enc', raiz) && D.mapa.getContainer && D.mapa.getContainer() === $('#mapa-enc', raiz);
+  if (!vivo || !D.e) return dibujarHoja();
+  const a = $('#enc-arriba', raiz), b = $('#enc-abajo', raiz);
+  if (!a || !b) return dibujarHoja();
+  a.innerHTML = encArribaHTML(D); b.innerHTML = encAbajoHTML(D);
+  pintarCompartirEncuentro(D);
+  pintarMarcasEncuentro(D);
+  if (D.foco) enfocarEncuentro(D);
+}
+function pintarCompartirEncuentro(D) {
+  const el = $('#enc-compartir'); if (el && D.e) el.innerHTML = encCompartirHTML(D);
+}
 function encuentroHTML(D) {
   const e = D.e;
   if (!e) return cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
-  const g = e.grupo, yo = e.yo, uso = usoDe(g.uso), v = e.votos;
-  const comparte = S.comparte && S.comparte.gid === g.id ? S.comparte : null;
-  const quedan = comparte ? Math.max(1, Math.ceil((comparte.hasta - Date.now()) / 60000)) : 0;
-  const nombrePunto = (id) => (e.puntos.find((p) => p.id === id) || {}).name;
+  const g = e.grupo;
   return `${cabeza(`<span class="row">${ic(g.icon)} ${esc(g.name)}</span>`, ib('encuentro_guia', 'help', 'encuentro_guia', '', 'sm'))}
-    <div class="row wrap enc-cabeza">
+    <div id="enc-arriba">${encArribaHTML(D)}</div>
+    <div class="enc-mapa-caja"><div class="minimap enc-mapa" id="mapa-enc"></div>
+      <div class="mapa-lado">${ib('enc_mi_ubicacion', 'current-location', 'mi_ubicacion', '', `sm ${D.miPos ? 'on' : ''}`)}${ib('enc_ver_todo', 'arrows-maximize', 'ver_todo', '', 'sm')}</div>
+      <div class="enc-compartir" id="enc-compartir">${encCompartirHTML(D)}</div></div>
+    <div class="enc-botones">
+      <button class="enc-btn bien" data-act="estado_encuentro" data-v="bien">${ic(C.ENCUENTRO_ESTADOS.bien.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.bien.corto)}</span></button>
+      <button class="enc-btn ayuda" data-act="estado_encuentro" data-v="ayuda">${ic(C.ENCUENTRO_ESTADOS.ayuda.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.ayuda.corto)}</span></button>
+      <button class="enc-btn mira" data-act="mira_nuevo">${ic('eye')}<span>${esc(C.ENCUENTRO_MIRA)}</span></button>
+    </div>
+    <div id="enc-abajo">${encAbajoHTML(D)}</div>`;
+}
+// Uso, miembros, conexión, tema y acuerdo: una línea cada uno; al tocarlos se leen completos
+function encArribaHTML(D) {
+  const e = D.e, g = e.grupo, uso = usoDe(g.uso);
+  const linea = (k, icono, titulo, texto) => `<button type="button" class="enc-linea ${D.abierto[k] ? 'abierta' : ''}" data-act="enc_linea" data-v="${k}" aria-expanded="${D.abierto[k] ? 'true' : 'false'}">
+    ${ic(icono)}<span><b>${esc(titulo)}:</b> ${esc(texto)}</span></button>`;
+  return `<div class="row wrap enc-cabeza">
       <span class="catb" style="background:${okColor(g.color)}">${ic('lifebuoy')}${esc(uso ? uso.nombre : 'Grupo de encuentro')}</span>
       <span class="muted row">${ic('users')} ${e.miembros.length}</span>
       ${D.error ? `<span class="tiny row">${ic('cloud-off')} ${esc(C.SIN_CONEXION)}</span>` : ''}
       <span class="grow"></span>${ib('encuentro_refrescar', 'refresh', 'refrescar', '', 'sm')}</div>
-    ${g.tema ? `<div class="banner tema">${ic('sparkles')}<span><b>Tema de colección:</b> ${esc(g.tema)}</span></div>` : ''}
-    ${g.acuerdo ? `<p class="acuerdo">${ic('info-circle')} ${esc(g.acuerdo)}</p>` : ''}
-    <div class="enc-botones">
-      <button class="enc-btn bien" data-act="estado_encuentro" data-v="bien">${ic(C.ENCUENTRO_ESTADOS.bien.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.bien.nombre)}</span></button>
-      <button class="enc-btn ayuda" data-act="estado_encuentro" data-v="ayuda">${ic(C.ENCUENTRO_ESTADOS.ayuda.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.ayuda.nombre)}</span></button>
-      <button class="enc-btn mira" data-act="mira_nuevo">${ic('eye')}<span>${esc(C.ENCUENTRO_MIRA)}</span></button>
-    </div>
-    <div class="minimap enc-mapa" id="mapa-enc"></div>
-    <div class="enc-ubicacion">${comparte
-      ? `<span class="row grow">${ic('current-location')} ${esc(C.ENCUENTRO_COMPARTIENDO.replace('{m}', quedan))}</span><button class="btn alt sm" data-act="dejar_compartir">${ic('x')} ${esc(C.AYUDA.dejar_compartir)}</button>`
-      : `<span class="row grow">${ic('current-location')} ${esc(C.ENCUENTRO_COMPARTIR)}</span>${C.ENCUENTRO_COMPARTIR_MIN.map((m) => `<button class="btn alt sm" data-act="compartir_ubicacion" data-v="${m}">${m} min</button>`).join('')}`}</div>
-    <div class="sec"><h3 class="row">${ic('list-check')} Tablero</h3><div class="list">${e.miembros.map((m) => filaMiembro(m, e, nombrePunto)).join('')}</div></div>
-    <div class="sec"><div class="row between"><h3 class="row">${ic('flag')} Puntos de encuentro</h3>${ib('punto_nuevo', 'plus', 'punto_nuevo', '', 'sm')}</div>
-      ${e.puntos.length ? `<div class="list">${e.puntos.map((p) => filaPunto(p, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_PUNTOS)}</p>`}</div>
-    <div class="sec"><h3 class="row">${ic('eye')} ${esc(C.ENCUENTRO_MIRA)} · ${e.miras.length}</h3>
-      ${e.miras.length ? `<div class="list">${e.miras.slice(0, 30).map((k) => filaMira(k, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_MIRA)}</p>`}</div>
-    <div class="sec"><h3 class="row">${ic('settings')} Grupo</h3>
-      ${v.n ? `<p class="banner">${ic('trash')} ${esc(C.ENCUENTRO_VOTOS.replace('{n}', v.n).replace('{t}', v.total))}</p>` : ''}
+    ${g.tema ? linea('tema', 'sparkles', 'Tema', g.tema) : ''}
+    ${g.acuerdo ? linea('acuerdo', 'info-circle', 'Acuerdo', g.acuerdo) : ''}`;
+}
+function encCompartirHTML(D) {
+  const g = D.e.grupo, comparte = S.comparte && S.comparte.gid === g.id ? S.comparte : null;
+  if (comparte) {
+    const quedan = Math.max(1, Math.ceil((comparte.hasta - Date.now()) / 60000));
+    return `<span class="pastilla on">${ic('current-location')}<span>${esc(C.ENCUENTRO_COMPARTIENDO.replace('{m}', quedan))}</span>
+      <button type="button" data-act="dejar_compartir" aria-label="${esc(C.AYUDA.dejar_compartir)}" data-tip="${esc(C.AYUDA.dejar_compartir)}">${ic('x')}</button></span>`;
+  }
+  return `<span class="pastilla">${ic('current-location')}<span>${esc(C.ENCUENTRO_COMPARTIR_CORTO)}</span>
+    ${C.ENCUENTRO_COMPARTIR_MIN.map((m) => `<button type="button" data-act="compartir_ubicacion" data-v="${m}" aria-label="${esc(C.ENCUENTRO_COMPARTIR)} ${m} min">${m}</button>`).join('')}<span>min</span></span>`;
+}
+function encAbajoHTML(D) {
+  const e = D.e, g = e.grupo, yo = e.yo, v = e.votos;
+  const nombrePunto = (id) => (e.puntos.find((p) => p.id === id) || {}).name;
+  const ayudas = e.miembros.filter((m) => m.estado && m.estado.kind === 'ayuda').length;
+  const tabs = [['tablero', 'Tablero', ayudas ? `<b class="cuenta">${ayudas}</b>` : ''], ['puntos', 'Puntos', `<i>${e.puntos.length}</i>`],
+    ['mira', 'Mira', `<i>${e.miras.length}</i>`], ['grupo', 'Grupo', v.n ? `<b class="cuenta">${v.n}</b>` : '']];
+  let cuerpo = '';
+  if (D.tab === 'puntos') cuerpo = `<div class="row between enc-sub"><span class="muted">${esc(C.ENCUENTRO_PUNTOS_TEXTO)}</span>${ib('punto_nuevo', 'plus', 'punto_nuevo', '', 'sm on')}</div>
+    ${e.puntos.length ? `<div class="list">${e.puntos.map((p) => filaPunto(p, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_PUNTOS)}</p>`}`;
+  else if (D.tab === 'mira') cuerpo = e.miras.length ? `<div class="list">${e.miras.slice(0, 30).map((k) => filaMira(k, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_MIRA)}</p>`;
+  else if (D.tab === 'grupo') cuerpo = `${v.n ? `<p class="banner">${ic('trash')} ${esc(C.ENCUENTRO_VOTOS.replace('{n}', v.n).replace('{t}', v.total))}</p>` : ''}
       <div class="row wrap">
         ${yo.admin && g.invite_code ? ib('invitar_encuentro', 'brand-whatsapp', 'invitar', '', 'on') : ''}
         ${yo.admin ? ib('ajustes_encuentro', 'adjustments', 'encuentro_ajustes') : ''}
@@ -1864,7 +2030,10 @@ function encuentroHTML(D) {
         ${yo.duena && e.inactividad.puede_eliminar ? ib('eliminar_inactivo', 'clock-x', 'eliminar_inactivo') : ''}
         <span class="grow"></span>
         ${!yo.duena ? ib('salir_encuentro', 'door-exit', 'salir_grupo') : ''}
-      </div></div>`;
+      </div>`;
+  else cuerpo = `<div class="list">${e.miembros.map((m) => filaMiembro(m, e, nombrePunto)).join('')}</div>`;
+  return `<div class="enc-tabs" role="tablist">${tabs.map(([k, n, x]) => `<button type="button" role="tab" class="${D.tab === k ? 'on' : ''}" aria-selected="${D.tab === k}" data-act="enc_tab" data-v="${k}">${esc(n)}${x}</button>`).join('')}</div>
+    <div class="enc-cuerpo">${cuerpo}</div>`;
 }
 function filaMiembro(m, e, nombrePunto) {
   const st = m.estado, est = st ? C.ENCUENTRO_ESTADOS[st.kind] : null;
@@ -1894,37 +2063,77 @@ function filaMira(k, e) {
 }
 function montarEncuentro(raiz, D) {
   const el = $('#mapa-enc', raiz); if (!el || !D.e) return;
-  const e = D.e, g = e.grupo, pts = [];
   const m = L.map(el, { zoomControl: false, attributionControl: false });
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
+  D.mapa = m; D.capa = L.layerGroup().addTo(m); D.yoMarca = null;
+  const pts = pintarMarcasEncuentro(D);
+  if (D.foco) enfocarEncuentro(D);
+  else if (D.vista) m.setView(D.vista.c, D.vista.z);
+  else verTodoEncuentro(D, pts);
+  m.on('moveend', () => { try { const c = m.getCenter(); D.vista = { c: [c.lat, c.lng], z: m.getZoom ? m.getZoom() : 16 }; } catch (err) { /* nada */ } });
+  S.mini = m;
+}
+// Marcadores del grupo: puntos, "Mira esto", quien pidió ayuda, quien comparte y tu ubicación (solo en tu pantalla)
+function pintarMarcasEncuentro(D) {
+  const e = D.e, g = e.grupo, capa = D.capa, pts = [];
+  if (!capa) return pts;
+  capa.clearLayers();
   const icono = (html) => L.divIcon({ className: '', html, iconSize: [36, 36], iconAnchor: [18, 36] });
   e.puntos.forEach((p) => { pts.push([p.lat, p.lng]);
     L.marker([p.lat, p.lng], { icon: icono(`<div class="pin enc-punto ${p.principal ? 'principal' : ''}" style="background:${okColor(g.color)}">${ic('flag')}</div>`) })
-      .on('click', () => aviso(p.name, 'flag')).addTo(m); });
+      .on('click', () => aviso(p.name, 'flag')).addTo(capa); });
   e.miras.forEach((k) => { const a = e.miembros.find((x) => x.user_id === k.user_id) || {}; pts.push([k.lat, k.lng]);
     L.marker([k.lat, k.lng], { icon: icono(pinHTML('#3F6E73', 'eye', g.juego ? a.premio : 0, a.premio_color)) })
-      .on('click', () => aviso(k.note, 'eye')).addTo(m); });
+      .on('click', () => aviso(k.note, 'eye')).addTo(capa); });
   e.miembros.forEach((x) => { const st = x.estado;
     if (st && st.kind === 'ayuda' && st.lat != null) { pts.push([st.lat, st.lng]);
       L.marker([st.lat, st.lng], { icon: icono(`<div class="pin enc-ayuda">${ic('urgent')}</div>`) })
-        .on('click', () => aviso(`${x.name}: ${C.ENCUENTRO_ESTADOS.ayuda.nombre}`, 'urgent')).addTo(m); } });
+        .on('click', () => aviso(`${x.name}: ${C.ENCUENTRO_ESTADOS.ayuda.nombre}`, 'urgent')).addTo(capa); } });
   e.ubicaciones.forEach((u) => { const x = e.miembros.find((y) => y.user_id === u.user_id) || {}; pts.push([u.lat, u.lng]);
     L.marker([u.lat, u.lng], { icon: L.divIcon({ className: '', html: `<span class="avatar enc-yo" style="background:${okColor(x.avatar_color)}">${ic(x.avatar)}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] }) })
-      .on('click', () => aviso(`${x.name} · ${hace(u.updated_at)}`, 'current-location')).addTo(m); });
-  let foco = null;
+      .on('click', () => aviso(`${x.name} · ${hace(u.updated_at)}`, 'current-location')).addTo(capa); });
+  if (D.miPos) {
+    D.yoMarca = L.marker([D.miPos.lat, D.miPos.lng], { interactive: false, icon: L.divIcon({ className: '', html: '<span class="mi-punto"></span>', iconSize: [20, 20], iconAnchor: [10, 10] }) }).addTo(capa);
+  }
+  D.pts = pts;
+  return pts;
+}
+function enfocarEncuentro(D) {
+  const e = D.e, m = D.mapa; let foco = null;
   if (D.foco && typeof D.foco === 'object') foco = D.foco;
   else if (D.foco) {
     const x = e.miembros.find((y) => y.user_id === D.foco), u = e.ubicaciones.find((y) => y.user_id === D.foco);
     foco = x && x.estado && x.estado.lat != null ? { lat: x.estado.lat, lng: x.estado.lng } : u ? { lat: u.lat, lng: u.lng } : null;
   }
   D.foco = null;
-  if (foco) m.setView([foco.lat, foco.lng], 17);
-  else if (D.vista) m.setView(D.vista.c, D.vista.z);
-  else if (pts.length > 1 && m.fitBounds) m.fitBounds(pts, { padding: [30, 30], maxZoom: 17 });
-  else if (pts.length) m.setView(pts[0], 16);
+  if (foco && m) m.setView([foco.lat, foco.lng], 17);
+}
+function verTodoEncuentro(D, pts) {
+  const m = D.mapa; if (!m) return;
+  const todos = (pts || D.pts || []).slice();
+  if (D.miPos) todos.push([D.miPos.lat, D.miPos.lng]);
+  if (todos.length > 1 && m.fitBounds) m.fitBounds(todos, { padding: [30, 30], maxZoom: 17 });
+  else if (todos.length) m.setView(todos[0], 16);
   else m.setView(S.map ? [S.map.getCenter().lat, S.map.getCenter().lng] : C.MAPA_CENTRO, 14);
-  m.on('moveend', () => { try { const c = m.getCenter(); D.vista = { c: [c.lat, c.lng], z: m.getZoom ? m.getZoom() : 16 }; } catch (err) { /* nada */ } });
-  S.mini = m;
+}
+// "Mi ubicación": te muestra en el mapa del grupo; no se comparte con nadie
+async function miUbicacionEncuentro(btn) {
+  const D = encuentroActual(); if (!D || !D.mapa) return;
+  ocupado(btn, true);
+  let p;
+  try { p = await getPos(); } catch (err) { ocupado(btn, false); return aviso(C.GUIA_SIN_GPS, 'current-location'); }
+  ocupado(btn, false);
+  D.miPos = p;
+  const top = hojaArriba(); if (!top || top.datos !== D || !D.mapa) return;
+  pintarMarcasEncuentro(D);
+  D.mapa.setView([p.lat, p.lng], 17);
+  const b = $('[data-act="enc_mi_ubicacion"]'); if (b) b.classList.add('on');
+}
+// Lleva la vista al mapa del grupo (está arriba) y lo centra donde se pidió
+function verMapaEncuentro(D) {
+  const top = hojaArriba();
+  if (top && top.datos === D && D.mapa) { enfocarEncuentro(D); const sh = $('.sheet'); if (sh) sh.scrollTo ? sh.scrollTo({ top: 0, behavior: 'smooth' }) : (sh.scrollTop = 0); }
+  else dibujarHoja();
 }
 function hojaGuiaEncuentro() {
   abrirHoja(() => `${cabeza(`${ic('lifebuoy')} ${esc(C.AYUDA.encuentro_guia)}`)}
@@ -1948,27 +2157,92 @@ async function enviarEstado(btn, gid, kind) {
   const exacta = kind === 'ayuda' && !!($('#ayuda-exacta', raiz) || {}).checked;
   const nota = kind === 'ayuda' ? (($('#ayuda-nota', raiz) || {}).value || '').trim() : '';
   ocupado(btn, true);
-  let pos = null;
-  try { pos = await getPosRapida(); } catch (err) { pos = null; }
-  if (exacta && !pos) aviso('Sin GPS: se envía sin tu ubicación exacta', 'current-location');
-  const fila = { group_id: gid, kind, punto_id: punto, note: nota || null, created_at: new Date().toISOString() };
-  if (exacta && pos) Object.assign(fila, { lat: pos.lat, lng: pos.lng, accuracy: pos.acc });
-  let enCola = false;
-  try {
-    if (!navigator.onLine) throw new TypeError('Failed to fetch');
-    fila.colonia = pos ? await api.colonia(pos.lat, pos.lng) : null;
-    await api.addEstado(fila);
-    api.dispararPush();
-  } catch (err) {
-    if (!esErrorRed(err)) { ocupado(btn, false); return fallo(err); }
-    delete fila.colonia;
-    try { await guardarPendiente({ tipo: 'estado', datos: fila, pos }); enCola = true; }
-    catch (err2) { ocupado(btn, false); return fallo(err); }
-  }
+  const r = await mandarEstado([gid], kind, { punto, exacta, nota });
+  if (!r.enviados && !r.enCola) { ocupado(btn, false); return fallo(r.errores[0]); }
   if (hojaArriba() && hojaArriba().tipo === 'estado') cerrarHoja();
   const nombrePunto = punto && e ? (e.puntos.find((p) => p.id === punto) || {}).name : '';
-  hojaEstadoListo(kind, { enCola, nombrePunto, nota, pos: exacta ? pos : null });
-  if (D && !enCola) D.cargar();
+  hojaEstadoListo(kind, { enCola: !!r.enCola, nombrePunto, nota, pos: exacta ? r.pos : null });
+  if (D && r.enviados) D.cargar();
+}
+// Envía "Todo bien" o "Necesito ayuda" a uno o varios grupos. Sin señal, cada aviso queda guardado y se envía al volver.
+async function mandarEstado(gids, kind, o) {
+  let pos = null;
+  try { pos = await getPosRapida(); } catch (err) { pos = null; }
+  if (o.exacta && !pos) aviso('Sin GPS: se envía sin tu ubicación exacta', 'current-location');
+  let colonia = null;
+  if (navigator.onLine && pos) { try { colonia = await api.colonia(pos.lat, pos.lng); } catch (err) { colonia = null; } }
+  const r = { pos, enviados: 0, enCola: 0, errores: [], fallidos: [] };
+  const cuando = new Date().toISOString();
+  for (const gid of gids) {
+    const fila = { group_id: gid, kind, punto_id: o.punto || null, note: o.nota || null, created_at: cuando };
+    if (o.exacta && pos) Object.assign(fila, { lat: pos.lat, lng: pos.lng, accuracy: pos.acc });
+    try {
+      if (!navigator.onLine) throw new TypeError('Failed to fetch');
+      await api.addEstado(Object.assign({ colonia }, fila));
+      r.enviados++;
+    } catch (err) {
+      if (!esErrorRed(err)) { r.errores.push(err); r.fallidos.push(gid); continue; }
+      try { await guardarPendiente({ tipo: 'estado', datos: fila, pos }); r.enCola++; }
+      catch (err2) { r.errores.push(err); r.fallidos.push(gid); }
+    }
+  }
+  if (r.enviados) api.dispararPush();
+  return r;
+}
+
+/* Aviso rápido: "Todo bien" o "Necesito ayuda" a tus grupos de encuentro, sin entrar a cada grupo.
+   Se llega desde el mapa, desde la lista de grupos o (en Android) dejando presionado el ícono de la app. */
+const gruposEncuentro = () => (S.groups || []).filter(esEncuentro);
+const icAyuda = () => `<span class="ic-ayuda" aria-hidden="true"><b>!</b>${ic('lifebuoy')}<b>!</b></span>`;
+function botonAyuda(attrs = '') {
+  return `<button class="ib sm ayuda-atajo" data-act="aviso_rapido" data-tip="${esc(C.AYUDA.aviso_rapido)}" aria-label="${esc(C.AYUDA.aviso_rapido)}" ${attrs}>${icAyuda()}</button>`;
+}
+function pintarAtajoMapa() { const el = $('#atajo-ayuda'); if (el) el.innerHTML = gruposEncuentro().length ? botonAyuda() : ''; }
+const Q = {};
+function hojaAvisoRapido(gid) {
+  const grupos = gruposEncuentro();
+  if (!grupos.length) {
+    return abrirHoja(() => `${cabeza(`${icAyuda()} ${esc(C.AVISO_RAPIDO_TITULO)}`)}
+      <div class="empty">${ic('lifebuoy')}<p>${esc(C.AVISO_RAPIDO_SIN_GRUPOS)}</p></div>
+      <button class="btn block" data-act="grupo_nuevo">${ic('plus')} ${esc(C.AYUDA.grupo_nuevo)}</button>`, null, 'aviso_rapido');
+  }
+  Object.assign(Q, { kind: 'ayuda', exacta: false, nota: '',
+    sel: new Set(gid && grupos.some((g) => g.id === gid) ? [gid] : grupos.map((g) => g.id)) });
+  abrirHoja(avisoRapidoHTML, null, 'aviso_rapido');
+}
+function avisoRapidoHTML() {
+  const grupos = gruposEncuentro(), n = grupos.filter((g) => Q.sel.has(g.id)).length, est = C.ENCUENTRO_ESTADOS;
+  const tipo = (k) => `<button type="button" class="enc-btn ${k} ${Q.kind === k ? 'on' : 'apagado'}" data-act="aviso_tipo" data-v="${k}" aria-pressed="${Q.kind === k}">${ic(est[k].icono)}<span>${esc(est[k].nombre)}</span></button>`;
+  return `${cabeza(`${icAyuda()} ${esc(C.AVISO_RAPIDO_TITULO)}`)}
+    <div class="aviso-tipos">${tipo('bien')}${tipo('ayuda')}</div>
+    <div class="tiny aviso-a">${esc(C.AVISO_RAPIDO_A)}</div>
+    <div class="list aviso-grupos">${grupos.map((g) => { const uso = usoDe(g.uso), on = Q.sel.has(g.id);
+      return `<button type="button" class="li check-grupo ${on ? 'on' : ''}" data-act="aviso_grupo" data-id="${g.id}" aria-pressed="${on}">
+        <span class="caja">${on ? ic('check') : ''}</span><span class="avatar sm" style="background:${okColor(g.color)}">${ic(g.icon)}</span>
+        <b class="grow">${esc(g.name)}</b>${uso ? `<span class="tiny">${esc(uso.nombre)}</span>` : ''}</button>`; }).join('')}</div>
+    ${Q.kind === 'ayuda' ? `<label class="check"><input type="checkbox" id="rapido-exacta" ${Q.exacta ? 'checked' : ''}> <span>${esc(C.ENCUENTRO_EXACTA)}</span></label>
+      <label class="campo-ic">${ic('info-circle')}<textarea id="rapido-nota" class="in compacto crece" rows="1" maxlength="${C.ENCUENTRO_NOTA_MAX}" aria-label="Nota" placeholder="${esc(C.ENCUENTRO_NOTA_AYUDA)}">${esc(Q.nota)}</textarea></label>` : ''}
+    <button class="btn block enc-enviar ${Q.kind}" data-act="enviar_aviso_rapido" ${n ? '' : 'disabled'}>${ic('send')} ${esc(n > 1 ? C.AVISO_RAPIDO_ENVIAR_N.replace('{n}', n) : C.AVISO_RAPIDO_ENVIAR)}</button>`;
+}
+function recordarRapido() {
+  const x = $('#rapido-exacta'), t = $('#rapido-nota');
+  if (x) Q.exacta = x.checked; if (t) Q.nota = t.value;
+}
+async function enviarAvisoRapido(btn) {
+  recordarRapido();
+  const grupos = gruposEncuentro().filter((g) => Q.sel.has(g.id));
+  if (!grupos.length) return aviso(C.AVISO_RAPIDO_ELIGE, 'users');
+  const kind = Q.kind === 'bien' ? 'bien' : 'ayuda', nota = kind === 'ayuda' ? Q.nota.trim() : '', exacta = kind === 'ayuda' && Q.exacta;
+  ocupado(btn, true);
+  const r = await mandarEstado(grupos.map((g) => g.id), kind, { exacta, nota });
+  if (!r.enviados && !r.enCola) { ocupado(btn, false); return fallo(r.errores[0]); }
+  if (hojaArriba() && hojaArriba().tipo === 'aviso_rapido') cerrarHoja();
+  hojaEstadoListo(kind, { enCola: !!r.enCola, nota, pos: exacta ? r.pos : null });
+  if (r.fallidos.length) {
+    const nombres = r.fallidos.map((id) => (miGrupo(id) || {}).name).filter(Boolean).join(', ');
+    setTimeout(() => aviso(`${C.AVISO_RAPIDO_NO_SALIO} ${nombres}. ${errTexto(r.errores[0]).includes('ESPERA') ? C.AVISO_RAPIDO_ESPERA : ''}`.trim(), 'alert-triangle'), 400);
+  }
+  const D = encuentroActual(); if (D && r.enviados) D.cargar();
 }
 function textoWhatsAppEstado(kind, o) {
   const partes = [kind === 'ayuda' ? 'Necesito ayuda.' : 'Todo bien.'];
@@ -1989,26 +2263,28 @@ function hojaEstadoListo(kind, o) {
 /* "Mira esto" y proponer un punto de encuentro: nota (o nombre), foto opcional y ubicación */
 const M = {};
 function hojaMarca(gid, modo) {
-  const D = encuentroActual(), e = D && D.e, uso = e ? usoDe(e.grupo.uso) : null;
-  Object.assign(M, { gid, modo, foto: null, vistaUrl: null, nombre: '', nota: '', pos: null, gps: 'buscando', mover: null,
-    sugerencias: modo === 'punto' && uso ? uso.puntos.filter((n) => !(e.puntos || []).some((p) => sinAcentos(p.name) === sinAcentos(n))) : [] });
+  if (M.enc) soltarLienzo(M.enc.img);
+  Object.assign(M, { gid, modo, foto: null, enc: null, vistaUrl: null, nombre: '', nota: '', pos: null, gps: 'buscando', mover: null });
   abrirHoja(marcaHTML, montarMarca, 'marca');
+  leerGpsMarca();
+}
+function leerGpsMarca() {
+  const gid = M.gid; M.gps = 'buscando'; pintarGpsMarca();
   getPos().then((p) => { if (M.gid !== gid) return; M.pos = p; M.gps = 'ok'; if (M.mover) M.mover(p); pintarGpsMarca(); })
     .catch(() => { M.gps = M.pos ? 'ok' : 'error'; pintarGpsMarca(); });
 }
 function marcaHTML() {
   const punto = M.modo === 'punto';
   return `${cabeza(punto ? `${ic('flag')} ${esc(C.AYUDA.punto_nuevo)}` : `${ic('eye')} ${esc(C.ENCUENTRO_MIRA)}`)}
-    ${punto ? `<div class="field"><label for="marca-nombre">${ic('pencil')} Nombre</label><input id="marca-nombre" class="in" maxlength="40" value="${esc(M.nombre)}" placeholder="Parque España" autocomplete="off">
-      ${M.sugerencias.length ? `<div class="chips" style="flex-wrap:wrap;margin-top:8px">${M.sugerencias.map((n) => `<button type="button" class="chip" data-act="sugerir_punto" data-v="${esc(n)}">${esc(n)}</button>`).join('')}</div>` : ''}</div>` : ''}
-    ${M.vistaUrl ? `<img class="big" id="vista-marca" src="${M.vistaUrl}" alt="">` : ''}
-    <div class="row" style="gap:10px;margin-bottom:10px">
-      <label class="btn alt grow" data-tip="${esc(C.AYUDA.camara)}" aria-label="${esc(C.AYUDA.camara)}">${ic('camera')}<input type="file" accept="image/*" capture="environment" hidden data-in="foto-marca"></label>
-      <label class="btn alt grow" data-tip="${esc(C.AYUDA.galeria)}" aria-label="${esc(C.AYUDA.galeria)}">${ic('upload')}<input type="file" accept="image/*" hidden data-in="foto-marca"></label>
-      ${M.foto ? ib('quitar_foto_marca', 'x', 'quitar_captura', '', 'sm') : ''}</div>
-    <div class="field"><label for="marca-nota">${ic('info-circle')} Nota</label><textarea id="marca-nota" class="in" maxlength="${C.ENCUENTRO_NOTA_MAX}" rows="2" placeholder="${punto ? 'Junto a la fuente' : 'Aquí reparten agua'}">${esc(M.nota)}</textarea></div>
-    <div class="field"><label class="row">${ic('map-pin')} <span id="gps-marca">${gpsTexto(M)}</span></label><div class="minimap" id="mini-marca"></div></div>
-    <button class="btn block" data-act="guardar_marca">${ic('check')} Guardar</button>`;
+    ${punto ? `<label class="campo-ic">${ic('pencil')}<input id="marca-nombre" class="in compacto" maxlength="40" value="${esc(M.nombre)}" placeholder="${esc(C.PUNTO_PISTA)}" aria-label="Nombre del punto" autocomplete="off"></label>` : ''}
+    <label class="campo-ic">${ic('info-circle')}<textarea id="marca-nota" class="in compacto crece" rows="1" maxlength="${C.ENCUENTRO_NOTA_MAX}" aria-label="Nota" placeholder="${esc(punto ? C.NOTA_PISTA : C.MIRA_PISTA)}">${esc(M.nota)}</textarea></label>
+    <div class="fotos-fila">
+      <label class="ib mini" data-tip="${esc(C.AYUDA.camara)}" aria-label="${esc(C.AYUDA.camara)}">${ic('camera')}<input type="file" accept="image/*" capture="environment" hidden data-in="foto-marca"></label>
+      <label class="ib mini" data-tip="${esc(C.AYUDA.galeria)}" aria-label="${esc(C.AYUDA.galeria)}">${ic('upload')}<input type="file" accept="image/*" hidden data-in="foto-marca"></label>
+      ${M.foto ? `<button type="button" class="foto-mini" data-act="encuadrar_marca" data-tip="${esc(C.AYUDA.encuadrar)}" aria-label="${esc(C.AYUDA.encuadrar)}"><img id="vista-marca" src="${M.vistaUrl}" alt=""></button>${ib('quitar_foto_marca', 'x', 'quitar_captura', '', 'sm')}` : ''}
+    </div>
+    ${filaGuardar('guardar_marca', M, 'gps-marca')}
+    <div class="mapa-caja"><div class="minimap grande" id="mini-marca"></div><div class="mapa-lado">${ib('releer_gps_marca', 'current-location', 'gps', '', 'sm')}</div></div>`;
 }
 function recordarMarca() {
   const n = $('#marca-nombre'), t = $('#marca-nota');
@@ -2019,20 +2295,39 @@ function montarMarca(raiz) {
   const el = $('#mini-marca', raiz);
   if (el) { const mm = miniMapa(el, M.pos, (p) => { M.pos = p; M.gps = 'ok'; pintarGpsMarca(); }); M.mover = mm.mover; }
 }
-function pintarGpsMarca() { const el = $('#gps-marca'); if (el) el.innerHTML = gpsTexto(M); }
+function pintarGpsMarca() { const el = $('#gps-marca'); if (el) { el.innerHTML = gpsCorto(M); el.classList.toggle('alerta', !!(M.pos && esAproximada(M.pos))); } }
 async function fotosDe(blob) {
   const img = await cargarImagen(blob);
   return { grande: await lienzoABlob(escalar(img, C.FOTO_LADO), C.FOTO_CALIDAD, false), mini: await lienzoABlob(escalar(img, C.MINIATURA_LADO), C.MINIATURA_CALIDAD, false) };
+}
+async function cuadroMarca() {
+  const E = M.enc; if (!E) return;
+  E.sucio = false;
+  const cv = cuadroDe(E, C.FOTO_LADO), b = await lienzoABlob(cv, C.FOTO_CALIDAD, false);
+  soltarLienzo(cv);
+  if (M.enc !== E) return;
+  M.foto = b;
+  if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl);
+  M.vistaUrl = URL.createObjectURL(M.foto);
+  const v = $('#vista-marca'); if (v) v.src = M.vistaUrl;
 }
 async function tomarFotoMarca(file) {
   try {
     recordarMarca();
     const img = await cargarImagen(file);
-    M.foto = await lienzoABlob(escalar(img, C.FOTO_LADO), C.FOTO_CALIDAD, false);
-    if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl);
-    M.vistaUrl = URL.createObjectURL(M.foto);
+    if (M.enc) soltarLienzo(M.enc.img);
+    M.enc = nuevoEncuadre(escalar(img, C.ENCUADRE_FUENTE));
+    await cuadroMarca();
     dibujarHoja();
+    hojaEncuadre(M.enc, async () => { await cuadroMarca(); });
   } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
+}
+// Encuadrar en su propia hoja (puntos y "Mira esto"): la foto cuadrada se ve completa y se ajusta con los dedos
+function hojaEncuadre(E, alListo) {
+  abrirHoja(() => `${cabeza(`${ic('crop')} ${esc(C.AYUDA.encuadrar)}`)}
+    <div class="foto-caja"><canvas class="encuadre" id="encuadre-solo"></canvas><span class="pista">${ic('arrows-move')} ${esc(C.ENCUADRE_PISTA)}</span></div>
+    <button class="btn block guardar" data-act="encuadre_listo" style="margin-top:12px">${ic('check')} Listo</button>`,
+  (raiz) => { const cv = $('#encuadre-solo', raiz); if (cv) montarEncuadre(cv, E, () => alListo()); raiz._encuadre = alListo; }, 'encuadre');
 }
 async function subirFotosDe(fotos, carpeta) {
   if (!fotos || !fotos.grande) return { pFoto: null, pMini: null };
@@ -2049,6 +2344,7 @@ async function guardarMarca(btn) {
   if (!punto && !nota) { const t = $('#marca-nota'); if (t) t.focus(); return aviso('Escribe una nota corta', 'pencil'); }
   if (!M.pos) return aviso('Falta la ubicación: toca el mapa', 'map-pin');
   ocupado(btn, true);
+  if (M.enc && M.enc.sucio) await cuadroMarca();
   const D = encuentroActual(), gid = M.gid;
   const fila = punto ? { group_id: gid, name: nombre, note: nota || null, lat: M.pos.lat, lng: M.pos.lng }
     : { group_id: gid, note: nota, lat: M.pos.lat, lng: M.pos.lng, created_at: new Date().toISOString() };
@@ -2543,6 +2839,26 @@ function vitrinaHTML(v, uid, conCuenta) {
         <img src="${api.photoUrl(h.thumb || h.photo)}" alt="" loading="lazy"><figcaption><b>${esc(h.name)}</b>${h.colonia ? `<span>${ic('map-pin')} ${esc(h.colonia)}</span>` : ''}</figcaption></figure>`).join('')}</div></div>`).join('')
       : `<div class="empty">${ic('photo')}<p>${esc(C.VITRINA_VACIA)}</p></div>`}
     ${conCuenta || cats.reduce((n, c) => n + c.hallazgos.length, 0) <= 6 ? '' : invitacionHTML(false)}</div>`;
+}
+// Galería de una categoría de otra persona: solo lo público con foto, igual que su vitrina
+function abrirGaleriaCat(uid, cat) {
+  const D = { v: undefined };
+  const hoja = { render: () => galeriaCatHTML(D, uid, cat), tipo: 'galeria_cat' };
+  pila.push(hoja); dibujarHoja();
+  api.vitrina(uid).then((v) => { D.v = v || null; }).catch((e) => { D.v = null; fallo(e); })
+    .finally(() => { if (hojaArriba() === hoja) dibujarHoja(); });
+}
+function galeriaCatHTML(D, uid, cat) {
+  if (D.v === undefined) return cabeza(ic('photo')) + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!D.v) return cabeza(ic('photo')) + `<div class="empty">${ic('alert-triangle')}<p>Este perfil no está disponible</p></div>`;
+  const v = D.v, c = (v.categorias || []).find((x) => x.id === cat);
+  const items = c && c.hallazgos ? c.hallazgos : [];
+  return `${cabeza(c ? `<span class="row">${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total}</span></span>` : ic('photo'))}
+    <button class="row galeria-persona" data-act="perfil" data-id="${uid}" style="text-align:left">${avatar(v)}<div class="grow"><b>${esc(v.name)}</b>${c ? `<div class="muted tiny">${esc(C.GALERIA_DE.replace('{c}', c.name))}</div>` : ''}</div></button>
+    ${items.length ? `<div class="vgrid">${items.map((h) => `<figure class="vtile" data-act="ficha" data-id="${h.id}" role="button" aria-label="${esc(h.name)}">
+      <img src="${api.photoUrl(h.thumb || h.photo)}" alt="" loading="lazy"><figcaption><b>${esc(h.name)}</b>${h.colonia ? `<span>${ic('map-pin')} ${esc(h.colonia)}</span>` : ''}</figcaption></figure>`).join('')}</div>`
+      : `<div class="empty">${ic('photo')}<p>${esc(C.GALERIA_VACIA)}</p></div>`}
+    <button class="btn alt block" data-act="ver_vitrina" data-id="${uid}" style="margin-top:14px">${ic('photo')} ${esc(C.GALERIA_VITRINA)}</button>`;
 }
 function abrirVitrina(uid) {
   const D = { v: undefined };
@@ -3117,6 +3433,16 @@ const ACCIONES = {
     hojaMosaico(b.dataset.id);
   },
   enviar_mosaico(b) { const M = MOSAICOS.get(b.dataset.id); if (M && M.estado === 'listo') compartirMosaico(M); },
+  galeria_cat(b) {
+    const uid = b.dataset.id, cat = b.dataset.cat; if (!uid || !cat) return;
+    if (uid === S.user.id) { cerrarTodo(); S.coleccionCat = cat; return irA('coleccion'); }
+    abrirGaleriaCat(uid, cat);
+  },
+  ver_vitrina: (b) => abrirVitrina(b.dataset.id),
+  aviso_rapido: (b) => hojaAvisoRapido(b.dataset.id || null),
+  aviso_tipo(b) { recordarRapido(); Q.kind = b.dataset.v === 'bien' ? 'bien' : 'ayuda'; dibujarHoja(); },
+  aviso_grupo(b) { recordarRapido(); const id = b.dataset.id; if (Q.sel.has(id)) Q.sel.delete(id); else Q.sel.add(id); dibujarHoja(); },
+  enviar_aviso_rapido: (b) => enviarAvisoRapido(b),
   vitrina_invitar() {
     const el = $('#invita'); if (!el) return;
     el.scrollIntoView({ behavior: menosMovimiento() ? 'auto' : 'smooth', block: 'center' });
@@ -3156,22 +3482,30 @@ const ACCIONES = {
   },
 
   /* registrar */
-  usar_original(b) {
-    R.usarRecorte = false; ponerVista(R.original);
-    $$('.toggle [data-act]', b.parentNode).forEach((x) => x.classList.toggle('on', x === b));
+  usar_original() {
+    if (!R.usarRecorte) return;
+    recordarFormulario(); R.usarRecorte = false; if (R.original) ponerVista(R.original); dibujarHoja();
   },
   async recortar(b) {
-    const botones = $$('.toggle [data-act]', b.parentNode);
-    if (R.recorte) { R.usarRecorte = true; ponerVista(R.recorte); botones.forEach((x) => x.classList.toggle('on', x === b)); return; }
-    const prog = $('#prog'); prog.hidden = false; ocupado(b, true);
+    if (R.recorte) { recordarFormulario(); R.usarRecorte = true; ponerVista(R.recorte); return dibujarHoja(); }
+    const prog = $('#prog'); if (prog) prog.hidden = false; ocupado(b, true);
+    const E = R.enc; if (E) E.ocupado = true;   // mientras se quita el fondo, el encuadre no se mueve
     try {
-      R.recorte = await recortarFondo(R.original, (k) => { prog.firstElementChild.style.width = Math.round(k * 100) + '%'; });
-      R.usarRecorte = true; ponerVista(R.recorte);
-      ocupado(b, false); botones.forEach((x) => x.classList.toggle('on', x === b));
+      const cuadro = await cuadroAlDia(), ver = E ? E.ver || 0 : 0;
+      const r = await recortarFondo(cuadro, (k) => { const p = $('#prog'); if (p) p.firstElementChild.style.width = Math.round(k * 100) + '%'; });
+      if (R.enc !== E || (E && (E.ver || 0) !== ver)) return;
+      recordarFormulario(); R.recorte = r; R.usarRecorte = true; ponerVista(R.recorte); dibujarHoja();
     } catch (e) {
       console.error(e); ocupado(b, false);
       aviso('No se pudo recortar. Se usará la foto original', 'scissors');
-    } finally { prog.hidden = true; }
+    } finally { if (E) E.ocupado = false; const p = $('#prog'); if (p) p.hidden = true; }
+  },
+  gps_chip() {
+    const top = hojaArriba(), X = top && top.tipo === 'marca' ? M : R;
+    if (X.pos && X.pos.acc != null && esAproximada(X.pos)) { if (X === R) recordarFormulario(); else recordarMarca(); return avisarPrecision({ acc: X.pos.acc }, true); }
+    if (X.pos && X.pos.acc == null) return aviso(C.GPS_MARCADO_A_MANO, 'hand-finger');   // no se pierde el punto corregido a mano
+    if (X.gps === 'error' || !X.pos) aviso(C.GPS_TOCA_MAPA, 'map-pin');
+    if (X === R) leerGPS(); else leerGpsMarca();
   },
   releer_gps: () => leerGPS(),
   guardar_hallazgo: (b) => guardarHallazgo(b),
@@ -3240,21 +3574,38 @@ const ACCIONES = {
   },
   encuentro: (b) => abrirEncuentro(b.dataset.id),
   encuentro_guia: () => hojaGuiaEncuentro(),
-  encuentro_refrescar(b) { const D = encuentroActual(); if (D) { ocupado(b, true); D.cargar(); } },
+  encuentro_refrescar(b) { const D = encuentroActual(); if (D) { ocupado(b, true); D.cargar(true); } },
   estado_encuentro(b) { const D = encuentroActual(); if (D) hojaEstado(D.gid, b.dataset.v === 'ayuda' ? 'ayuda' : 'bien'); },
   enviar_estado: (b) => enviarEstado(b, b.dataset.gid, b.dataset.v === 'ayuda' ? 'ayuda' : 'bien'),
   whatsapp_estado: (b) => abrirWhatsApp(b.dataset.texto || ''),
   mira_nuevo() { const D = encuentroActual(); if (D) hojaMarca(D.gid, 'mira'); },
   punto_nuevo() { const D = encuentroActual(); if (D) hojaMarca(D.gid, 'punto'); },
-  sugerir_punto(b) { M.nombre = b.dataset.v; const n = $('#marca-nombre'); if (n) { n.value = b.dataset.v; n.focus(); } },
-  quitar_foto_marca() { recordarMarca(); if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl); M.foto = null; M.vistaUrl = null; dibujarHoja(); },
+  quitar_foto_marca() { recordarMarca(); if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl); if (M.enc) soltarLienzo(M.enc.img); M.foto = null; M.enc = null; M.vistaUrl = null; dibujarHoja(); },
+  encuadrar_marca() { if (!M.enc) return; recordarMarca(); hojaEncuadre(M.enc, async () => { await cuadroMarca(); }); },
+  async encuadre_listo(b) {
+    const raiz = $('.sheet'), fn = raiz && raiz._encuadre;
+    ocupado(b, true);
+    try { if (fn) await fn(); } catch (e) { console.error(e); }
+    cerrarHoja();
+  },
+  releer_gps_marca: () => leerGpsMarca(),
   guardar_marca: (b) => guardarMarca(b),
   ver_foto(b) { const src = b.dataset.src; if (src) abrirHoja(() => `${cabeza('')}<img class="big" src="${esc(src)}" alt="">`, null, 'foto'); },
   ver_mira(b) {
     const D = encuentroActual(), k = D && D.e && D.e.miras.find((x) => x.id === b.dataset.id); if (!k) return;
-    D.foco = { lat: k.lat, lng: k.lng }; dibujarHoja(); const el = $('#mapa-enc'); if (el) el.scrollIntoView({ block: 'center' });
+    D.foco = { lat: k.lat, lng: k.lng }; verMapaEncuentro(D);
   },
-  ver_en_mapa_enc(b) { const D = encuentroActual(); if (!D) return; D.foco = b.dataset.id; dibujarHoja(); const el = $('#mapa-enc'); if (el) el.scrollIntoView({ block: 'center' }); },
+  ver_en_mapa_enc(b) { const D = encuentroActual(); if (!D) return; D.foco = b.dataset.id; verMapaEncuentro(D); },
+  enc_tab(b) {
+    const D = encuentroActual(); if (!D || !D.e) return;
+    D.tab = b.dataset.v; const el = $('#enc-abajo'); if (el && D.mapa) el.innerHTML = encAbajoHTML(D); else dibujarHoja();
+  },
+  enc_linea(b) {
+    const D = encuentroActual(); if (!D || !D.e) return;
+    D.abierto[b.dataset.v] = !D.abierto[b.dataset.v]; const el = $('#enc-arriba'); if (el) el.innerHTML = encArribaHTML(D); else dibujarHoja();
+  },
+  enc_mi_ubicacion: (b) => miUbicacionEncuentro(b),
+  enc_ver_todo() { const D = encuentroActual(); if (D) verTodoEncuentro(D); },
   async borrar_mira(b) {
     const D = encuentroActual(); if (!D) return;
     if (!(await confirmar('¿Quitar este "Mira esto"?'))) return;
@@ -3667,7 +4018,7 @@ async function arrancar(user) {
 }
 // Enlaces compartidos: #f= hallazgo, #u= perfil, #v= vitrina, #g= invitación a grupo.
 // Se recuerdan durante el inicio de sesión con Google.
-const RX_DESTINO = /^#([fuvc])=([0-9a-f-]{36})$|^#g=([0-9a-f]{6,40})$|^#e=([0-9a-f-]{36})(?:\.([0-9a-f-]{36}))?$|^#b$/i;
+const RX_DESTINO = /^#([fuvc])=([0-9a-f-]{36})$|^#g=([0-9a-f]{6,40})$|^#e=([0-9a-f-]{36})(?:\.([0-9a-f-]{36}))?$|^#b$|^#ayuda$|^#nuevo$/i;
 function guardarDestino() {
   if (RX_DESTINO.test(location.hash)) { try { localStorage.setItem('cg_destino', location.hash); } catch (e) { /* sin almacenamiento */ } }
 }
@@ -3678,7 +4029,10 @@ function rutaHash(forzada) {
   const m = h.match(RX_DESTINO);
   if (location.hash) history.replaceState(null, '', location.pathname);
   if (!m) return;
-  if (m[0].toLowerCase() === '#b') hojaAvisos();
+  const fijo = m[0].toLowerCase();
+  if (fijo === '#b') hojaAvisos();
+  else if (fijo === '#ayuda') { cerrarTodo(); hojaAvisoRapido(); }    // atajo del ícono de la app (Android)
+  else if (fijo === '#nuevo') { cerrarTodo(); nuevoRegistro(); }
   else if (m[3]) mostrarInvitacion(m[3]);
   else if (m[4]) { if (miGrupo(m[4])) abrirEncuentro(m[4], m[5] || null); else aviso('Este grupo ya no está disponible', 'alert-triangle'); }
   else if (m[1] === 'f') abrirFicha(m[2]); else if (m[1] === 'v') abrirVitrina(m[2]); else if (m[1] === 'c') hojaChat(m[2]); else abrirPerfil(m[2]);
@@ -3704,7 +4058,7 @@ async function iniciar() {
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
 window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
-  subirPendientes, contarPendientes, BDP, encuentroActual, textoWhatsAppEstado, abrirEncuentro, pararCompartir,
+  subirPendientes, contarPendientes, BDP, encuentroActual, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos,
   versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
 iniciar();
 })();
