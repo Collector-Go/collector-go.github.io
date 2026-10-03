@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.9.1',
+  VERSION: '1.9.2',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -149,6 +149,17 @@ window.CONFIG = {
   AVISO_RAPIDO_NO_SALIO: 'No se envió a:',
   AVISO_RAPIDO_ESPERA: 'Espera unos segundos y vuelve a intentarlo.',
   AVISO_RAPIDO_SIN_GRUPOS: 'Para avisar rápido, primero crea un grupo de encuentro o únete a uno.',
+  CAPA_VACIA: 'Ese grupo aún no tiene nada en el mapa',
+  COL_TODAS: 'Todas',
+  COL_HALLAZGOS: 'hallazgos',
+  PLEGAR_NOTIF_ACTIVAS: 'activadas, {n} de {t}',
+  PLEGAR_NOTIF: { apagadas: 'apagadas', bloqueadas: 'bloqueadas en el teléfono', no: 'no disponibles aquí', iphone: 'instala la app para activarlas' },
+  PLEGAR_PENDIENTES: '{n} por subir',
+  PLEGAR_ESPACIO: '{mb} MB guardados',
+  DEST_COLECCIONES: 'Mis colecciones',
+  DEST_GRUPOS: 'Grupos',
+  ENC_MODO_MIRA: 'Mira esto',
+  ENC_MODO_PUNTO: 'Punto de encuentro',
   GALERIA_DE: 'Colección de {c}',
   GALERIA_VACIA: 'Aún no hay hallazgos públicos con foto en esta colección',
   GALERIA_VITRINA: 'Ver toda su vitrina',
@@ -484,6 +495,6 @@ window.CONFIG = {
     principal: 'Hacer punto principal', borrar_lo_mio: 'Borrar lo mío', votar_borrado: 'Proponer borrar el grupo', quitar_voto: 'Retirar mi voto',
     eliminar_inactivo: 'Eliminar por inactividad', refrescar: 'Actualizar', ver_en_mapa: 'Ver en el mapa', miembro: 'Opciones de esta persona',
     coadmin: 'Coadministradora', duena: 'Creó el grupo', dejar_compartir: 'Dejar de compartir', subir_ahora: 'Subir ahora',
-    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
+    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', capa_encuentro: 'Ver u ocultar el grupo en el mapa', col_mosaico: 'Ver todas las colecciones', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
   }
 };

@@ -66,7 +66,7 @@ h1,h2,h3{margin:0;font-family:Georgia,"Times New Roman",serif;font-weight:700}
 h1{font-size:28px} h2{font-size:22px} h3{font-size:18px}
 
 /* controles flotantes del mapa */
-.map-top{position:absolute;top:calc(10px + var(--safe-t));left:10px;right:10px;z-index:400;display:flex;gap:8px;align-items:flex-start}
+.map-top{position:absolute;top:calc(10px + var(--safe-t));left:10px;right:10px;z-index:400;display:flex;flex-direction:column;gap:6px}
 .map-side{position:absolute;right:10px;bottom:calc(var(--nav) + var(--safe-b) + 16px);z-index:400;display:flex;flex-direction:column;gap:10px}
 .chips{display:flex;gap:8px;overflow-x:auto;padding:2px 2px 6px;scrollbar-width:none}
 .chips::-webkit-scrollbar{display:none}
@@ -323,7 +323,7 @@ label.ib{cursor:pointer}
 @media (prefers-reduced-motion:reduce){.react.visto-ok{animation:none}}
 
 /* 1.6 · instalar en el teléfono */
-.instalar-franja{position:absolute;left:10px;right:10px;top:calc(62px + var(--safe-t));z-index:420;display:flex;align-items:center;gap:6px;
+.instalar-franja{position:absolute;left:10px;right:10px;top:calc(110px + var(--safe-t));z-index:420;display:flex;align-items:center;gap:6px;
   padding:6px 6px 6px 12px;border:var(--borde);border-radius:var(--r);background:var(--mostaza);box-shadow:var(--sombra);font-weight:600}
 .pasos-instalar{list-style:none;padding:0;margin:0 0 14px;display:flex;flex-direction:column;gap:12px}
 .pasos-instalar li{display:flex;gap:10px;align-items:flex-start}
@@ -415,7 +415,7 @@ label.check input{width:22px;height:22px;margin:1px 0 0;flex:none;accent-color:v
 .li.interruptor.on .sw{background:var(--oliva)}
 .li.interruptor.on .sw::after{left:20px}
 /* sin conexión y versión nueva */
-.conexion{position:fixed;top:calc(56px + var(--safe-t));left:50%;transform:translateX(-50%);z-index:1500;display:inline-flex;align-items:center;gap:6px;
+.conexion{position:fixed;top:calc(108px + var(--safe-t));left:50%;transform:translateX(-50%);z-index:1500;display:inline-flex;align-items:center;gap:6px;
   height:32px;padding:0 12px;border-radius:16px;border:var(--borde);background:var(--papel3);font-size:14px;font-weight:600;box-shadow:2px 2px 0 var(--tinta)}
 .conexion.sin{background:var(--tinta);color:var(--papel)}
 .version-nueva{position:fixed;left:12px;right:12px;bottom:calc(var(--nav) + var(--safe-b) + 12px);z-index:1600;display:flex;align-items:center;gap:10px;
@@ -482,3 +482,33 @@ textarea.in.crece{min-height:44px;height:44px;resize:none;overflow:hidden;line-h
 .li.check-grupo.on .caja{background:var(--oliva);color:var(--papel)}
 .li.check-grupo:not(.on){opacity:.75}
 .avatar.sm{width:30px;height:30px;font-size:16px}
+
+/* 1.9.2 · mapa en dos filas, íconos en su color, colección plegable, perfil plegable y cámara con grupos */
+#chips-mapa{width:100%;padding-bottom:4px}
+.map-fila2{display:flex;justify-content:space-between;align-items:center;gap:6px}
+.grupo-ib{display:flex;gap:6px;align-items:center}
+.ib.sel{background:var(--tinta);color:var(--papel)}
+.chip.cc .ic{color:var(--c)}
+.chip.cc.on{background:var(--c);color:var(--papel)}
+.chip.cc.on .ic{color:var(--papel)}
+.col-fila{display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;min-width:0}
+.col-fila .chips{flex:1;min-width:0}
+.col-fila.abierta{flex-wrap:wrap}
+.chip.ico{width:40px;padding:0;justify-content:center}
+.chip.mosaico{flex:none}
+.chip.mosaico.abierto{background:var(--tinta);color:var(--papel)}
+.col-total{margin:0 0 12px;color:var(--tinta2)}
+.sec-cab{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;border:var(--borde);border-radius:12px;background:var(--papel3);text-align:left}
+.sec-cab .tiny{color:var(--tinta2);font-weight:400}
+.plegable{padding-top:10px}
+.campo-fila .dest-filas{flex:1;min-width:0}
+.dest-filas{display:flex;flex-direction:column;gap:2px;width:100%}
+.dest-fila{display:flex;align-items:center;gap:6px;min-width:0}
+.dest-fila .chips{flex:1;min-width:0}
+.dest-et{flex:none;display:grid;place-items:center;width:22px;color:var(--tinta2);font-size:16px}
+.sheet.alta{max-height:96vh;max-height:calc(100dvh - var(--safe-t) - 8px)}
+.toggle.mini.enc-modo{margin:0 0 8px;display:flex}
+.toggle.mini.enc-modo button{flex:1;font-size:14px;gap:5px;justify-content:center}
+/* Los huecos de la barra del mapa no bloquean tocar o mover el mapa */
+.map-top{pointer-events:none}
+.map-top .chip,.map-top .ib,#chips-mapa{pointer-events:auto}

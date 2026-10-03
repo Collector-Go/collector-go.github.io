@@ -369,7 +369,7 @@ let api = null;
 const S = {
   user: null, me: null, cats: [], groups: [], following: new Set(), tab: 'map', stats: null,
   filtro: { modo: 'todos', id: null }, muro: { modo: 'todos', id: null },
-  cache: new Map(), feed: [], feedFin: false, coleccionCat: null,
+  cache: new Map(), feed: [], feedFin: false, coleccionCat: null, capas: new Set(), capaDatos: new Map(), colAbierta: false,
   map: null, capa: null, yo: null, mini: null, arrancando: false,
   mutes: [], avisos: [], avisosVistos: new Set(), avisosListo: false
 };
@@ -441,7 +441,7 @@ function dibujarHoja() {
   const antes = $('.sheet', root), arriba = antes && dibujarHoja.ultima === top ? antes.scrollTop : 0;
   // La animación de entrada solo al abrir una hoja nueva; al volver a dibujar la misma, nada se mueve (evita el parpadeo)
   const nueva = dibujarHoja.ultima !== top || !antes;
-  root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet${nueva ? ' entra' : ''}" role="dialog" aria-modal="true">${top.render()}</div></div>`;
+  root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet${nueva ? ' entra' : ''}${top.tipo === 'registro' ? ' alta' : ''}" role="dialog" aria-modal="true">${top.render()}</div></div>`;
   dibujarHoja.ultima = top;
   liberarTexto();
   const hoja = $('.sheet', root);
@@ -543,13 +543,20 @@ function selector(nombre, opciones, actual, tipo) {
   return `<div class="pick" data-pick="${nombre}">${opciones.map((n) => `<button type="button" data-act="elegir" data-v="${n}" class="${n === actual ? 'on' : ''}" aria-label="${n}">${ic(n)}</button>`).join('')}</div>`;
 }
 // Destino de un hallazgo: una categoría propia (c:ID) o un grupo (g:ID)
+// Destino de la cámara: una fila con tus colecciones y otra con tus grupos (primero los de encuentro); las dos se deslizan
 function selectorDestino(actual) {
-  const chip = (v, color, icon, nombre, grupo) => `<button type="button" class="chip ${v === actual ? 'on' : ''}" data-act="elegir" data-v="${v}">
-    <span class="dot" style="background:${okColor(color)}"></span>${ic(icon)}${esc(nombre)}${grupo ? ` ${ic('users')}` : ''}</button>`;
-  return `<div class="chips una-fila" data-pick="dest">
-    ${S.cats.map((c) => chip('c:' + c.id, c.color, c.icon, c.name)).join('')}
-    ${gruposColeccion().map((g) => chip('g:' + g.id, g.color, g.icon, g.name, true)).join('')}</div>`;
+  const chip = (v, color, icon, nombre, despues = '') => `<button type="button" class="chip cc ${v === actual ? 'on' : ''}" style="--c:${okColor(color)}" data-act="elegir" data-v="${v}">${ic(icon)}${esc(nombre)}${despues}</button>`;
+  const grupos = [...gruposEncuentro().map((g) => chip('g:' + g.id, g.color, 'lifebuoy', g.name)),
+    ...gruposColeccion().map((g) => chip('g:' + g.id, g.color, g.icon, g.name, ic('users')))];
+  // Cada fila empieza con un ícono pequeño que dice qué es (colecciones o grupos), sin ocupar un renglón aparte
+  return `<div class="dest-filas" data-pick="dest">
+    <div class="dest-fila"><span class="dest-et" data-tip="${esc(C.DEST_COLECCIONES)}" aria-label="${esc(C.DEST_COLECCIONES)}">${ic('cards')}</span>
+      <div class="chips una-fila">${S.cats.map((c) => chip('c:' + c.id, c.color, c.icon, c.name)).join('')}</div></div>
+    ${grupos.length ? `<div class="dest-fila"><span class="dest-et" data-tip="${esc(C.DEST_GRUPOS)}" aria-label="${esc(C.DEST_GRUPOS)}">${ic('users')}</span>
+      <div class="chips una-fila">${grupos.join('')}</div></div>` : ''}</div>`;
 }
+// ¿El destino elegido es un grupo de encuentro? Ahí la foto se guarda como "Mira esto" o como punto de encuentro
+const destEncuentro = (d = R.dest) => !!(d && d.startsWith('g:') && esEncuentro(miGrupo(d.slice(2))));
 const valor = (raiz, nombre) => { const b = $(`[data-pick="${nombre}"] .on`, raiz); return b ? b.dataset.v : null; };
 
 /* Selector de íconos: tres grupos, buscador en toda la biblioteca y emoji */
@@ -683,8 +690,10 @@ function crearMapa() {
   S.map = L.map('map', { zoomControl: false }).setView(C.MAPA_CENTRO, C.MAPA_ZOOM);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(S.map);
   S.capa = L.layerGroup().addTo(S.map);
+  S.capaEnc = L.layerGroup().addTo(S.map);   // grupos de encuentro encendidos como capa
   let t; S.map.on('moveend', () => { clearTimeout(t); t = setTimeout(cargarPines, 250); });
   getPos().then((p) => { ponerYo(p); S.map.setView([p.lat, p.lng], 16); }).catch(() => cargarPines());
+  cargarCapas();
 }
 function ponerYo(p) {
   if (!S.map) return;
@@ -823,8 +832,29 @@ function chipsFiltro(f, act, conPropios) {
   return `<button class="chip ${on('todos')}" data-act="${act}" data-v="todos" data-tip="${t('filtro_todos')}" aria-label="${t('filtro_todos')}">${ic('world')}</button>
     ${conPropios ? `<button class="chip ${on('mios')}" data-act="${act}" data-v="mios" data-tip="${t('filtro_mios')}" aria-label="${t('filtro_mios')}">${ic(S.me.avatar)}</button>` : ''}
     <button class="chip ${on('siguiendo')}" data-act="${act}" data-v="siguiendo" data-tip="${t('filtro_siguiendo')}" aria-label="${t('filtro_siguiendo')}">${ic('user-check')}</button>
-    ${conPropios ? S.cats.map((c) => `<button class="chip ${on('cat', c.id)}" data-act="${act}" data-v="cat:${c.id}"><span class="dot" style="background:${okColor(c.color)}"></span>${ic(c.icon)}${esc(c.name)}</button>`).join('') : ''}
-    ${gruposColeccion().map((g) => `<button class="chip ${on('grupo', g.id)}" data-act="${act}" data-v="grupo:${g.id}"><span class="dot" style="background:${okColor(g.color)}"></span>${ic(g.icon)}${esc(g.name)} ${ic('users')}</button>`).join('')}`;
+    ${conPropios ? S.cats.map((c) => chipColor(act, 'cat:' + c.id, c.name, c.icon, c.color, !!on('cat', c.id))).join('') : ''}
+    ${gruposColeccion().map((g) => chipColor(act, 'grupo:' + g.id, g.name, g.icon, g.color, !!on('grupo', g.id), ic('users'))).join('')}`;
+}
+// Botón de colección o grupo: el ícono va en el color de su colección; elegido, el botón entero toma ese color
+function chipColor(act, v, nombre, icono, color, elegido, despues = '', attrs = '') {
+  return `<button type="button" class="chip cc ${elegido ? 'on' : ''}" style="--c:${okColor(color)}" data-act="${act}" data-v="${v}" ${attrs}>${ic(icono)}${esc(nombre)}${despues}</button>`;
+}
+/* Mapa: fila 1 se desliza (grupos de encuentro como capas, colecciones y grupos); fila 2 fija (todo, lo mío, a quien sigo | buzón, ayuda, preguntas) */
+function chipsMapa() {
+  const f = S.filtro, on = (m, id) => f.modo === m && f.id === id;
+  return `${gruposEncuentro().map((g) => `<button type="button" class="chip cc capa ${S.capas.has(g.id) ? 'on' : ''}" style="--c:${okColor(g.color)}" data-act="capa_encuentro" data-id="${g.id}"
+      aria-pressed="${S.capas.has(g.id)}" data-tip="${esc(C.AYUDA.capa_encuentro)}">${ic('lifebuoy')}${esc(g.name)}</button>`).join('')}
+    ${S.cats.map((c) => chipColor('filtro', 'cat:' + c.id, c.name, c.icon, c.color, on('cat', c.id))).join('')}
+    ${gruposColeccion().map((g) => chipColor('filtro', 'grupo:' + g.id, g.name, g.icon, g.color, on('grupo', g.id), ic('users'))).join('')}`;
+}
+function filtrosFijos() {
+  const b = (v, icono, k) => `<button class="ib sm ${S.filtro.modo === v ? 'sel' : ''}" data-act="filtro" data-v="${v}" data-tip="${esc(C.AYUDA[k])}" aria-label="${esc(C.AYUDA[k])}" aria-pressed="${S.filtro.modo === v}">${ic(icono)}</button>`;
+  return b('todos', 'world', 'filtro_todos') + b('mios', S.me.avatar, 'filtro_mios') + b('siguiendo', 'user-check', 'filtro_siguiendo');
+}
+function pintarFiltrosMapa() {
+  const a = $('#chips-mapa'), b = $('#filtros-fijos');
+  if (a) { const x = a.scrollLeft; a.innerHTML = chipsMapa(); a.scrollLeft = x; }
+  if (b) b.innerHTML = filtrosFijos();
 }
 function leerFiltro(v) {
   if (v === 'todos' || v === 'mios' || v === 'siguiendo') return { modo: v, id: null };
@@ -839,7 +869,11 @@ function pintarApp() {
   $('#app').innerHTML = `
     <section id="scr-map" class="screen map-screen">
       <div id="map"></div>
-      <div class="map-top"><div class="chips grow" id="chips-mapa">${chipsFiltro(S.filtro, 'filtro', true)}</div>${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}<span id="atajo-ayuda" class="atajo-ayuda">${gruposEncuentro().length ? botonAyuda() : ''}</span>${ib('dudas', 'help', 'dudas', '', 'sm')}</div>
+      <div class="map-top">
+        <div class="chips" id="chips-mapa">${chipsMapa()}</div>
+        <div class="map-fila2"><span class="grupo-ib" id="filtros-fijos">${filtrosFijos()}</span>
+          <span class="grupo-ib">${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}<span id="atajo-ayuda" class="atajo-ayuda">${gruposEncuentro().length ? botonAyuda() : ''}</span>${ib('dudas', 'help', 'dudas', '', 'sm')}</span></div>
+      </div>
       <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
       <div id="guia-punto" class="guia-punto" hidden></div>
       <div id="instalar-franja" class="instalar-franja" hidden><button class="row grow" data-act="instalar" style="text-align:left">${ic('device-mobile')}<span class="grow">${esc(C.INSTALAR_FRANJA)}</span></button>${ib('instalar_no', 'x', 'cerrar', '', 'sm ghost')}</div>
@@ -863,7 +897,7 @@ function irA(tab) {
   $$('.nav [data-act="tab"]').forEach((b) => b.classList.toggle('on', b.dataset.v === tab));
   const esMapa = tab === 'map';
   $('#scr-map').hidden = !esMapa; $('#scr').hidden = esMapa;
-  if (esMapa) { $('#chips-mapa').innerHTML = chipsFiltro(S.filtro, 'filtro', true); setTimeout(() => { S.map.invalidateSize(); cargarPines(); }, 30); return; }
+  if (esMapa) { pintarFiltrosMapa(); setTimeout(() => { S.map.invalidateSize(); cargarPines(); cargarCapas(); }, 30); return; }
   $('#scr').scrollTop = 0;
   ({ feed: pintarMuro, coleccion: pintarColeccion, perfil: pintarPerfil })[tab]();
 }
@@ -933,21 +967,30 @@ function actualizarTarjeta(c) {
   $$(`[data-card="${c.id}"]`).forEach((el) => { el.outerHTML = tarjeta(c); });
 }
 
-/* Colección */
-async function pintarColeccion() {
+/* Colección: una fila de colecciones sin números; el mosaico la abre en su lugar con todas a la vista (solo íconos) */
+function filaColecciones(total, cuenta) {
+  const abierta = S.colAbierta, sel = S.coleccionCat, cat = S.cats.find((c) => c.id === sel);
+  const mosaico = `<button type="button" class="chip mosaico ${abierta ? 'abierto' : ''}" data-act="col_mosaico" aria-expanded="${abierta}" data-tip="${esc(C.AYUDA.col_mosaico)}" aria-label="${esc(C.AYUDA.col_mosaico)}">${ic('layout-grid')}</button>`;
+  const todas = (solo) => `<button type="button" class="chip ${solo ? 'ico' : ''} ${!sel ? 'on' : ''}" data-act="colcat" data-v="" data-tip="${esc(C.COL_TODAS)}" aria-label="${esc(C.COL_TODAS)}">${ic('cards')}${solo ? '' : esc(C.COL_TODAS)}</button>`;
+  const fila = abierta
+    ? `<div class="col-fila abierta">${mosaico}${todas(true)}${S.cats.map((c) => `<button type="button" class="chip cc ico ${sel === c.id ? 'on' : ''}" style="--c:${okColor(c.color)}" data-act="colcat" data-v="${c.id}" data-tip="${esc(c.name)}" aria-label="${esc(c.name)}">${ic(c.icon)}</button>`).join('')}</div>`
+    : `<div class="col-fila">${mosaico}<div class="chips una-fila">${todas(false)}${S.cats.map((c) => chipColor('colcat', c.id, c.name, c.icon, c.color, sel === c.id)).join('')}</div></div>`;
+  return `${fila}<div class="tiny col-total">${esc(cat ? cat.name : C.COL_TODAS)} · ${cat ? cuenta(cat.id) : total} ${esc(C.COL_HALLAZGOS)}</div>`;
+}
+// "rapido": al elegir una colección o abrir el mosaico se usa lo ya cargado, sin volver a pedirlo ni parpadear
+async function pintarColeccion(rapido) {
   const scr = $('#scr');
-  scr.innerHTML = `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  const arriba = rapido ? scr.scrollTop : 0;
+  if (!(rapido && S.colMias)) scr.innerHTML = `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
   try {
-    const mias = guarda(await api.userCards(S.user.id));
+    const mias = rapido && S.colMias ? S.colMias : guarda(await api.userCards(S.user.id));
+    S.colMias = mias;
     const cuenta = (id) => mias.filter((c) => c.category_id === id).length;
     if (S.coleccionCat && !S.cats.some((c) => c.id === S.coleccionCat)) S.coleccionCat = null;
     const vis = S.coleccionCat ? mias.filter((c) => c.category_id === S.coleccionCat) : mias;
     if (S.tab !== 'coleccion') return;
     scr.innerHTML = `<div class="row between" style="margin-bottom:12px"><h1 class="serif grow">${esc(C.TITULO_COLECCION)}</h1>${ib('categorias', 'pencil', 'categorias')}</div>
-      <div class="chips" style="margin-bottom:14px">
-        <button class="chip ${!S.coleccionCat ? 'on' : ''}" data-act="colcat" data-v="" aria-label="Todas">${ic('layout-grid')} ${mias.length}</button>
-        ${S.cats.map((c) => `<button class="chip ${S.coleccionCat === c.id ? 'on' : ''}" data-act="colcat" data-v="${c.id}"><span class="dot" style="background:${okColor(c.color)}"></span>${ic(c.icon)}${esc(c.name)} · ${cuenta(c.id)}</button>`).join('')}
-      </div>
+      ${filaColecciones(mias.length, cuenta)}
       ${vis.length ? rejilla(vis, true) : `<div class="empty">${ic('camera')}<p>Registra tu primer hallazgo</p><button class="btn" data-act="nuevo">${ic('camera')}</button></div>`}
       <div class="sec"><div class="row between"><h3 class="row">${ic('users')} Grupos</h3>
         <span class="row"><span class="tiny" data-tip="Grupos que creaste">${gruposCreados()} / ${C.MAX_GRUPOS}</span>${ib('grupo_nuevo', 'plus', 'grupo_nuevo')}</span></div>
@@ -959,6 +1002,7 @@ async function pintarColeccion() {
           <span class="avatar" style="background:${okColor(g.color)}">${ic(g.icon)}</span><b class="grow">${esc(g.name)}</b>
           <span class="muted" data-tip="${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}">${ic(g.is_public ? 'world' : 'lock')}</span></button>`).join('')
           || `<p class="muted">Crea un grupo para coleccionar con tus amigos en el mismo mapa.</p>`}</div></div>`;
+    if (rapido) scr.scrollTop = arriba;
   } catch (e) { fallo(e); }
 }
 function rejilla(lista, mostrarPrivado) {
@@ -1210,7 +1254,7 @@ function nuevoRegistro(destino) {
   const destIni = S.filtro.modo === 'grupo' && S.tab === 'map' ? 'g:' + S.filtro.id
     : (S.coleccionCat ? 'c:' + S.coleccionCat : (S.cats[0] ? 'c:' + S.cats[0].id : null));
   Object.assign(R, { original: null, recorte: null, usarRecorte: false, sinFoto: false, pos: null, gps: 'buscando', vistaUrl: null,
-    candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false, etiquetas: [], etiquetasNombres: [], enc: null, encPromesa: null });
+    candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false, etiquetas: [], etiquetasNombres: [], enc: null, encPromesa: null, encModo: 'mira' });
   abrirHoja(registroHTML, montarRegistro, 'registro');
   leerGPS();
   if (viejo) soltarLienzo(viejo.img);
@@ -1224,13 +1268,13 @@ function registroHTML() {
     </div>
     ${R.destino ? `<div class="row" style="justify-content:center;margin-bottom:12px">${ib('sin_foto', 'map-pin', 'sin_foto')}</div>` : ''}
     <div class="tiny row" id="gps-estado">${gpsTexto()}</div>`;
-  const esGrupo = (R.dest || '').startsWith('g:');
+  const esGrupo = (R.dest || '').startsWith('g:'), enc = !R.destino && destEncuentro(), punto = enc && R.encModo === 'punto';
   // Sobre la foto: original o sin fondo, público o secreto y etiquetar, en botones pequeños
   const herr = `<div class="foto-herr">
       <div class="toggle mini">
         <button type="button" class="${!R.usarRecorte ? 'on' : ''}" data-act="usar_original" data-tip="${C.AYUDA.original}" aria-label="${C.AYUDA.original}">${ic('photo')}</button>
         <button type="button" class="${R.usarRecorte ? 'on' : ''}" data-act="recortar" data-tip="${C.AYUDA.recortar}" aria-label="${C.AYUDA.recortar}">${ic('scissors')}</button></div>
-      ${R.destino ? '' : `<div class="toggle mini" data-pick="priv" id="campo-priv" ${esGrupo ? 'hidden' : ''}>
+      ${R.destino || enc ? '' : `<div class="toggle mini" data-pick="priv" id="campo-priv" ${esGrupo ? 'hidden' : ''}>
         <button type="button" data-act="elegir" data-v="0" class="${R.priv ? '' : 'on'}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button><button type="button" data-act="elegir" data-v="1" class="${R.priv ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div>
       <button type="button" class="ib mini ${R.etiquetas.length ? 'on' : ''}" id="campo-etiquetas" ${R.priv ? 'hidden' : ''} data-act="etiquetar_registro" data-tip="${esc(R.etiquetas.length ? (R.etiquetasNombres.join(', ') || R.etiquetas.length + ' personas') : C.AYUDA.etiquetar)}" aria-label="${esc(C.AYUDA.etiquetar)}">${ic('tag')}${R.etiquetas.length ? `<b class="cuenta">${R.etiquetas.length}</b>` : ''}</button>`}
     </div>`;
@@ -1239,8 +1283,11 @@ function registroHTML() {
       : `<canvas class="encuadre" id="encuadre" aria-label="${esc(C.AYUDA.encuadrar)}"></canvas><span class="pista">${ic('arrows-move')} ${esc(C.ENCUADRE_PISTA)}</span>`}
       <div class="progress foto-prog" id="prog" hidden><div></div></div>${herr}</div>` : ''}
     ${R.destino ? '' : `<div class="campo-fila">${selectorDestino(R.dest)}</div>
-    <label class="campo-ic">${ic('pencil')}<input id="f-nombre" class="in compacto" maxlength="60" placeholder="${esc(C.NOMBRE_PISTA)}" aria-label="Nombre" autocomplete="off" value="${esc(R.nombre)}"></label>`}
-    <label class="campo-ic">${ic('info-circle')}<textarea id="f-nota" class="in compacto crece" rows="1" maxlength="140" placeholder="${esc(C.NOTA_PISTA)}" aria-label="Nota">${esc(R.nota)}</textarea></label>
+    ${enc ? `<div class="toggle mini enc-modo" role="group">
+      <button type="button" class="${punto ? '' : 'on'}" data-act="reg_enc_modo" data-v="mira" aria-pressed="${!punto}">${ic('eye')} ${esc(C.ENC_MODO_MIRA)}</button>
+      <button type="button" class="${punto ? 'on' : ''}" data-act="reg_enc_modo" data-v="punto" aria-pressed="${punto}">${ic('flag')} ${esc(C.ENC_MODO_PUNTO)}</button></div>` : ''}
+    ${enc && !punto ? '' : `<label class="campo-ic">${ic(punto ? 'flag' : 'pencil')}<input id="f-nombre" class="in compacto" maxlength="${punto ? 40 : 60}" placeholder="${esc(punto ? C.PUNTO_PISTA : C.NOMBRE_PISTA)}" aria-label="Nombre" autocomplete="off" value="${esc(R.nombre)}"></label>`}`}
+    <label class="campo-ic">${ic('info-circle')}<textarea id="f-nota" class="in compacto crece" rows="1" maxlength="140" placeholder="${esc(enc && !punto ? C.MIRA_PISTA : C.NOTA_PISTA)}" aria-label="Nota">${esc(R.nota)}</textarea></label>
     <div id="candidatos"></div>
     ${filaGuardar('guardar_hallazgo', R, 'gps-estado')}
     <div class="mapa-caja"><div class="minimap" id="mini-reg"></div><div class="mapa-lado">${ib('releer_gps', 'current-location', 'gps', '', 'sm')}</div></div>`;
@@ -1296,6 +1343,7 @@ function leerGPS() {
 // Sugerencia: algo tuyo registrado muy cerca de aquí
 async function buscarCandidatos() {
   const box = $('#candidatos'); if (!box || !R.pos || R.destino) return;
+  if (destEncuentro()) { box.innerHTML = ''; return; }
   const dest = valor($('.sheet'), 'dest') || R.dest || '';
   if (!dest) { box.innerHTML = ''; return; }
   // Solo lo registrado en la misma categoría (propia) o en el mismo grupo
@@ -1478,10 +1526,39 @@ async function subirFotos(privado) {
   return { pFoto, pMini };
 }
 
+// Con un grupo de encuentro como destino: "Mira esto" (nota obligatoria) o punto de encuentro (con nombre), dentro del grupo
+async function guardarEnEncuentro(btn) {
+  const gid = R.dest.slice(2), punto = R.encModo === 'punto', nombre = (R.nombre || '').trim(), nota = (R.nota || '').trim();
+  if (punto && !nombre) { const n = $('#f-nombre'); if (n) n.focus(); return aviso('Ponle un nombre', 'pencil'); }
+  if (!punto && !nota) { const t = $('#f-nota'); if (t) t.focus(); return aviso('Escribe una nota corta', 'pencil'); }
+  if (!R.pos) return aviso('Falta la ubicación: toca el mapa', 'map-pin');
+  ocupado(btn, true);
+  const fila = punto ? { group_id: gid, name: nombre.slice(0, 40), note: nota || null, lat: R.pos.lat, lng: R.pos.lng }
+    : { group_id: gid, note: nota.slice(0, C.ENCUENTRO_NOTA_MAX), lat: R.pos.lat, lng: R.pos.lng, created_at: new Date().toISOString() };
+  let fotos = null, subidas = null;
+  try {
+    fotos = R.original ? await prepararFotos() : null;
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    subidas = await subirFotosDe(fotos, carpetaEncuentro(gid));
+    Object.assign(fila, { photo: subidas.pFoto, thumb: subidas.pMini });
+    if (punto) await api.addPunto(fila); else { await api.addMira(fila); api.dispararPush(); }
+    cerrarHoja(); aviso(punto ? 'Punto propuesto' : 'Marcado en el mapa del grupo', punto ? 'flag' : 'eye');
+    const D = encuentroActual(); if (D) D.cargar();
+    if (S.capas.has(gid)) cargarCapas();
+  } catch (err) {
+    if (subidas && subidas.pFoto) api.removeFiles([subidas.pFoto, subidas.pMini]).catch(() => null);
+    if (!esErrorRed(err)) { ocupado(btn, false); return fallo(err); }
+    delete fila.photo; delete fila.thumb;
+    try { await guardarPendiente({ tipo: punto ? 'punto' : 'mira', datos: fila, fotos }); }
+    catch (err2) { ocupado(btn, false); return fallo(err); }
+    cerrarHoja(); aviso(C.PENDIENTE_GUARDADO, 'cloud-off');
+  }
+}
 async function guardarHallazgo(btn) {
   const raiz = $('.sheet');
   recordarFormulario();
   if (R.destino) return guardarReencuentro(btn, R.destino);
+  if (destEncuentro()) return guardarEnEncuentro(btn);
   const nombre = R.nombre.trim(), nota = R.nota.trim();
   const dest = R.dest || '';
   const cat = dest.startsWith('c:') ? dest.slice(2) : null, grupo = dest.startsWith('g:') ? dest.slice(2) : null;
@@ -1644,7 +1721,7 @@ function editarHallazgo(id) {
   abrirHoja(() => `${cabeza(ic('pencil'))}
     ${c.group_id ? `<div class="campo-fila">${catBadge(c.cat_name, c.cat_icon, c.cat_color)} ${ic('users')}</div>`
       : `<div class="campo-fila"><div class="chips una-fila" data-pick="cat">${S.cats.map((x) =>
-        `<button type="button" class="chip ${x.id === c.category_id ? 'on' : ''}" data-act="elegir" data-v="${x.id}"><span class="dot" style="background:${okColor(x.color)}"></span>${ic(x.icon)}${esc(x.name)}</button>`).join('')}</div></div>`}
+        chipColor('elegir', x.id, x.name, x.icon, x.color, x.id === c.category_id)).join('')}</div></div>`}
     <div class="row" style="gap:8px;align-items:stretch">
       <label class="campo-ic grow">${ic('pencil')}<input id="e-nombre" class="in compacto" maxlength="60" value="${esc(c.name)}" aria-label="Nombre"></label>
       ${c.group_id ? '' : `<div class="toggle mini" data-pick="priv">
@@ -1794,12 +1871,12 @@ async function guardarCategoria(btn, id) {
     S.stats = await api.stats(S.user.id).catch(() => null);
     cerrarHoja(); aviso('Guardado');
     if (!$('#scr-map')) return;
-    if (S.tab !== 'map') irA(S.tab); else $('#chips-mapa').innerHTML = chipsFiltro(S.filtro, 'filtro', true);
+    if (S.tab !== 'map') irA(S.tab); else pintarFiltrosMapa();
   } catch (e) { ocupado(btn, false); fallo(e); }
 }
 
 /* Grupos */
-async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); pintarAtajoMapa(); }
+async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); pintarAtajoMapa(); podarCapas(); }
 const gruposCreados = () => S.groups.filter((g) => g.owner === S.user.id).length;
 function abrirGrupo(gid) {
   if (esEncuentro(miGrupo(gid))) return abrirEncuentro(gid);
@@ -2075,28 +2152,37 @@ function montarEncuentro(raiz, D) {
 }
 // Marcadores del grupo: puntos, "Mira esto", quien pidió ayuda, quien comparte y tu ubicación (solo en tu pantalla)
 function pintarMarcasEncuentro(D) {
-  const e = D.e, g = e.grupo, capa = D.capa, pts = [];
-  if (!capa) return pts;
+  const capa = D.capa; if (!capa) return [];
   capa.clearLayers();
-  const icono = (html) => L.divIcon({ className: '', html, iconSize: [36, 36], iconAnchor: [18, 36] });
-  e.puntos.forEach((p) => { pts.push([p.lat, p.lng]);
-    L.marker([p.lat, p.lng], { icon: icono(`<div class="pin enc-punto ${p.principal ? 'principal' : ''}" style="background:${okColor(g.color)}">${ic('flag')}</div>`) })
-      .on('click', () => aviso(p.name, 'flag')).addTo(capa); });
-  e.miras.forEach((k) => { const a = e.miembros.find((x) => x.user_id === k.user_id) || {}; pts.push([k.lat, k.lng]);
-    L.marker([k.lat, k.lng], { icon: icono(pinHTML('#3F6E73', 'eye', g.juego ? a.premio : 0, a.premio_color)) })
-      .on('click', () => aviso(k.note, 'eye')).addTo(capa); });
-  e.miembros.forEach((x) => { const st = x.estado;
-    if (st && st.kind === 'ayuda' && st.lat != null) { pts.push([st.lat, st.lng]);
-      L.marker([st.lat, st.lng], { icon: icono(`<div class="pin enc-ayuda">${ic('urgent')}</div>`) })
-        .on('click', () => aviso(`${x.name}: ${C.ENCUENTRO_ESTADOS.ayuda.nombre}`, 'urgent')).addTo(capa); } });
-  e.ubicaciones.forEach((u) => { const x = e.miembros.find((y) => y.user_id === u.user_id) || {}; pts.push([u.lat, u.lng]);
-    L.marker([u.lat, u.lng], { icon: L.divIcon({ className: '', html: `<span class="avatar enc-yo" style="background:${okColor(x.avatar_color)}">${ic(x.avatar)}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] }) })
-      .on('click', () => aviso(`${x.name} · ${hace(u.updated_at)}`, 'current-location')).addTo(capa); });
+  const e = D.e;
+  const avisar = (foco) => {
+    if (foco.tipo === 'punto') aviso(foco.texto, 'flag'); else if (foco.tipo === 'mira') aviso(foco.texto, 'eye');
+    else if (foco.tipo === 'ayuda') aviso(foco.texto, 'urgent'); else aviso(foco.texto, 'current-location');
+  };
+  marcasEncuentro(e, capa, (foco) => avisar(foco));
   if (D.miPos) {
     D.yoMarca = L.marker([D.miPos.lat, D.miPos.lng], { interactive: false, icon: L.divIcon({ className: '', html: '<span class="mi-punto"></span>', iconSize: [20, 20], iconAnchor: [10, 10] }) }).addTo(capa);
   }
-  D.pts = pts;
-  return pts;
+  D.pts = puntosEncuentro(e);
+  return D.pts;
+}
+// Marcadores de un grupo de encuentro (en su propio mapa o como capa del mapa principal)
+function marcasEncuentro(e, capa, alTocar) {
+  const g = e.grupo;
+  const icono = (html) => L.divIcon({ className: '', html, iconSize: [36, 36], iconAnchor: [18, 36] });
+  e.puntos.forEach((p) => {
+    L.marker([p.lat, p.lng], { icon: icono(`<div class="pin enc-punto ${p.principal ? 'principal' : ''}" style="background:${okColor(g.color)}">${ic('flag')}</div>`) })
+      .on('click', () => alTocar({ lat: p.lat, lng: p.lng, tipo: 'punto', texto: p.name })).addTo(capa); });
+  e.miras.forEach((k) => { const a = e.miembros.find((x) => x.user_id === k.user_id) || {};
+    L.marker([k.lat, k.lng], { icon: icono(pinHTML('#3F6E73', 'eye', g.juego ? a.premio : 0, a.premio_color)) })
+      .on('click', () => alTocar({ lat: k.lat, lng: k.lng, tipo: 'mira', texto: k.note })).addTo(capa); });
+  e.miembros.forEach((x) => { const st = x.estado;
+    if (st && st.kind === 'ayuda' && st.lat != null) {
+      L.marker([st.lat, st.lng], { icon: icono(`<div class="pin enc-ayuda">${ic('urgent')}</div>`) })
+        .on('click', () => alTocar({ lat: st.lat, lng: st.lng, tipo: 'ayuda', texto: `${x.name}: ${C.ENCUENTRO_ESTADOS.ayuda.nombre}` })).addTo(capa); } });
+  e.ubicaciones.forEach((u) => { const x = e.miembros.find((y) => y.user_id === u.user_id) || {};
+    L.marker([u.lat, u.lng], { icon: L.divIcon({ className: '', html: `<span class="avatar enc-yo" style="background:${okColor(x.avatar_color)}">${ic(x.avatar)}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] }) })
+      .on('click', () => alTocar({ lat: u.lat, lng: u.lng, tipo: 'ubicacion', texto: `${x.name} · ${hace(u.updated_at)}` })).addTo(capa); });
 }
 function enfocarEncuentro(D) {
   const e = D.e, m = D.mapa; let foco = null;
@@ -2189,6 +2275,67 @@ async function mandarEstado(gids, kind, o) {
   if (r.enviados) api.dispararPush();
   return r;
 }
+
+/* Grupos de encuentro como capa del mapa principal: su botón enciende o apaga sus puntos, "Mira esto",
+   quien pide ayuda y quien comparte su ubicación. El teléfono recuerda cuáles quedaron encendidos. */
+const claveCapas = () => 'cg_capas_' + (S.user ? S.user.id : '');
+function leerCapas() { try { return new Set(JSON.parse(localStorage.getItem(claveCapas()) || '[]')); } catch (e) { return new Set(); } }
+function guardarCapas() { if (!S.user) return; try { localStorage.setItem(claveCapas(), JSON.stringify([...S.capas])); } catch (e) { /* sin almacenamiento */ } }
+function podarCapas() {
+  const ids = new Set(gruposEncuentro().map((g) => g.id));
+  let cambio = false;
+  [...S.capas].forEach((id) => { if (!ids.has(id)) { S.capas.delete(id); S.capaDatos.delete(id); cambio = true; } });
+  if (cambio) { guardarCapas(); pintarCapas(); }
+  pintarFiltrosMapa();
+}
+async function alternarCapa(gid) {
+  if (S.capas.has(gid)) { S.capas.delete(gid); S.capaDatos.delete(gid); guardarCapas(); pintarFiltrosMapa(); pintarCapas(); return; }
+  S.capas.add(gid); guardarCapas(); pintarFiltrosMapa();
+  if (!navigator.onLine && !S.capaDatos.has(gid)) aviso(C.SIN_CONEXION, 'cloud-off');
+  await cargarCapas(gid, [gid]);
+}
+// Trae lo de cada grupo encendido; solo vuelve a dibujar si algo cambió. "encuadrar" mueve el mapa para ver ese grupo.
+async function cargarCapas(encuadrar, solo) {
+  if (!S.user || !S.capas || !S.capas.size || !S.capaEnc) return;
+  const uid = S.user.id;
+  const ids = (solo || [...S.capas]).filter((id) => S.capas.has(id));
+  const res = await Promise.all(ids.map((gid) => api.estadoEncuentro(gid).then((e) => [gid, e], () => [gid, undefined])));
+  if (!S.user || S.user.id !== uid) return;   // la sesión cambió mientras llegaban los datos
+  let cambio = false;
+  for (const [gid, e] of res) {
+    if (e === undefined || !S.capas.has(gid)) continue;   // sin red, o lo apagaste mientras llegaba
+    if (!e) { S.capas.delete(gid); S.capaDatos.delete(gid); guardarCapas(); pintarFiltrosMapa(); cambio = true; continue; }
+    const firma = JSON.stringify([e.puntos, e.miras, e.ubicaciones, e.miembros.map((m) => [m.user_id, m.estado, m.premio])]);
+    const antes = S.capaDatos.get(gid);
+    if (!antes || antes.firma !== firma) { S.capaDatos.set(gid, { e, firma }); cambio = true; }
+  }
+  if (cambio || encuadrar) pintarCapas();
+  if (encuadrar && S.capas.has(encuadrar) && S.capaDatos.get(encuadrar)) {
+    const pts = puntosEncuentro(S.capaDatos.get(encuadrar).e);
+    if (pts.length > 1 && S.map.fitBounds) S.map.fitBounds(pts, { padding: [60, 60], maxZoom: 17 });
+    else if (pts.length) S.map.setView(pts[0], 16);
+    else aviso(C.CAPA_VACIA, 'lifebuoy');
+  }
+}
+function puntosEncuentro(e) {
+  const pts = [];
+  e.puntos.forEach((p) => pts.push([p.lat, p.lng]));
+  e.miras.forEach((k) => pts.push([k.lat, k.lng]));
+  e.miembros.forEach((x) => { if (x.estado && x.estado.kind === 'ayuda' && x.estado.lat != null) pts.push([x.estado.lat, x.estado.lng]); });
+  e.ubicaciones.forEach((u) => pts.push([u.lat, u.lng]));
+  return pts;
+}
+function pintarCapas() {
+  if (!S.capaEnc) return;
+  S.capaEnc.clearLayers();
+  S.capaDatos.forEach(({ e }, gid) => {
+    if (!S.capas.has(gid)) return;
+    // Tocar un marcador abre el grupo justo en ese punto
+    marcasEncuentro(e, S.capaEnc, (foco) => abrirEncuentro(gid, foco));
+  });
+}
+// Solo con sesión, en el mapa y sin hojas abiertas encima (el grupo abierto ya se actualiza por su cuenta)
+setInterval(() => { if (S.user && S.capas && S.capas.size && S.tab === 'map' && !document.hidden && !pila.length) cargarCapas(); }, C.ENCUENTRO_REFRESCO_MS);
 
 /* Aviso rápido: "Todo bien" o "Necesito ayuda" a tus grupos de encuentro, sin entrar a cada grupo.
    Se llega desde el mapa, desde la lista de grupos o (en Android) dejando presionado el ícono de la app. */
@@ -2531,7 +2678,10 @@ async function pintarNotificaciones() {
   else if (Notification.permission === 'granted' && await suscripcionActual().catch(() => null)) estado = 'activas';
   if (estado === 'activas' && !S.push) S.push = await api.pushPrefs().catch(() => null);
   const p = S.push || {};
-  el.innerHTML = `<h3 class="row">${ic('bell')} Notificaciones</h3>
+  const prefs = C.PUSH_PREFS.filter((x) => !x.admin || S.me.is_admin);
+  const resumen = estado === 'activas' ? C.PLEGAR_NOTIF_ACTIVAS.replace('{n}', prefs.filter((x) => p[x.k]).length).replace('{t}', prefs.length)
+    : C.PLEGAR_NOTIF[estado] || '';
+  el.innerHTML = cabezaPlegable('notif', 'bell', 'Notificaciones', resumen) + `<div class="plegable" ${plegadoAbierto('notif') ? '' : 'hidden'}>
     ${estado === 'no' ? `<p class="muted">${esc(C.PUSH_NO_SOPORTA)}</p>` : ''}
     ${estado === 'iphone' ? `<p class="muted">${esc(C.PUSH_IPHONE)}</p>${tipoInstalacion() ? `<button class="btn alt block" data-act="instalar">${ic('device-mobile')} ${esc(C.INSTALAR_BOTON)}</button>` : ''}` : ''}
     ${estado === 'bloqueadas' ? `<p class="muted">${esc(C.PUSH_BLOQUEADAS)}</p>` : ''}
@@ -2539,7 +2689,27 @@ async function pintarNotificaciones() {
     ${estado === 'activas' ? `<div class="list">${C.PUSH_PREFS.filter((x) => !x.admin || S.me.is_admin).map((x) =>
       `<button class="li interruptor ${p[x.k] ? 'on' : ''}" data-act="push_pref" data-k="${x.k}" role="switch" aria-checked="${p[x.k] ? 'true' : 'false'}">
         <span class="grow" style="text-align:left">${esc(x.nombre)}</span><span class="sw" aria-hidden="true"></span></button>`).join('')}</div>
-      <button class="linkbtn" data-act="desactivar_push" style="margin-top:6px">${ic('bell-off')} ${esc(C.PUSH_DESACTIVAR)}</button>` : ''}`;
+      <button class="linkbtn" data-act="desactivar_push" style="margin-top:6px">${ic('bell-off')} ${esc(C.PUSH_DESACTIVAR)}</button>` : ''}</div>`;
+}
+function resumenNotif() {
+  const el = $('#resumen-notif'); if (!el || !S.push) return;
+  const prefs = C.PUSH_PREFS.filter((x) => !x.admin || S.me.is_admin);
+  el.textContent = '· ' + C.PLEGAR_NOTIF_ACTIVAS.replace('{n}', prefs.filter((x) => S.push[x.k]).length).replace('{t}', prefs.length);
+}
+/* Secciones plegables del perfil: cerradas de inicio con un resumen; el teléfono recuerda si quedaron abiertas */
+function plegadoAbierto(k) { try { return localStorage.getItem('cg_plegado_' + k) === '1'; } catch (e) { return false; } }
+function cabezaPlegable(k, icono, titulo, resumen) {
+  const ab = plegadoAbierto(k);
+  return `<button type="button" class="sec-cab" data-act="plegar" data-k="${k}" aria-expanded="${ab}">${ic(icono)}<span class="grow"><b>${esc(titulo)}</b>
+    <span class="tiny" id="resumen-${k}">${resumen ? '· ' + esc(resumen) : ''}</span></span>${ic(ab ? 'chevron-down' : 'chevron-right')}</button>`;
+}
+function abrirPlegable(k, abrir) {
+  try { localStorage.setItem('cg_plegado_' + k, abrir ? '1' : '0'); } catch (e) { /* nada */ }
+  const cab = $(`.sec-cab[data-k="${k}"]`); if (!cab) return;
+  const cuerpo = cab.nextElementSibling;
+  if (cuerpo) cuerpo.hidden = !abrir;
+  cab.setAttribute('aria-expanded', abrir ? 'true' : 'false');
+  const flecha = cab.querySelector('.ic:last-child'); if (flecha) flecha.outerHTML = ic(abrir ? 'chevron-down' : 'chevron-right');
 }
 
 /* ---------------------------------------------------------------------
@@ -2647,6 +2817,12 @@ function textoPendiente(x) {
 function pintarPendientes() {
   const el = $('#pendientes'); if (!el) return;
   const l = S.pendientes || [];
+  const rs = $('#resumen-offline');
+  if (rs) {
+    rs.textContent = l.length ? '· ' + C.PLEGAR_PENDIENTES.replace('{n}', l.length) : '';
+    if (l.length && !pintarPendientes.habia) abrirPlegable('offline', true);   // se abre sola solo cuando aparecen pendientes
+  }
+  pintarPendientes.habia = l.length > 0;
   el.innerHTML = l.length ? `<h4 class="row">${ic('cloud-upload')} ${esc(C.PENDIENTES_TITULO)} · ${l.length}</h4>
     <div class="list">${l.map((x) => `<div class="li pendiente ${x.estado}">
       <span class="thumb">${ic(ICONO_PENDIENTE[x.tipo] || 'cloud-upload')}</span>
@@ -2699,13 +2875,16 @@ function alTrabajador(msg) {
 async function pintarSinConexion() {
   const el = $('#sec-offline'); if (!el) return;
   const si = fotosSinConexion();
-  el.innerHTML = `<h3 class="row">${ic('cloud-off')} ${esc(C.OFFLINE_TITULO)}</h3>
+  const n = (S.pendientes || []).length;
+  if (n && !pintarPendientes.habia) { try { localStorage.setItem('cg_plegado_offline', '1'); } catch (e) { /* nada */ } }   // con pendientes nuevos se abre sola
+  el.innerHTML = cabezaPlegable('offline', 'cloud-off', C.OFFLINE_TITULO, n ? C.PLEGAR_PENDIENTES.replace('{n}', n) : '') + `<div class="plegable" ${plegadoAbierto('offline') ? '' : 'hidden'}>
     <div id="pendientes"></div>
     <button class="li interruptor ${si ? 'on' : ''}" data-act="fotos_offline" role="switch" aria-checked="${si}"><span class="grow" style="text-align:left">${esc(C.GUARDAR_FOTOS)}</span><span class="sw" aria-hidden="true"></span></button>
-    <div class="row between" style="margin-top:8px"><span class="tiny grow" id="espacio">…</span><button class="btn alt sm" data-act="liberar_espacio">${ic('eraser')} ${esc(C.LIBERAR)}</button></div>`;
+    <div class="row between" style="margin-top:8px"><span class="tiny grow" id="espacio">…</span><button class="btn alt sm" data-act="liberar_espacio">${ic('eraser')} ${esc(C.LIBERAR)}</button></div></div>`;
   pintarPendientes();
   const r = await alTrabajador({ tipo: 'espacio' });
   const e = $('#espacio'); if (e) e.textContent = r ? textoEspacio(r) : '';
+  const rs = $('#resumen-offline'); if (rs && !n && r) rs.textContent = '· ' + C.PLEGAR_ESPACIO.replace('{mb}', (r.fotos / 1048576).toFixed(1));
 }
 const textoEspacio = (r) => C.ESPACIO.replace('{mb}', (r.fotos / 1048576).toFixed(1)).replace('{tope}', Math.round(r.tope / 1048576)).replace('{t}', r.teselas);
 
@@ -3357,7 +3536,11 @@ const ACCIONES = {
   atras: () => cerrarHoja(),
   elegir(b) {
     const g = b.closest('[data-pick]'); $$('[data-v]', g).forEach((x) => x.classList.toggle('on', x === b));
-    if (g.dataset.pick === 'dest') { const p = $('#campo-priv'); if (p) p.hidden = b.dataset.v.startsWith('g:'); R.dest = b.dataset.v; buscarCandidatos(); }
+    if (g.dataset.pick === 'dest') {
+      const antes = destEncuentro(R.dest), ahora = destEncuentro(b.dataset.v);
+      if (antes !== ahora) { recordarFormulario(); R.dest = b.dataset.v; return dibujarHoja(); }
+      const p = $('#campo-priv'); if (p) p.hidden = b.dataset.v.startsWith('g:'); R.dest = b.dataset.v; buscarCandidatos();
+    }
     if (g.dataset.pick === 'priv') { R.priv = b.dataset.v === '1'; const e = $('#campo-etiquetas'); if (e) e.hidden = R.priv; }
   },
   medalla: (b) => aviso(b.dataset.info, b.dataset.icon || 'medal'),
@@ -3389,8 +3572,9 @@ const ACCIONES = {
   filtro(b) {
     S.filtro = leerFiltro(b.dataset.v);
     if (S.filtro.modo === 'siguiendo' && !S.following.size) aviso('Aún no sigues a nadie', 'user-plus');
-    $('#chips-mapa').innerHTML = chipsFiltro(S.filtro, 'filtro', true); cargarPines();
+    pintarFiltrosMapa(); cargarPines();
   },
+  capa_encuentro: (b) => alternarCapa(b.dataset.id),
   ubicar(b) {
     ocupado(b, true);
     getPos().then((p) => { ponerYo(p); S.map.setView([p.lat, p.lng], 17); })
@@ -3440,6 +3624,7 @@ const ACCIONES = {
   },
   ver_vitrina: (b) => abrirVitrina(b.dataset.id),
   aviso_rapido: (b) => hojaAvisoRapido(b.dataset.id || null),
+  reg_enc_modo(b) { recordarFormulario(); R.encModo = b.dataset.v === 'punto' ? 'punto' : 'mira'; dibujarHoja(); },
   aviso_tipo(b) { recordarRapido(); Q.kind = b.dataset.v === 'bien' ? 'bien' : 'ayuda'; dibujarHoja(); },
   aviso_grupo(b) { recordarRapido(); const id = b.dataset.id; if (Q.sel.has(id)) Q.sel.delete(id); else Q.sel.add(id); dibujarHoja(); },
   enviar_aviso_rapido: (b) => enviarAvisoRapido(b),
@@ -3511,7 +3696,8 @@ const ACCIONES = {
   guardar_hallazgo: (b) => guardarHallazgo(b),
 
   /* colección y categorías */
-  colcat: (b) => { S.coleccionCat = b.dataset.v || null; pintarColeccion(); },
+  colcat: (b) => { S.coleccionCat = b.dataset.v || null; S.colAbierta = false; pintarColeccion(true); },
+  col_mosaico: () => { S.colAbierta = !S.colAbierta; pintarColeccion(true); },
   categorias: () => hojaCategorias(false),
   editar_categoria: (b) => editarCategoria(b.dataset.id),
   guardar_categoria: (b) => guardarCategoria(b, b.dataset.id),
@@ -3704,7 +3890,7 @@ const ACCIONES = {
     const k = b.dataset.k, p = Object.assign({}, S.push || {});
     const nuevo = !p[k]; p[k] = nuevo;
     b.classList.toggle('on', nuevo); b.setAttribute('aria-checked', String(nuevo));
-    try { await api.guardarPushPrefs(S.user.id, { [k]: nuevo }); S.push = p; }
+    try { await api.guardarPushPrefs(S.user.id, { [k]: nuevo }); S.push = p; resumenNotif(); }
     catch (e) { b.classList.toggle('on', !nuevo); b.setAttribute('aria-checked', String(!nuevo)); fallo(e); }
   },
   async push_ofrecer_si(b) {
@@ -3735,7 +3921,8 @@ const ACCIONES = {
     aviso('Espacio liberado', 'eraser');
   },
   subir_ahora: () => subirPendientes(),
-  ver_pendientes() { cerrarTodo(); irA('perfil'); setTimeout(() => { const el = $('#sec-offline'); if (el) el.scrollIntoView({ block: 'start' }); }, 400); },
+  ver_pendientes() { try { localStorage.setItem('cg_plegado_offline', '1'); } catch (e) { /* nada */ } cerrarTodo(); irA('perfil'); setTimeout(() => { abrirPlegable('offline', true); const el = $('#sec-offline'); if (el) el.scrollIntoView({ block: 'start' }); }, 400); },
+  plegar: (b) => abrirPlegable(b.dataset.k, b.getAttribute('aria-expanded') !== 'true'),
   async pendiente_borrar(b) {
     if (!(await confirmar('¿Borrar este registro sin subir?'))) return;
     await BDP.quitar(b.dataset.id).catch(() => null); await contarPendientes();
@@ -3956,6 +4143,8 @@ async function limpiarTelefono() {
   await desactivarPush(true).catch(() => null);
   await alTrabajador({ tipo: 'salir' });
   try { for (const x of await BDP.todos(S.user.id)) await BDP.quitar(x.id); } catch (e) { /* nada */ }
+  try { [claveCapas(), 'cg_plegado_notif', 'cg_plegado_offline'].forEach((k) => localStorage.removeItem(k)); } catch (e) { /* nada */ }
+  S.capas = new Set(); S.capaDatos = new Map(); S.colMias = null;
 }
 function trasModerar() {
   const sh = $('.sheet');
@@ -4005,6 +4194,7 @@ async function arrancar(user) {
     if (!S.me) return pedirPerfil();
     const [cats, groups, following] = await Promise.all([api.listCats(user.id), api.myGroups(user.id), api.following(user.id)]);
     S.cats = cats; S.groups = groups; S.following = new Set(following);
+    { const ids = new Set(gruposEncuentro().map((g) => g.id)); S.capas = new Set([...leerCapas()].filter((id) => ids.has(id))); S.capaDatos = new Map(); }
     S.mutes = await api.muteList().catch(() => []);
     vigilarAvisos();
     cuandoDesocupado(protegerFotosAntiguas);
@@ -4051,7 +4241,7 @@ async function iniciar() {
   api = window.__API_PRUEBAS__ || (/^https:\/\//.test(C.SUPABASE_URL) ? supabaseApi() : null);
   if (!api) return pantallaConfig();
   api.onAuth((ev, u) => {
-    if (ev === 'SIGNED_OUT') { S.user = null; clearInterval(tAvisos); pararCompartir(true); alTrabajador({ tipo: 'salir' }); pantallaEntrada(); }
+    if (ev === 'SIGNED_OUT') { S.user = null; S.capas = new Set(); S.capaDatos = new Map(); S.colMias = null; if (S.capaEnc) S.capaEnc.clearLayers(); clearInterval(tAvisos); pararCompartir(true); alTrabajador({ tipo: 'salir' }); pantallaEntrada(); }
     else if (u && (ev === 'SIGNED_IN' || ev === 'INITIAL_SESSION')) arrancar(u);
   });
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
