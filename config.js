@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.7.0',
+  VERSION: '1.8.0',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -13,8 +13,10 @@ window.CONFIG = {
   // Texto bajo el logo en la pantalla de entrada
   LEMA: 'Mapa de hallazgos colaborativo',
 
-  // Límite de categorías por perfil (igual que en schema.sql). Los grupos van aparte.
+  // Colecciones con las que se empieza (igual que en schema.sql); con logros se llega a COLECCIONES_MAX
   MAX_CATEGORIAS: 5,
+  // Grupos que cada persona puede crear (igual que en migracion-1.8.sql); unirse no tiene límite
+  MAX_GRUPOS: 10,
 
   // Zona horaria para rachas y "mejor día"
   ZONA_HORARIA: 'America/Mexico_City',
@@ -113,11 +115,11 @@ window.CONFIG = {
   },
   // Colores de premio: solo se ganan (corona, corona mayor y sombrero)
   COLORES_PREMIO: { oro: '#FFC21A', coral: '#FF5A3C', negro: '#1C1917' },
-  COLECCIONES_MAX: 7,
+  COLECCIONES_MAX: 15,
   NOMBRES_PREMIO: { oro: 'Oro', coral: 'Coral', negro: 'Negro' },
   PREMIO_GANADO: 'Tus pines de {titulo} ganan {premio}.',
   COLECCION_NUEVA: 'Desbloqueaste una nueva colección: ahora puedes tener {n}.',
-  COLECCION_MAXIMO: 'Desbloqueaste tu séptima colección. Llegaste al máximo de colecciones.',
+  COLECCION_MAXIMO: 'Desbloqueaste tu colección número 15. Llegaste al máximo de colecciones.',
   COLECCION_MAXIMO_CORTO: 'llegaste al máximo de colecciones',
   COLOR_PREMIO_LISTO: 'Color guardado',
   METAS_COLONIAS: [1, 3, 5, 10, 20, 50],
@@ -210,7 +212,7 @@ window.CONFIG = {
   // Guía completa de uso (botón de ayuda en el mapa). Cada sección: ícono, título y pasos.
   GUIA: [
     { icono: 'map-2', titulo: '¿Qué es Collector Go?',
-      texto: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo. Cada persona arma hasta 5 colecciones por categoría: gatos, puertas, letreros, lo que quieras.' },
+      texto: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo. Empiezas con 5 colecciones por categoría (gatos, puertas, letreros, lo que quieras) y puedes llegar a 15 a medida que crecen.' },
     { icono: 'camera', titulo: 'Registrar un hallazgo',
       pasos: ['Toca la cámara del centro, abajo.', 'Toma la foto o elígela de tu galería. Si quieres, toca las tijeras para quitar el fondo.',
               'Elige la categoría (o un grupo) y ponle un nombre.', 'Revisa el punto en el mapa: puedes tocarlo para corregirlo.', 'Toca Guardar y celebra.'] },
@@ -222,7 +224,7 @@ window.CONFIG = {
       pasos: ['Abre su ficha y toca la flecha: el mapa de la app muestra el hallazgo, tu ubicación, la distancia y la dirección (por ejemplo, "120 m al noreste"). Nada sale de la app.',
               'En el mapa, el botón de caminar muestra lo que hay cerca de ti, ordenado por distancia.'] },
     { icono: 'cards', titulo: 'Tu colección y tus categorías',
-      pasos: ['La pestaña de tarjetas muestra todo lo que has registrado, por categoría.', 'El lápiz abre tus categorías: edítalas, bórralas o crea nuevas (máximo 5).',
+      pasos: ['La pestaña de tarjetas muestra todo lo que has registrado, por categoría.', 'El lápiz abre tus categorías: edítalas, bórralas o crea nuevas.',
               'Cada categoría lleva un ícono: elige uno de las tres pestañas, búscalo por nombre o usa un emoji.'] },
     { icono: 'lock', titulo: 'Público o privado',
       texto: 'Al registrar eliges el ojo (público: lo ve la comunidad) o el candado (privado: solo tú). Lo de un grupo privado solo lo ven sus miembros.' },
@@ -236,11 +238,18 @@ window.CONFIG = {
       texto: 'Si no quieres ver el contenido de alguien, o de un grupo del que no formas parte, abre su perfil y toca silenciar. Deja de aparecer en tu Muro y tu mapa, y no puede escribirte ni etiquetarte; no se le avisa. No es posible silenciar a quienes comparten un grupo contigo.' },
     { icono: 'users', titulo: 'Grupos',
       pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Invita por WhatsApp: quien abra el enlace y entre con Google queda dentro.',
-              'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.'] },
+              'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.',
+              'Puedes crear hasta 10 grupos y unirte a todos los que quieras.'] },
+    { icono: 'lifebuoy', titulo: 'Grupos de encuentro',
+      texto: 'Un grupo privado y oculto para cuidarse en un viaje, un rally, una marcha, un festival o un sismo. Al crear un grupo, elige "Grupo de encuentro". Dentro del grupo, el botón de ayuda explica cómo funciona.' },
     { icono: 'medal', titulo: 'Medallas y récords',
       texto: 'Ganas medallas por cantidad en cada categoría, por colonias exploradas, por semanas seguidas y por reencuentros. Toca una medalla para ver cuánto te falta. La copa muestra la tabla general.' },
     { icono: 'current-location', titulo: 'Ubicación',
       texto: 'La app guarda el punto de cada hallazgo. Puedes compartir la ubicación exacta o la aproximada; lo aproximado queda marcado y puedes corregirlo tocando el mapa.' },
+    { icono: 'cloud-off', titulo: 'Sin conexión',
+      texto: 'La app abre y registra aunque no tengas señal. Lo que registres se sube solo cuando vuelve la conexión. En tu perfil puedes liberar espacio.' },
+    { icono: 'bell', titulo: 'Notificaciones',
+      texto: 'Si las activas, te llega un aviso breve. Los detalles solo se ven dentro de la app.' },
     { icono: 'brand-whatsapp', titulo: 'Compartir',
       texto: 'En la ficha, el botón de WhatsApp crea una tarjeta con la foto de tu hallazgo para enviarla.' },
     { icono: 'hand-finger', titulo: '¿Qué significa cada ícono?',
@@ -255,6 +264,10 @@ window.CONFIG = {
     'Los datos y las fotos se guardan en Supabase. Google solo confirma quién eres al entrar. Para saber el nombre de la colonia, la app envía las coordenadas a OpenStreetMap, que también dibuja el mapa. El recorte de fondo se hace en tu teléfono.',
     'Al marcar "¡Lo vi!", tu ubicación se usa solo para comprobar que estás cerca y no se guarda.',
     'Los mensajes del buzón solo los ven las dos personas de la conversación. Como el resto de los datos, se guardan en la base de datos de Collector Go.',
+    'Tu información personal (nombre, correo, ubicación y actividad) no pasa por ningún algoritmo de recomendación ni por inteligencia artificial. El Muro se ordena solo por fecha.',
+    'Los grupos de encuentro solo los ven sus miembros, ni siquiera la administradora desde la app. Si compartes tu ubicación con uno, solo se guarda tu último punto y se borra al terminar el tiempo.',
+    'Las notificaciones viajan cifradas por el servicio de tu teléfono (Google o Apple) y solo dicen algo general. Si las activas, guardamos la dirección que da tu teléfono para recibirlas. Se borra al desactivarlas o al cerrar sesión.',
+    'Las copias para usar sin conexión se guardan en tu teléfono y se borran al cerrar sesión.',
     'No vendemos tus datos ni hay publicidad.',
     'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta", en tu perfil, elimina tu perfil, tus hallazgos y tus fotos.',
     'La administradora puede quitar contenido público que alguien reporte y bloquear cuentas que no respeten la comunidad.'
@@ -323,6 +336,108 @@ window.CONFIG = {
     resuelto: { icono: 'circle-check', nombre: 'Resuelto' }
   },
 
+  // Grupos de encuentro: una sola plantilla; el uso solo sugiere nombres de puntos y un acuerdo
+  ENCUENTRO_USOS: [
+    { id: 'viaje',    nombre: 'Viaje',    icono: 'luggage',      puntos: ['Hotel', 'Punto de reunión del día'], acuerdo: 'Salida a las …' },
+    { id: 'rally',    nombre: 'Rally',    icono: 'flag',         puntos: [], acuerdo: '' },
+    { id: 'marcha',   nombre: 'Marcha',   icono: 'speakerphone', puntos: ['Dónde nos vemos antes', 'A dónde vamos si nos separamos'], acuerdo: 'Si nos separamos, nos vemos en … a las …' },
+    { id: 'festival', nombre: 'Festival', icono: 'music',        puntos: ['Escenario principal', 'Entrada', 'Donde hay agua'], acuerdo: 'Si te pierdes, aquí a las 11' },
+    { id: 'sismo',    nombre: 'Sismo',    icono: 'home-shield',  puntos: ['Casa', 'Escuela', 'Trabajo', 'Punto alterno'], acuerdo: 'Si no hay señal, nos vemos en el punto principal' }
+  ],
+  ENCUENTRO_MAX_MIEMBROS: 50,
+  ENCUENTRO_REFRESCO_MS: 20000,   // cada cuánto se actualiza el grupo abierto
+  ENCUENTRO_COMPARTIR_MIN: [15, 30],
+  ENCUENTRO_TEMA_MAX: 60,
+  ENCUENTRO_ACUERDO_MAX: 200,
+  ENCUENTRO_NOTA_MAX: 140,
+  ENCUENTRO_TIPO_TEXTO: 'Privado y oculto: solo lo ven sus miembros. Para viajes, rallies, marchas, festivales o un sismo.',
+  ENCUENTRO_ESTADOS: {
+    bien:  { nombre: 'Todo bien',      icono: 'circle-check', listo: 'Tu grupo ya sabe que todo está bien' },
+    ayuda: { nombre: 'Necesito ayuda', icono: 'urgent',       listo: 'Tu grupo ya sabe que necesitas ayuda' }
+  },
+  ENCUENTRO_MIRA: 'Mira esto',
+  ENCUENTRO_EXACTA: 'Compartir mi ubicación exacta con el grupo',
+  ENCUENTRO_NOTA_AYUDA: '¿Qué pasa? (opcional)',
+  ENCUENTRO_VOY_A: 'Voy a (opcional)',
+  ENCUENTRO_SIN_AVISO: 'Sin aviso todavía',
+  ENCUENTRO_EN_COLA: 'Sin conexión: se enviará al volver la señal',
+  ENCUENTRO_WHATSAPP: 'Enviar también por WhatsApp',
+  ENCUENTRO_SIN_PUNTOS: 'Aún no hay puntos de encuentro. Propón el primero.',
+  ENCUENTRO_SIN_MIRA: 'Aún no hay nada marcado',
+  ENCUENTRO_COMPARTIENDO: 'Compartiendo tu ubicación · quedan {m} min',
+  ENCUENTRO_COMPARTIR: 'Compartir mi ubicación',
+  ENCUENTRO_SALIR: '¿Salir del grupo? Se borra todo lo tuyo aquí: avisos, "Mira esto", puntos y ubicación.',
+  ENCUENTRO_BORRAR_MIO: '¿Borrar todo lo tuyo en este grupo? Avisos, "Mira esto", puntos y ubicación. Sigues en el grupo.',
+  ENCUENTRO_VOTAR: '¿Proponer borrar el grupo completo? Se borra cuando más de la mitad está de acuerdo.',
+  ENCUENTRO_VOTAR_APOYO: '¿Estás de acuerdo en borrar el grupo completo? Se borra cuando más de la mitad está de acuerdo.',
+  ENCUENTRO_VOTOS: '{n} de {t} quieren borrar el grupo',
+  ENCUENTRO_INACTIVO: '¿Eliminar el grupo? Nadie más ha tenido actividad en {d} días. Sus miembros reciben un aviso.',
+  ENCUENTRO_PREMIO: 'Tus "Mira esto" en {grupo} ganan {premio}.',
+  ENCUENTRO_TEMA_PISTA: 'Puertas azules',
+  ENCUENTRO_JUEGO: 'Juego en el grupo',
+  ENCUENTRO_JUEGO_TEXTO: 'Encendido, cada "Mira esto" suma premios dentro del grupo. Solo los ve el grupo.',
+  // Guía propia de los grupos de encuentro (aparte de la guía general)
+  GUIA_ENCUENTRO: [
+    { icono: 'lifebuoy', titulo: '¿Qué es?', texto: 'Un grupo privado y oculto con puntos de encuentro. Solo lo ven sus miembros.' },
+    { icono: 'flag', titulo: 'Puntos de encuentro', texto: 'Cualquier miembro puede proponer uno; ponle foto para reconocerlo. "Ir al punto" te guía aunque no tengas datos.' },
+    { icono: 'circle-check', titulo: 'Avisos', texto: '"Todo bien" y "Necesito ayuda" avisan al grupo. Al pedir ayuda puedes compartir tu ubicación exacta. Después puedes enviarlo también por WhatsApp.' },
+    { icono: 'eye', titulo: 'Mira esto', texto: 'Marca algo en el mapa del grupo. Si el juego está encendido, suma premios dentro del grupo.' },
+    { icono: 'sparkles', titulo: 'Tema de colección', texto: 'Quien administra puede proponer uno. Es posible cambiarlo sin límites.' },
+    { icono: 'current-location', titulo: 'Mi ubicación', texto: 'Compártela por 15 o 30 minutos mientras la app está abierta.' },
+    { icono: 'trash', titulo: 'Borrar', texto: 'Borra lo tuyo cuando quieras. El grupo se borra si la mayoría lo vota.' },
+    { icono: 'bulb', titulo: 'Ideas para aprovecharlo', pasos: [
+      'Viaje: el hotel y el punto del día; "Mira esto" para guardar lo que descubren.',
+      'Rally: puntos de control y un tema de colección; gana quien más "Mira esto" sume.',
+      'Marcha: dónde se ven antes y a dónde van si se separan.',
+      'Festival: un punto fijo "si te pierdes, aquí a las 11".',
+      'Sismo: casa, escuela y trabajo; practícalo antes con tu gente.'] }
+  ],
+
+  // Notificaciones: texto genérico (el detalle solo se ve dentro de la app)
+  PUSH_FUNCION: 'https://kkgnsylkmjltuphyetss.supabase.co/functions/v1/avisos-push',
+  PUSH_TEXTOS: {
+    ayuda: 'Alguien de tu grupo pidió ayuda',
+    grupo: 'Hay novedades en tu grupo',
+    mensaje: 'Tienes un mensaje nuevo',
+    aviso: 'Tienes un aviso nuevo'
+  },
+  PUSH_PREFS: [
+    { k: 'encuentro', nombre: 'Grupos de encuentro' },
+    { k: 'mira',      nombre: '"Mira esto" y tema de colección' },
+    { k: 'mensajes',  nombre: 'Mensajes y etiquetas' },
+    { k: 'sonido',    nombre: 'Sonar y vibrar cuando alguien pida ayuda' },
+    { k: 'admin',     nombre: 'Avisos de administración', admin: true }
+  ],
+  PUSH_OFRECER: '¿Quieres que te avisemos si alguien del grupo pide ayuda?',
+  PUSH_ACTIVAR: 'Activar notificaciones',
+  PUSH_ACTIVAS: 'Notificaciones activadas',
+  PUSH_DESACTIVAR: 'Desactivar en este teléfono',
+  PUSH_NO_SOPORTA: 'Este navegador no permite notificaciones.',
+  PUSH_IPHONE: 'En iPhone, las notificaciones funcionan con la app instalada en tu pantalla de inicio.',
+  PUSH_BLOQUEADAS: 'Las notificaciones están bloqueadas para Collector Go. Actívalas en los ajustes de tu teléfono o del navegador.',
+  PUSH_NO_LISTAS: 'Las notificaciones aún no están listas. Intenta más tarde.',
+
+  // Sin conexión
+  OFFLINE_FOTOS_MB: 50,      // tope de copias de fotos en el teléfono
+  OFFLINE_TESELAS: 2000,     // pedazos de mapa ya vistos que se guardan
+  OFFLINE_ESPERA_MS: 6000,   // si la red tarda más, se muestra lo guardado
+  OFFLINE_EXTERNOS: [
+    'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css',
+    'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js',
+    'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js'
+  ],
+  SIN_CONEXION: 'Sin conexión',
+  PENDIENTE_GUARDADO: 'Guardado en tu teléfono. Se sube solo al volver la conexión',
+  PENDIENTES_TITULO: 'Pendientes de subir',
+  PENDIENTES_SUBIDOS: '{n} subidos',
+  PENDIENTE_DUDA: 'Ya existe con ese nombre. ¿Es el mismo?',
+  PENDIENTES_SALIR: 'Tienes {n} registros sin subir. Si cierras sesión se pierden. ¿Cerrar sesión?',
+  VERSION_NUEVA: 'Hay una versión nueva, toca para actualizar',
+  OFFLINE_TITULO: 'Sin conexión',
+  GUARDAR_FOTOS: 'Guardar fotos para ver sin conexión',
+  LIBERAR: 'Liberar espacio',
+  ESPACIO: 'Fotos guardadas: {mb} MB de {tope} MB · mapa: {t} pedazos',
+
   // Textos de ayuda (aparecen al mantener presionado un ícono)
   AYUDA: {
     mapa: 'Mapa', muro: 'Muro', nuevo: 'Registrar hallazgo', coleccion: 'Mi colección', perfil: 'Perfil',
@@ -338,6 +453,10 @@ window.CONFIG = {
     grupo_privado: 'Grupo privado', comentar: 'Enviar comentario', borrar_comentario: 'Borrar comentario', nueva_categoria: 'Nueva categoría', borrar_cuenta: 'Borrar mi cuenta', buscar: 'Buscar ícono', emoji: 'Usar un emoji',
     silenciar: 'Silenciar', quitar_silencio: 'Quitar silencio', silenciado: 'silenciado', silenciados: 'Silenciados',
     buzon: 'Escribir a la administradora', buzon_amigos: 'Buzón', color_premio: 'Color de tu corona', mensaje: 'Enviar mensaje', etiquetar: 'Etiquetar', seguir_vuelta: 'Seguir de vuelta', captura: 'Agregar captura de pantalla (opcional)', quitar_captura: 'Quitar captura',
-    enviar: 'Enviar', responder: 'Guardar respuesta', ver_perfil: 'Ver perfil', avisos: 'Buzón', descargar: 'Descargar imagen', uso: 'Uso del plan'
+    enviar: 'Enviar', responder: 'Guardar respuesta', ver_perfil: 'Ver perfil', avisos: 'Buzón', descargar: 'Descargar imagen', uso: 'Uso del plan',
+    encuentro_guia: 'Cómo funciona el grupo de encuentro', encuentro_ajustes: 'Juego, tema y acuerdos', punto_nuevo: 'Proponer un punto',
+    principal: 'Hacer punto principal', borrar_lo_mio: 'Borrar lo mío', votar_borrado: 'Proponer borrar el grupo', quitar_voto: 'Retirar mi voto',
+    eliminar_inactivo: 'Eliminar por inactividad', refrescar: 'Actualizar', ver_en_mapa: 'Ver en el mapa', miembro: 'Opciones de esta persona',
+    coadmin: 'Coadministradora', duena: 'Creó el grupo', dejar_compartir: 'Dejar de compartir', subir_ahora: 'Subir ahora'
   }
 };

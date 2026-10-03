@@ -1,5 +1,5 @@
 /* =====================================================================
-   Collector Go · app.js · v1.7
+   Collector Go · app.js · v1.8
    Estructura (para parches rápidos):
      1. Utilidades            6. Pantallas (muro, colección, perfil)
      2. Capa de datos (api)   7. Hojas (ficha, registrar, editar, grupos…)
@@ -84,6 +84,14 @@ const errTexto = (e) => String((e && (e.message || e.code)) || e || '');
 function mensajeError(e) {
   const m = errTexto(e);
   if (m.includes('MAX_CATEGORIAS')) return `Máximo ${limiteCategorias()} categorías`;
+  if (m.includes('MAX_GRUPOS')) return `Puedes crear hasta ${C.MAX_GRUPOS} grupos`;
+  if (m.includes('GRUPO_LLENO')) return `El grupo ya tiene ${C.ENCUENTRO_MAX_MIEMBROS} personas`;
+  if (m.includes('ESPERA')) return 'Espera unos segundos para enviar otro aviso';
+  if (m.includes('MAX_PUNTOS')) return 'El grupo ya tiene 50 puntos de encuentro';
+  if (m.includes('MAX_COADMIN')) return 'Máximo 3 coadministradoras';
+  if (m.includes('AUN_ACTIVO')) return 'Aún hay actividad en el grupo';
+  if (m.includes('MAX_MIRA')) return 'Llegaste al máximo de "Mira esto" en este grupo';
+  if (m.includes('PUSH_NO_LISTO')) return C.PUSH_NO_LISTAS;
   if (m.includes('MAX_ETIQUETAS')) return `Máximo ${C.ETIQUETAS_MAX} personas por hallazgo`;
   if (m.includes('messages_body_check')) return `Máximo ${C.MENSAJE_MAX} caracteres`;
   if (m.includes('"messages"')) return C.CHAT_BLOQUEADO;
@@ -96,8 +104,13 @@ function mensajeError(e) {
   if (m.includes('"mutes"')) return 'No se puede silenciar a quien comparte un grupo contigo';
   if (m.includes('requests_body_check')) return `Máximo ${C.BUZON_MAX} caracteres`;
   if (m.includes('row-level security') || m.includes('NO_PERMITIDO')) return 'No tienes permiso para eso';
-  if (m.includes('Failed to fetch') || m.includes('NetworkError')) return 'Sin conexión. Intenta de nuevo';
+  if (esErrorRed(e)) return 'Sin conexión. Intenta de nuevo';
   return `Algo falló (código ${codigoError(e)}). Intenta de nuevo o escríbenos en el buzón`;
+}
+// ¿Falló por falta de red? (sin señal o red saturada)
+function esErrorRed(e) {
+  const m = errTexto(e);
+  return /Failed to fetch|NetworkError|Load failed|network connection|fetch failed|ERR_INTERNET|ERR_NETWORK/i.test(m) || (e && e.name === 'TypeError' && /fetch/i.test(m)) || !navigator.onLine;
 }
 // Código corto para identificar un error: el de la base de datos o uno derivado del mensaje
 function codigoError(e) {
@@ -269,11 +282,21 @@ function supabaseApi() {
       return nuevo;
     },
     async deleteAccount(uid) {
+      // Todas las fotos, también las de las subcarpetas (grupos de encuentro: <persona>/enc/<grupo>/)
+      const archivos = async (b, carpeta, nivel) => {
+        const l = ok(await sb.storage.from(b).list(carpeta, { limit: 1000 })) || [];
+        let out = [];
+        for (const f of l) {
+          if (f.id) out.push(`${carpeta}/${f.name}`);
+          else if (nivel < 3) out = out.concat(await archivos(b, `${carpeta}/${f.name}`, nivel + 1));
+        }
+        return out;
+      };
       for (const b of ['fotos', 'privadas']) {
         for (let i = 0; i < 50; i++) {
-          const files = ok(await sb.storage.from(b).list(uid, { limit: 100 }));
-          if (!files || !files.length) break;
-          ok(await sb.storage.from(b).remove(files.map((f) => `${uid}/${f.name}`)));
+          const files = await archivos(b, uid, 0);
+          if (!files.length) break;
+          for (let j = 0; j < files.length; j += 100) ok(await sb.storage.from(b).remove(files.slice(j, j + 100)));
         }
       }
       ok(await sb.rpc('delete_my_account'));
@@ -292,6 +315,42 @@ function supabaseApi() {
         return c ? String(c).slice(0, 80) : null;
       } catch (e) { return null; }
     },
+    // Grupos de encuentro
+    async estadoEncuentro(gid) {
+      const e = ok(await sb.rpc('estado_encuentro', { gid }));
+      if (e) { await firmar(e.puntos || []); await firmar(e.miras || []); }
+      return e;
+    },
+    ajustesEncuentro: (gid, o) => sb.rpc('ajustes_encuentro', { gid, p_juego: !!o.juego, p_tema: o.tema || null, p_acuerdo: o.acuerdo || null }).then(ok),
+    nombrarCoadmin: (gid, uid, si) => sb.rpc('nombrar_coadmin', { gid, persona: uid, si }).then(ok),
+    sacarMiembro: (gid, uid) => sb.rpc('sacar_miembro', { gid, persona: uid }).then(ok),
+    compartirUbicacion: (gid, p, minutos) => sb.rpc('compartir_ubicacion', { gid, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? null : p.acc, minutos: minutos || null }).then(ok),
+    dejarDeCompartir: (gid) => sb.rpc('dejar_de_compartir', { gid }).then(ok),
+    borrarLoMio: (gid) => sb.rpc('borrar_lo_mio', { gid }).then(ok),
+    votarBorrado: (gid, si) => sb.rpc('votar_borrado', { gid, si }).then(ok),
+    eliminarPorInactividad: (gid) => sb.rpc('eliminar_por_inactividad', { gid }).then(ok),
+    puntoPrincipal: (pid) => sb.rpc('punto_principal', { pid }).then(ok),
+    addPunto: (p) => sb.from('meeting_points').insert(p).then(ok),
+    delPunto: (id) => sb.from('meeting_points').delete().eq('id', id).then(ok),
+    addEstado: (x) => sb.from('group_status').insert(x).then(ok),
+    addMira: (m) => sb.from('group_marks').insert(m).then(ok),
+    delMira: (id) => sb.from('group_marks').delete().eq('id', id).then(ok),
+    fotosPorBorrar: () => sb.from('fotos_por_borrar').select('id, path').limit(200).then(ok),
+    quitarFotosPorBorrar: (ids) => sb.from('fotos_por_borrar').delete().in('id', ids).then(ok),
+    // Notificaciones
+    pushPrefs: () => sb.from('push_prefs').select('*').maybeSingle().then(ok),
+    guardarPushPrefs: (uid, p) => sb.from('push_prefs').upsert(Object.assign({ user_id: uid }, p)).then(ok),
+    registrarPush: (x) => sb.rpc('registrar_push', { p_endpoint: x.endpoint, p_p256dh: x.p256dh, p_auth: x.auth }).then(ok),
+    quitarPush: (endpoint) => sb.rpc('quitar_push', { p_endpoint: endpoint }).then(ok),
+    appActiva: (si) => sb.rpc('app_activa', { si }).then(ok),
+    async llavePush() {
+      const r = await fetch(C.PUSH_FUNCION, { method: 'GET' });
+      if (!r.ok) throw new Error('PUSH_NO_LISTO');
+      const j = await r.json(); if (!j || !j.publica) throw new Error('PUSH_NO_LISTO');
+      return j.publica;
+    },
+    // Respaldo: además de la base de datos, la app pide a la función que envíe lo pendiente
+    dispararPush: () => fetch(C.PUSH_FUNCION, { method: 'POST' }).then(() => null).catch(() => null),
     async iconList() {
       const r = await fetch(C.ICONOS_LISTA_URL);
       if (!r.ok) throw new Error('ICONOS');
@@ -314,6 +373,8 @@ const S = {
 const guarda = (arr) => { (arr || []).forEach((c) => S.cache.set(c.id, c)); return arr || []; };
 const foto = (c, mini) => api.photoUrl(mini ? (c.thumb || c.photo) : (c.photo || c.thumb));
 const miGrupo = (gid) => S.groups.find((g) => g.id === gid);
+const esEncuentro = (g) => !!(g && g.tipo === 'encuentro');
+const gruposColeccion = () => S.groups.filter((g) => !esEncuentro(g));
 const puedoReencontrar = (c) => c.user_id === S.user.id || (c.group_id && !!miGrupo(c.group_id));
 // Opciones de consulta según el filtro elegido (mapa y muro)
 function opcionesFiltro(f) {
@@ -374,8 +435,11 @@ function dibujarHoja() {
   const root = $('#sheet-root');
   if (!pila.length) { root.innerHTML = ''; return; }
   const top = pila[pila.length - 1];
+  const antes = $('.sheet', root), arriba = antes && dibujarHoja.ultima === top ? antes.scrollTop : 0;
   root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet" role="dialog" aria-modal="true">${top.render()}</div></div>`;
+  dibujarHoja.ultima = top;
   liberarTexto();
+  if (arriba) $('.sheet', root).scrollTop = arriba;
   if (top.after) top.after($('.sheet', root));
 }
 // El mapa bloquea la selección de texto mientras se arrastra y en iPhone a veces no la libera,
@@ -468,7 +532,7 @@ function selectorDestino(actual) {
     <span class="dot" style="background:${okColor(color)}"></span>${ic(icon)}${esc(nombre)}${grupo ? ` ${ic('users')}` : ''}</button>`;
   return `<div class="chips" data-pick="dest" style="flex-wrap:wrap">
     ${S.cats.map((c) => chip('c:' + c.id, c.color, c.icon, c.name)).join('')}
-    ${S.groups.map((g) => chip('g:' + g.id, g.color, g.icon, g.name, true)).join('')}</div>`;
+    ${gruposColeccion().map((g) => chip('g:' + g.id, g.color, g.icon, g.name, true)).join('')}</div>`;
 }
 const valor = (raiz, nombre) => { const b = $(`[data-pick="${nombre}"] .on`, raiz); return b ? b.dataset.v : null; };
 
@@ -693,7 +757,8 @@ function irAlPunto(c) {
   setTimeout(() => {
     if (S.guia !== G || !S.map) return;
     G.pin = L.marker([c.lat, c.lng], { icon: L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36],
-      html: `<div class="pin destino" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` }) }).on('click', () => abrirFicha(c.id)).addTo(S.map);
+      html: `<div class="pin destino" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` }) })
+      .on('click', () => (c.act === 'encuentro' ? abrirEncuentro(c.actId) : abrirFicha(c.id))).addTo(S.map);
     S.map.setView([c.lat, c.lng], 18);
     if (!navigator.geolocation) { G.sinGps = true; return pintarGuia(); }
     G.watch = navigator.geolocation.watchPosition((p) => {
@@ -712,7 +777,7 @@ function pintarGuia() {
   const txt = d == null ? (G.sinGps ? C.GUIA_SIN_GPS : C.GUIA_BUSCANDO)
     : d <= C.LLEGADA_METROS ? C.GUIA_LLEGASTE : `${metros(d)} al ${rumbo(G.pos, G.c)}`;
   el.hidden = false;
-  el.innerHTML = `<button class="row grow" data-act="ficha" data-id="${G.c.id}" style="text-align:left;min-width:0">
+  el.innerHTML = `<button class="row grow" data-act="${G.c.act || 'ficha'}" data-id="${G.c.actId || G.c.id}" style="text-align:left;min-width:0">
       <span class="avatar" style="background:${okColor(G.c.cat_color)}">${ic(G.c.cat_icon)}</span>
       <span class="grow" style="min-width:0"><b class="guia-nombre">${esc(G.c.name)}</b><span class="guia-dist">${ic('navigation')} ${esc(txt)}</span></span></button>
     ${ib('cerrar_guia', 'x', 'cerrar', '', 'sm')}`;
@@ -742,7 +807,7 @@ function chipsFiltro(f, act, conPropios) {
     ${conPropios ? `<button class="chip ${on('mios')}" data-act="${act}" data-v="mios" data-tip="${t('filtro_mios')}" aria-label="${t('filtro_mios')}">${ic(S.me.avatar)}</button>` : ''}
     <button class="chip ${on('siguiendo')}" data-act="${act}" data-v="siguiendo" data-tip="${t('filtro_siguiendo')}" aria-label="${t('filtro_siguiendo')}">${ic('user-check')}</button>
     ${conPropios ? S.cats.map((c) => `<button class="chip ${on('cat', c.id)}" data-act="${act}" data-v="cat:${c.id}"><span class="dot" style="background:${okColor(c.color)}"></span>${ic(c.icon)}${esc(c.name)}</button>`).join('') : ''}
-    ${S.groups.map((g) => `<button class="chip ${on('grupo', g.id)}" data-act="${act}" data-v="grupo:${g.id}"><span class="dot" style="background:${okColor(g.color)}"></span>${ic(g.icon)}${esc(g.name)} ${ic('users')}</button>`).join('')}`;
+    ${gruposColeccion().map((g) => `<button class="chip ${on('grupo', g.id)}" data-act="${act}" data-v="grupo:${g.id}"><span class="dot" style="background:${okColor(g.color)}"></span>${ic(g.icon)}${esc(g.name)} ${ic('users')}</button>`).join('')}`;
 }
 function leerFiltro(v) {
   if (v === 'todos' || v === 'mios' || v === 'siguiendo') return { modo: v, id: null };
@@ -867,10 +932,12 @@ async function pintarColeccion() {
         ${S.cats.map((c) => `<button class="chip ${S.coleccionCat === c.id ? 'on' : ''}" data-act="colcat" data-v="${c.id}"><span class="dot" style="background:${okColor(c.color)}"></span>${ic(c.icon)}${esc(c.name)} · ${cuenta(c.id)}</button>`).join('')}
       </div>
       ${vis.length ? rejilla(vis, true) : `<div class="empty">${ic('camera')}<p>Registra tu primer hallazgo</p><button class="btn" data-act="nuevo">${ic('camera')}</button></div>`}
-      <div class="sec"><div class="row between"><h3 class="row">${ic('users')} Grupos</h3>${ib('grupo_nuevo', 'plus', 'grupo_nuevo')}</div>
+      <div class="sec"><div class="row between"><h3 class="row">${ic('users')} Grupos</h3>
+        <span class="row"><span class="tiny" data-tip="Grupos que creaste">${gruposCreados()} / ${C.MAX_GRUPOS}</span>${ib('grupo_nuevo', 'plus', 'grupo_nuevo')}</span></div>
         <div class="list" style="margin-top:10px">${S.groups.map((g) => `<button class="li" data-act="grupo" data-id="${g.id}" style="text-align:left">
           <span class="avatar" style="background:${okColor(g.color)}">${ic(g.icon)}</span><b class="grow">${esc(g.name)}</b>
-          <span class="muted" data-tip="${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}">${ic(g.is_public ? 'world' : 'lock')}</span></button>`).join('')
+          ${esEncuentro(g) ? `<span class="muted" data-tip="${esc(C.ENCUENTRO_TIPO_TEXTO)}">${ic('lifebuoy')}</span>`
+            : `<span class="muted" data-tip="${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}">${ic(g.is_public ? 'world' : 'lock')}</span>`}</button>`).join('')
           || `<p class="muted">Crea un grupo para coleccionar con tus amigos en el mismo mapa.</p>`}</div></div>`;
   } catch (e) { fallo(e); }
 }
@@ -926,6 +993,7 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
     <div class="sec"><h3>${ic('flame')} ${esc(C.TITULOS_MEDALLAS.racha)}</h3><div class="medals">${grupo('racha')}</div></div>
     <div class="sec"><h3>${ic('repeat')} ${esc(C.TITULOS_MEDALLAS.reen)}</h3><div class="medals">${grupo('reen')}</div></div>
     ${tarjetas ? `<div class="sec"><h3>${ic('cards')} ${tarjetas.length}</h3>${tarjetas.length ? rejilla(tarjetas, false) : '<div class="muted">—</div>'}</div>` : ''}
+    ${propio ? `<div class="sec" id="sec-notif"></div><div class="sec" id="sec-offline"></div>` : ''}
     ${propio ? `<div style="text-align:center;margin-top:30px"><button class="linkbtn" data-act="borrar_cuenta">${ic('trash')} ${esc(C.AYUDA.borrar_cuenta)}</button>
       <p class="tiny">Collector Go · v${esc(C.VERSION)}</p></div>` : ''}`;
 }
@@ -935,7 +1003,10 @@ async function pintarPerfil() {
   try {
     const [me, st] = await Promise.all([api.getProfile(S.user.id), api.stats(S.user.id)]);
     S.me = me || S.me; S.stats = st;
-    if (S.tab === 'perfil') { scr.innerHTML = perfilHTML(S.me, st, true, null); cuandoDesocupado(() => prepararMosaico(S.user.id)); }
+    if (S.tab === 'perfil') {
+      scr.innerHTML = perfilHTML(S.me, st, true, null); cuandoDesocupado(() => prepararMosaico(S.user.id));
+      pintarNotificaciones().catch(() => null); pintarSinConexion().catch(() => null);
+    }
     if (S.me.is_admin) avisoUsoPerfil();
   } catch (e) { fallo(e); }
 }
@@ -1154,11 +1225,11 @@ function registroHTML() {
     <div id="candidatos"></div>
     <button class="btn block" data-act="guardar_hallazgo" style="margin-top:14px">${ic('check')} Guardar</button>`;
 }
-function gpsTexto() {
-  if (R.gps === 'buscando') return `<span class="spin">${ic('loader-2')}</span> GPS`;
-  if (R.gps === 'error') return 'Sin GPS: toca el mapa para marcar';
-  if (R.pos) return R.pos.acc == null ? 'Marcado a mano'
-    : esAproximada(R.pos) ? `${ic('alert-triangle')} ±${metros(R.pos.acc)} · aproximada <button type="button" class="linkbtn" data-act="info_precision" style="padding:0 4px">¿Cómo activar la exacta?</button>` : `±${R.pos.acc} m`;
+function gpsTexto(X = R) {
+  if (X.gps === 'buscando') return `<span class="spin">${ic('loader-2')}</span> GPS`;
+  if (X.gps === 'error') return 'Sin GPS: toca el mapa para marcar';
+  if (X.pos) return X.pos.acc == null ? 'Marcado a mano'
+    : esAproximada(X.pos) ? `${ic('alert-triangle')} ±${metros(X.pos.acc)} · aproximada <button type="button" class="linkbtn" data-act="info_precision" data-acc="${X.pos.acc}" style="padding:0 4px">¿Cómo activar la exacta?</button>` : `±${X.pos.acc} m`;
   return '';
 }
 // Guarda lo escrito antes de volver a dibujar el formulario
@@ -1293,6 +1364,9 @@ async function guardarHallazgo(btn) {
   if (!nombre) { $('#f-nombre', raiz).focus(); return aviso('Ponle un nombre', 'pencil'); }
   if (!R.pos) return aviso('Falta la ubicación: toca el mapa', 'map-pin');
   ocupado(btn, true);
+  // Sin señal: se guarda en el teléfono y se sube solo al volver la conexión
+  if (!navigator.onLine) return guardarHallazgoSinConexion(btn, { cat, grupo, nombre, nota });
+  let guardado = false;
   try {
     // ¿Ya existe con ese nombre en esta categoría o grupo?
     const existente = await api.findByName(nombre, cat, grupo);
@@ -1314,6 +1388,7 @@ async function guardarHallazgo(btn) {
     try {
       nuevoId = await api.addFind({ category_id: cat, group_id: grupo, name: nombre, note: nota || null, is_private: grupo ? false : R.priv,
         lat: R.pos.lat, lng: R.pos.lng, accuracy: R.pos.acc, colonia, photo: pFoto, thumb: pMini });
+      guardado = true;
     } catch (e) { api.removeFiles([pFoto, pMini]).catch(() => null); throw e; }
     if (R.etiquetas.length && !(grupo ? false : R.priv)) await api.etiquetar(nuevoId, R.etiquetas).catch((e) => fallo(e));
     const despues = await api.stats(S.user.id);
@@ -1325,11 +1400,16 @@ async function guardarHallazgo(btn) {
     celebrarHallazgo({ icono: (ct || g || {}).icon, color: (ct || g || {}).color, titulo: nombre,
       detalle: ct ? `${ct.name} · ${ct.total}` : (g ? g.name : ''), foto: R.vistaUrl }, () => celebrar(novedades(antes, despues)));
     refrescarActual();
-  } catch (e) { ocupado(btn, false); fallo(e); }
+  } catch (e) {
+    if (!guardado && esErrorRed(e)) return guardarHallazgoSinConexion(btn, { cat, grupo, nombre, nota });
+    ocupado(btn, false); fallo(e);
+  }
 }
 async function guardarReencuentro(btn, c) {
   const nota = (R.nota || '').trim();
   ocupado(btn, true);
+  if (!navigator.onLine) return guardarReencuentroSinConexion(btn, c);
+  let guardado = false;
   try {
     const antes = S.stats || await api.stats(S.user.id);
     const { pFoto, pMini } = await subirFotos(!!c.is_private);
@@ -1337,6 +1417,7 @@ async function guardarReencuentro(btn, c) {
     const colonia = pos ? await api.colonia(pos.lat, pos.lng) : null;
     try {
       await api.addSighting({ find_id: c.id, lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, photo: pFoto, thumb: pMini, colonia, note: nota || null });
+      guardado = true;
     } catch (e) { api.removeFiles([pFoto, pMini]).catch(() => null); throw e; }
     const nueva = await api.card(c.id); if (nueva) guarda([nueva]);
     const despues = await api.stats(S.user.id); S.stats = despues;
@@ -1347,7 +1428,10 @@ async function guardarReencuentro(btn, c) {
     celebrarHallazgo({ icono: 'repeat', color: c.cat_color, titulo: c.name, detalle: 'Reencuentro · ' + ((nueva && nueva.sightings_count) || ''), foto: R.original ? R.vistaUrl : '' },
       () => celebrar(novedades(antes, despues)));
     refrescarActual();
-  } catch (e) { ocupado(btn, false); fallo(e); }
+  } catch (e) {
+    if (!guardado && esErrorRed(e)) return guardarReencuentroSinConexion(btn, c);
+    ocupado(btn, false); fallo(e);
+  }
 }
 /* Celebraciones (solo visuales: sin sonido ni vibración) */
 const menosMovimiento = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -1589,7 +1673,9 @@ async function guardarCategoria(btn, id) {
 
 /* Grupos */
 async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); }
+const gruposCreados = () => S.groups.filter((g) => g.owner === S.user.id).length;
 function abrirGrupo(gid) {
+  if (esEncuentro(miGrupo(gid))) return abrirEncuentro(gid);
   const D = { g: miGrupo(gid) || null, miembros: null, cards: null };
   const render = () => {
     const g = D.g;
@@ -1621,6 +1707,7 @@ function abrirGrupo(gid) {
       const [g, miembros, cards] = await Promise.all([api.getGroup(gid), api.groupMembers(gid), api.groupCards(gid)]);
       if (!S.stats) S.stats = await api.stats(S.user.id).catch(() => null);
       if (!g) { if (hojaArriba() === hoja) cerrarHoja(); return aviso('Este grupo ya no está disponible', 'alert-triangle'); }
+      if (esEncuentro(g)) { if (hojaArriba() === hoja) pila.pop(); return abrirEncuentro(g.id); }
       Object.assign(D, { g, miembros, cards: guarda(cards) });
     } catch (e) { fallo(e); D.cards = D.cards || []; }
     if (hojaArriba() === hoja) dibujarHoja();
@@ -1628,32 +1715,51 @@ function abrirGrupo(gid) {
   hoja.datos = D;
   D.cargar();
 }
+// Al crear se elige el tipo (queda fijo): grupo de colección o grupo de encuentro (privado y oculto)
 function editarGrupo(gid) {
-  const g = miGrupo(gid) || { id: '', name: '', icon: 'users', color: C.COLORES_CATEGORIA[1], is_public: false };
-  abrirHoja(() => `${cabeza(ic(g.id ? 'pencil' : 'users'))}
-    <div class="field"><label for="g-nombre">${ic('pencil')} Nombre</label><input id="g-nombre" class="in" maxlength="40" value="${esc(g.name)}" placeholder="Gatos de San Rafael"></div>
-    <div class="field"><label>${ic('eye')}</label><div class="toggle" data-pick="publico">
+  const g = miGrupo(gid) || { id: '', name: '', icon: 'users', color: C.COLORES_CATEGORIA[1], is_public: false, tipo: 'coleccion' };
+  const E = { tipo: g.tipo || 'coleccion', uso: g.uso || C.ENCUENTRO_USOS[0].id };
+  const render = () => {
+    const enc = E.tipo === 'encuentro';
+    return `${cabeza(ic(g.id ? 'pencil' : (enc ? 'lifebuoy' : 'users')))}
+    ${g.id ? '' : `<div class="field"><div class="toggle tipo-grupo">
+      <button type="button" data-act="tipo_grupo" data-v="coleccion" class="${!enc ? 'on' : ''}">${ic('users')} Grupo</button>
+      <button type="button" data-act="tipo_grupo" data-v="encuentro" class="${enc ? 'on' : ''}">${ic('lifebuoy')} Grupo de encuentro</button></div>
+      ${enc ? `<p class="tiny">${esc(C.ENCUENTRO_TIPO_TEXTO)}</p>` : ''}</div>`}
+    ${!g.id && enc ? `<div class="field"><label>${ic('map-pin')} ¿Para qué es?</label><div class="chips" data-pick="uso" style="flex-wrap:wrap">${C.ENCUENTRO_USOS.map((u) =>
+      `<button type="button" class="chip ${u.id === E.uso ? 'on' : ''}" data-act="elegir" data-v="${u.id}">${ic(u.icono)}${esc(u.nombre)}</button>`).join('')}</div></div>` : ''}
+    <div class="field"><label for="g-nombre">${ic('pencil')} Nombre</label><input id="g-nombre" class="in" maxlength="40" value="${esc(E.nombre != null ? E.nombre : g.name)}" placeholder="${enc ? 'Viaje a Oaxaca' : 'Gatos de San Rafael'}"></div>
+    ${enc ? '' : `<div class="field"><label>${ic('eye')}</label><div class="toggle" data-pick="publico">
       <button type="button" data-act="elegir" data-v="0" class="${g.is_public ? '' : 'on'}" data-tip="${esc(C.AYUDA.grupo_privado)}" aria-label="${esc(C.AYUDA.grupo_privado)}">${ic('lock')} Privado</button>
       <button type="button" data-act="elegir" data-v="1" class="${g.is_public ? 'on' : ''}" data-tip="${esc(C.AYUDA.grupo_publico)}" aria-label="${esc(C.AYUDA.grupo_publico)}">${ic('world')} Público</button></div>
-      <p class="tiny">Privado: solo lo ven sus miembros. Público: también aparece para toda la comunidad.</p></div>
-    <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, g.color, 'color')}</div>
-    <div class="field"><label>${ic('sparkles')}</label>${iconPicker(g.icon)}</div>
-    <button class="btn block" data-act="guardar_grupo" data-id="${g.id}">${ic('check')} Guardar</button>`, null, 'editar_grupo');
+      <p class="tiny">Privado: solo lo ven sus miembros. Público: también aparece para toda la comunidad.</p></div>`}
+    <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, E.color || g.color, 'color')}</div>
+    <div class="field"><label>${ic('sparkles')}</label>${iconPicker(E.icon || g.icon)}</div>
+    ${!g.id ? `<p class="tiny">${gruposCreados()} / ${C.MAX_GRUPOS} grupos creados</p>` : ''}
+    <button class="btn block" data-act="guardar_grupo" data-id="${g.id}">${ic('check')} Guardar</button>`;
+  };
+  abrirHoja(render, (r) => { r._grupo = E; }, 'editar_grupo');
+  hojaArriba().datos = E;
 }
 async function guardarGrupo(btn, gid) {
-  const raiz = $('.sheet');
-  const d = { name: $('#g-nombre', raiz).value.trim(), icon: iconoElegido(raiz), color: valor(raiz, 'color'), is_public: valor(raiz, 'publico') === '1' };
+  const raiz = $('.sheet'), E = (hojaArriba() && hojaArriba().datos) || { tipo: 'coleccion' };
+  const enc = E.tipo === 'encuentro';
+  const d = { name: $('#g-nombre', raiz).value.trim(), icon: iconoElegido(raiz), color: valor(raiz, 'color') };
+  if (!enc) d.is_public = valor(raiz, 'publico') === '1';
+  if (!gid) { d.tipo = E.tipo; if (enc) { d.uso = valor(raiz, 'uso') || E.uso; d.is_public = false; } }
   if (!d.name) return aviso('Ponle un nombre', 'pencil');
   if (!esIcono(d.icon) || !d.color) return aviso('Elige ícono y color', 'palette');
+  if (!gid && gruposCreados() >= C.MAX_GRUPOS) return aviso(`Puedes crear hasta ${C.MAX_GRUPOS} grupos`, 'users');
   ocupado(btn, true);
   try {
     const g = gid ? await api.updateGroup(gid, d) : await api.createGroup(d);
     await recargarGrupos();
     cerrarHoja();
     const top = hojaArriba();
-    if (top && top.tipo === 'grupo' && top.datos) top.datos.cargar(); else abrirGrupo(g.id);
-    aviso(gid ? 'Guardado' : 'Grupo creado', 'users');
+    if (top && (top.tipo === 'grupo' || top.tipo === 'encuentro') && top.datos) top.datos.cargar(); else abrirGrupo(g.id);
+    aviso(gid ? 'Guardado' : 'Grupo creado', enc ? 'lifebuoy' : 'users');
     if (S.tab === 'coleccion') pintarColeccion();
+    if (!gid && esEncuentro(g)) ofrecerPush();
   } catch (e) { ocupado(btn, false); fallo(e); }
 }
 async function mostrarInvitacion(code) {
@@ -1661,12 +1767,688 @@ async function mostrarInvitacion(code) {
   try { inv = await api.invitePreview(code); } catch (e) { return fallo(e); }
   if (!inv) return aviso('Esa invitación ya no es válida', 'alert-triangle');
   if (inv.already) return abrirGrupo(inv.id);
-  abrirHoja(() => `${cabeza(`${ic('users')} Invitación`)}
+  const enc = inv.tipo === 'encuentro';
+  abrirHoja(() => `${cabeza(`${ic(enc ? 'lifebuoy' : 'users')} Invitación`)}
     <div style="text-align:center;padding:10px 0 4px">
       <span class="avatar lg" style="background:${okColor(inv.color)};margin:0 auto 10px">${ic(inv.icon)}</span>
       <h2>${esc(inv.name)}</h2>
-      <p class="muted row" style="justify-content:center">${ic(inv.is_public ? 'world' : 'lock')} ${esc(inv.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)} · ${ic('users')} ${inv.members}</p>
-      <button class="btn block" data-act="unirme" data-v="${esc(code)}" style="margin-top:14px">${ic('user-plus')} Unirme</button></div>`, null, 'invitacion');
+      <p class="muted row" style="justify-content:center">${enc ? `${ic('lifebuoy')} Grupo de encuentro` : `${ic(inv.is_public ? 'world' : 'lock')} ${esc(inv.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}`} · ${ic('users')} ${inv.members}</p>
+      ${enc ? `<p class="tiny">${esc(C.ENCUENTRO_TIPO_TEXTO)}</p>` : ''}
+      ${inv.lleno ? `<p class="banner">${ic('users')} ${esc(mensajeError('GRUPO_LLENO'))}</p>`
+        : `<button class="btn block" data-act="unirme" data-v="${esc(code)}" style="margin-top:14px">${ic('user-plus')} Unirme</button>`}</div>`, null, 'invitacion');
+}
+
+/* ---------------------------------------------------------------------
+   GRUPOS DE ENCUENTRO: privados y ocultos. Puntos de encuentro, "Todo bien",
+   "Necesito ayuda", "Mira esto" (con juego opcional) y ubicación por tiempo limitado.
+   --------------------------------------------------------------------- */
+const usoDe = (id) => C.ENCUENTRO_USOS.find((u) => u.id === id) || null;
+const hora = (ts) => new Date(ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+const encuentroActual = () => { for (let i = pila.length - 1; i >= 0; i--) if (pila[i].tipo === 'encuentro') return pila[i].datos; return null; };
+function getPosRapida() {
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error('NO_GPS'));
+    navigator.geolocation.getCurrentPosition((p) => res({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }),
+      rej, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+  });
+}
+function premioMini(n, k) {
+  const v = nivelPremio(n || 0); if (!v) return '';
+  const id = v >= 500 ? 'sombrero' : v >= 250 ? 'corona2' : v >= 100 ? 'corona' : v >= 50 ? '' : v >= 25 ? 'brote' : 'patito';
+  return `<span class="premio-mini" data-tip="${esc((C.PREMIOS[v] || {}).nombre || '')}">${id ? svgPremio(id, k) : BRILLO}</span>`;
+}
+function abrirEncuentro(gid, foco) {
+  const ya = pila.find((h) => h.tipo === 'encuentro' && h.datos && h.datos.gid === gid);
+  if (ya) { while (hojaArriba() !== ya) pila.pop(); if (foco) ya.datos.foco = foco; dibujarHoja(); ya.datos.cargar(); return; }
+  const D = { gid, e: null, foco: foco || null, error: false, vista: null, premio: null };
+  const hoja = { render: () => encuentroHTML(D), after: (r) => montarEncuentro(r, D), tipo: 'encuentro', datos: D };
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => {
+    try {
+      const e = await api.estadoEncuentro(gid);
+      if (!e) {
+        if (pila.includes(hoja)) { pila.splice(pila.indexOf(hoja), 1); dibujarHoja(); }
+        await recargarGrupos().catch(() => null);
+        if (S.tab === 'coleccion') pintarColeccion();
+        return aviso('Este grupo ya no está disponible', 'alert-triangle');
+      }
+      D.e = e; D.error = false;
+      revisarPremioMira(D);
+    } catch (err) { D.error = true; if (!D.e) { if (pila.includes(hoja)) { pila.splice(pila.indexOf(hoja), 1); dibujarHoja(); } return fallo(err); } }
+    if (hojaArriba() === hoja) dibujarHoja();
+  };
+  D.cargar();
+  clearInterval(S.tEncuentro);
+  S.tEncuentro = setInterval(() => {
+    if (!pila.includes(hoja)) { clearInterval(S.tEncuentro); return; }
+    if (!document.hidden && hojaArriba() === hoja) D.cargar();
+  }, C.ENCUENTRO_REFRESCO_MS);
+}
+function encuentroHTML(D) {
+  const e = D.e;
+  if (!e) return cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  const g = e.grupo, yo = e.yo, uso = usoDe(g.uso), v = e.votos;
+  const comparte = S.comparte && S.comparte.gid === g.id ? S.comparte : null;
+  const quedan = comparte ? Math.max(1, Math.ceil((comparte.hasta - Date.now()) / 60000)) : 0;
+  const nombrePunto = (id) => (e.puntos.find((p) => p.id === id) || {}).name;
+  return `${cabeza(`<span class="row">${ic(g.icon)} ${esc(g.name)}</span>`, ib('encuentro_guia', 'help', 'encuentro_guia', '', 'sm'))}
+    <div class="row wrap enc-cabeza">
+      <span class="catb" style="background:${okColor(g.color)}">${ic('lifebuoy')}${esc(uso ? uso.nombre : 'Grupo de encuentro')}</span>
+      <span class="muted row">${ic('users')} ${e.miembros.length}</span>
+      ${D.error ? `<span class="tiny row">${ic('cloud-off')} ${esc(C.SIN_CONEXION)}</span>` : ''}
+      <span class="grow"></span>${ib('encuentro_refrescar', 'refresh', 'refrescar', '', 'sm')}</div>
+    ${g.tema ? `<div class="banner tema">${ic('sparkles')}<span><b>Tema de colección:</b> ${esc(g.tema)}</span></div>` : ''}
+    ${g.acuerdo ? `<p class="acuerdo">${ic('info-circle')} ${esc(g.acuerdo)}</p>` : ''}
+    <div class="enc-botones">
+      <button class="enc-btn bien" data-act="estado_encuentro" data-v="bien">${ic(C.ENCUENTRO_ESTADOS.bien.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.bien.nombre)}</span></button>
+      <button class="enc-btn ayuda" data-act="estado_encuentro" data-v="ayuda">${ic(C.ENCUENTRO_ESTADOS.ayuda.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.ayuda.nombre)}</span></button>
+      <button class="enc-btn mira" data-act="mira_nuevo">${ic('eye')}<span>${esc(C.ENCUENTRO_MIRA)}</span></button>
+    </div>
+    <div class="minimap enc-mapa" id="mapa-enc"></div>
+    <div class="enc-ubicacion">${comparte
+      ? `<span class="row grow">${ic('current-location')} ${esc(C.ENCUENTRO_COMPARTIENDO.replace('{m}', quedan))}</span><button class="btn alt sm" data-act="dejar_compartir">${ic('x')} ${esc(C.AYUDA.dejar_compartir)}</button>`
+      : `<span class="row grow">${ic('current-location')} ${esc(C.ENCUENTRO_COMPARTIR)}</span>${C.ENCUENTRO_COMPARTIR_MIN.map((m) => `<button class="btn alt sm" data-act="compartir_ubicacion" data-v="${m}">${m} min</button>`).join('')}`}</div>
+    <div class="sec"><h3 class="row">${ic('list-check')} Tablero</h3><div class="list">${e.miembros.map((m) => filaMiembro(m, e, nombrePunto)).join('')}</div></div>
+    <div class="sec"><div class="row between"><h3 class="row">${ic('flag')} Puntos de encuentro</h3>${ib('punto_nuevo', 'plus', 'punto_nuevo', '', 'sm')}</div>
+      ${e.puntos.length ? `<div class="list">${e.puntos.map((p) => filaPunto(p, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_PUNTOS)}</p>`}</div>
+    <div class="sec"><h3 class="row">${ic('eye')} ${esc(C.ENCUENTRO_MIRA)} · ${e.miras.length}</h3>
+      ${e.miras.length ? `<div class="list">${e.miras.slice(0, 30).map((k) => filaMira(k, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_MIRA)}</p>`}</div>
+    <div class="sec"><h3 class="row">${ic('settings')} Grupo</h3>
+      ${v.n ? `<p class="banner">${ic('trash')} ${esc(C.ENCUENTRO_VOTOS.replace('{n}', v.n).replace('{t}', v.total))}</p>` : ''}
+      <div class="row wrap">
+        ${yo.admin && g.invite_code ? ib('invitar_encuentro', 'brand-whatsapp', 'invitar', '', 'on') : ''}
+        ${yo.admin ? ib('ajustes_encuentro', 'adjustments', 'encuentro_ajustes') : ''}
+        ${yo.duena ? ib('editar_grupo', 'pencil', 'editar', `data-id="${g.id}"`) : ''}
+        ${ib('borrar_lo_mio', 'eraser', 'borrar_lo_mio')}
+        ${ib('votar_borrado', v.mio ? 'arrow-back-up' : 'trash', v.mio ? 'quitar_voto' : 'votar_borrado')}
+        ${yo.duena && e.inactividad.puede_eliminar ? ib('eliminar_inactivo', 'clock-x', 'eliminar_inactivo') : ''}
+        <span class="grow"></span>
+        ${!yo.duena ? ib('salir_encuentro', 'door-exit', 'salir_grupo') : ''}
+      </div></div>`;
+}
+function filaMiembro(m, e, nombrePunto) {
+  const st = m.estado, est = st ? C.ENCUENTRO_ESTADOS[st.kind] : null;
+  const esYo = m.user_id === S.user.id;
+  const gestionar = !esYo && !m.duena && (e.yo.duena || (e.yo.admin && !m.coadmin));
+  return `<div class="li miembro ${st && st.kind === 'ayuda' ? 'pide-ayuda' : ''}">
+    <button class="row grow" data-act="perfil" data-id="${m.user_id}" style="text-align:left;min-width:0">${avatar(m)}
+      <div class="grow" style="min-width:0"><div class="row"><b>${esc(m.name)}</b>${m.duena ? `<span data-tip="${esc(C.AYUDA.duena)}">${ic('crown')}</span>` : m.coadmin ? `<span data-tip="${esc(C.AYUDA.coadmin)}">${ic('shield')}</span>` : ''}${e.grupo.juego ? premioMini(m.premio, m.premio_color) : ''}</div>
+      <div class="tiny">${st ? `${ic(est.icono)} ${esc(est.nombre)} · ${esc(hace(st.created_at))}${st.colonia ? ` · ${esc(st.colonia)}` : ''}${st.punto_id && nombrePunto(st.punto_id) ? ` · Va a ${esc(nombrePunto(st.punto_id))}` : ''}${st.note ? ` · «${esc(st.note)}»` : ''}` : esc(C.ENCUENTRO_SIN_AVISO)}</div></div></button>
+    ${st && st.lat != null ? ib('ver_en_mapa_enc', 'map-pin', 'ver_en_mapa', `data-id="${m.user_id}"`, 'sm') : ''}
+    ${gestionar ? ib('miembro_encuentro', 'dots-vertical', 'miembro', `data-id="${m.user_id}"`, 'sm') : ''}</div>`;
+}
+function filaPunto(p, e) {
+  const mio = p.user_id === S.user.id, autora = (e.miembros.find((m) => m.user_id === p.user_id) || {}).name || '';
+  return `<div class="li punto">${p.thumb || p.photo ? `<img class="thumb" src="${api.photoUrl(p.thumb || p.photo)}" alt="" data-act="ver_foto" data-src="${esc(api.photoUrl(p.photo || p.thumb))}">` : `<span class="thumb">${ic('flag')}</span>`}
+    <div class="grow" style="min-width:0"><b class="row">${esc(p.name)}${p.principal ? `<span data-tip="Punto principal">${ic('star')}</span>` : ''}</b>
+      <div class="tiny">${p.note ? esc(p.note) + ' · ' : ''}${esc(autora)}</div></div>
+    ${ib('ir_punto_encuentro', 'navigation', 'ir_al_punto', `data-id="${p.id}"`, 'sm on')}
+    ${e.yo.admin && !p.principal ? ib('punto_principal', 'star', 'principal', `data-id="${p.id}"`, 'sm') : ''}
+    ${mio || e.yo.admin ? ib('borrar_punto', 'trash', 'borrar', `data-id="${p.id}"`, 'sm') : ''}</div>`;
+}
+function filaMira(k, e) {
+  const autora = (e.miembros.find((m) => m.user_id === k.user_id) || {}).name || '';
+  return `<div class="li mira">${k.thumb || k.photo ? `<img class="thumb" src="${api.photoUrl(k.thumb || k.photo)}" alt="" data-act="ver_foto" data-src="${esc(api.photoUrl(k.photo || k.thumb))}">` : `<span class="thumb">${ic('eye')}</span>`}
+    <button class="grow" data-act="ver_mira" data-id="${k.id}" style="text-align:left;min-width:0"><b>${esc(k.note)}</b><div class="tiny">${esc(autora)} · ${esc(hace(k.created_at))}</div></button>
+    ${k.user_id === S.user.id || e.yo.admin ? ib('borrar_mira', 'trash', 'borrar', `data-id="${k.id}"`, 'sm') : ''}</div>`;
+}
+function montarEncuentro(raiz, D) {
+  const el = $('#mapa-enc', raiz); if (!el || !D.e) return;
+  const e = D.e, g = e.grupo, pts = [];
+  const m = L.map(el, { zoomControl: false, attributionControl: false });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
+  const icono = (html) => L.divIcon({ className: '', html, iconSize: [36, 36], iconAnchor: [18, 36] });
+  e.puntos.forEach((p) => { pts.push([p.lat, p.lng]);
+    L.marker([p.lat, p.lng], { icon: icono(`<div class="pin enc-punto ${p.principal ? 'principal' : ''}" style="background:${okColor(g.color)}">${ic('flag')}</div>`) })
+      .on('click', () => aviso(p.name, 'flag')).addTo(m); });
+  e.miras.forEach((k) => { const a = e.miembros.find((x) => x.user_id === k.user_id) || {}; pts.push([k.lat, k.lng]);
+    L.marker([k.lat, k.lng], { icon: icono(pinHTML('#3F6E73', 'eye', g.juego ? a.premio : 0, a.premio_color)) })
+      .on('click', () => aviso(k.note, 'eye')).addTo(m); });
+  e.miembros.forEach((x) => { const st = x.estado;
+    if (st && st.kind === 'ayuda' && st.lat != null) { pts.push([st.lat, st.lng]);
+      L.marker([st.lat, st.lng], { icon: icono(`<div class="pin enc-ayuda">${ic('urgent')}</div>`) })
+        .on('click', () => aviso(`${x.name}: ${C.ENCUENTRO_ESTADOS.ayuda.nombre}`, 'urgent')).addTo(m); } });
+  e.ubicaciones.forEach((u) => { const x = e.miembros.find((y) => y.user_id === u.user_id) || {}; pts.push([u.lat, u.lng]);
+    L.marker([u.lat, u.lng], { icon: L.divIcon({ className: '', html: `<span class="avatar enc-yo" style="background:${okColor(x.avatar_color)}">${ic(x.avatar)}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] }) })
+      .on('click', () => aviso(`${x.name} · ${hace(u.updated_at)}`, 'current-location')).addTo(m); });
+  let foco = null;
+  if (D.foco && typeof D.foco === 'object') foco = D.foco;
+  else if (D.foco) {
+    const x = e.miembros.find((y) => y.user_id === D.foco), u = e.ubicaciones.find((y) => y.user_id === D.foco);
+    foco = x && x.estado && x.estado.lat != null ? { lat: x.estado.lat, lng: x.estado.lng } : u ? { lat: u.lat, lng: u.lng } : null;
+  }
+  D.foco = null;
+  if (foco) m.setView([foco.lat, foco.lng], 17);
+  else if (D.vista) m.setView(D.vista.c, D.vista.z);
+  else if (pts.length > 1 && m.fitBounds) m.fitBounds(pts, { padding: [30, 30], maxZoom: 17 });
+  else if (pts.length) m.setView(pts[0], 16);
+  else m.setView(S.map ? [S.map.getCenter().lat, S.map.getCenter().lng] : C.MAPA_CENTRO, 14);
+  m.on('moveend', () => { try { const c = m.getCenter(); D.vista = { c: [c.lat, c.lng], z: m.getZoom ? m.getZoom() : 16 }; } catch (err) { /* nada */ } });
+  S.mini = m;
+}
+function hojaGuiaEncuentro() {
+  abrirHoja(() => `${cabeza(`${ic('lifebuoy')} ${esc(C.AYUDA.encuentro_guia)}`)}
+    <div class="dudas guia">${C.GUIA_ENCUENTRO.map((d) => `<div class="duda"><h3 class="row"><span class="gicon">${ic(d.icono)}</span>${esc(d.titulo)}</h3>
+      ${d.texto ? `<p>${esc(d.texto)}</p>` : ''}${d.pasos ? `<ul>${d.pasos.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>`).join('')}</div>`, null, 'guia_encuentro');
+}
+
+/* "Todo bien" y "Necesito ayuda" */
+function hojaEstado(gid, kind) {
+  const D = encuentroActual(), e = D && D.e, est = C.ENCUENTRO_ESTADOS[kind];
+  abrirHoja(() => `${cabeza(`${ic(est.icono)} ${esc(est.nombre)}`)}
+    ${kind === 'bien' && e && e.puntos.length ? `<div class="field"><label>${ic('flag')} ${esc(C.ENCUENTRO_VOY_A)}</label><div class="chips" data-pick="punto" style="flex-wrap:wrap">
+      <button type="button" class="chip on" data-act="elegir" data-v="">—</button>${e.puntos.map((p) => `<button type="button" class="chip" data-act="elegir" data-v="${p.id}">${ic('flag')}${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+    ${kind === 'ayuda' ? `<label class="check"><input type="checkbox" id="ayuda-exacta"> <span>${esc(C.ENCUENTRO_EXACTA)}</span></label>
+      <div class="field"><textarea id="ayuda-nota" class="in" maxlength="${C.ENCUENTRO_NOTA_MAX}" rows="2" placeholder="${esc(C.ENCUENTRO_NOTA_AYUDA)}"></textarea></div>` : ''}
+    <button class="btn block enc-enviar ${kind}" data-act="enviar_estado" data-gid="${gid}" data-v="${kind}">${ic(est.icono)} Enviar "${esc(est.nombre)}"</button>`, null, 'estado');
+}
+async function enviarEstado(btn, gid, kind) {
+  const raiz = $('.sheet'), D = encuentroActual(), e = D && D.e;
+  const punto = kind === 'bien' ? (valor(raiz, 'punto') || null) : null;
+  const exacta = kind === 'ayuda' && !!($('#ayuda-exacta', raiz) || {}).checked;
+  const nota = kind === 'ayuda' ? (($('#ayuda-nota', raiz) || {}).value || '').trim() : '';
+  ocupado(btn, true);
+  let pos = null;
+  try { pos = await getPosRapida(); } catch (err) { pos = null; }
+  if (exacta && !pos) aviso('Sin GPS: se envía sin tu ubicación exacta', 'current-location');
+  const fila = { group_id: gid, kind, punto_id: punto, note: nota || null, created_at: new Date().toISOString() };
+  if (exacta && pos) Object.assign(fila, { lat: pos.lat, lng: pos.lng, accuracy: pos.acc });
+  let enCola = false;
+  try {
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    fila.colonia = pos ? await api.colonia(pos.lat, pos.lng) : null;
+    await api.addEstado(fila);
+    api.dispararPush();
+  } catch (err) {
+    if (!esErrorRed(err)) { ocupado(btn, false); return fallo(err); }
+    delete fila.colonia;
+    try { await guardarPendiente({ tipo: 'estado', datos: fila, pos }); enCola = true; }
+    catch (err2) { ocupado(btn, false); return fallo(err); }
+  }
+  if (hojaArriba() && hojaArriba().tipo === 'estado') cerrarHoja();
+  const nombrePunto = punto && e ? (e.puntos.find((p) => p.id === punto) || {}).name : '';
+  hojaEstadoListo(kind, { enCola, nombrePunto, nota, pos: exacta ? pos : null });
+  if (D && !enCola) D.cargar();
+}
+function textoWhatsAppEstado(kind, o) {
+  const partes = [kind === 'ayuda' ? 'Necesito ayuda.' : 'Todo bien.'];
+  if (o.nombrePunto) partes.push(`Voy a: ${o.nombrePunto}.`);
+  if (o.nota) partes.push(o.nota);
+  if (o.pos) { const la = o.pos.lat.toFixed(5), lo = o.pos.lng.toFixed(5); partes.push(`Estoy aquí: https://www.openstreetmap.org/?mlat=${la}&mlon=${lo}#map=18/${la}/${lo}`); }
+  partes.push(`${hora(Date.now())} · Collector Go`);
+  return partes.join(' ');
+}
+function hojaEstadoListo(kind, o) {
+  const est = C.ENCUENTRO_ESTADOS[kind], t = textoWhatsAppEstado(kind, o);
+  abrirHoja(() => `${cabeza(`${ic(est.icono)} ${esc(est.nombre)}`)}
+    <div class="empty" style="padding:16px 0">${ic(o.enCola ? 'cloud-off' : 'circle-check')}<p>${esc(o.enCola ? C.ENCUENTRO_EN_COLA : est.listo)}</p></div>
+    <button class="btn block" data-act="whatsapp_estado" data-texto="${esc(t)}">${ic('brand-whatsapp')} ${esc(C.ENCUENTRO_WHATSAPP)}</button>
+    <button class="btn alt block" data-act="cerrar" style="margin-top:10px" aria-label="Listo">${ic('check')}</button>`, null, 'estado_listo');
+}
+
+/* "Mira esto" y proponer un punto de encuentro: nota (o nombre), foto opcional y ubicación */
+const M = {};
+function hojaMarca(gid, modo) {
+  const D = encuentroActual(), e = D && D.e, uso = e ? usoDe(e.grupo.uso) : null;
+  Object.assign(M, { gid, modo, foto: null, vistaUrl: null, nombre: '', nota: '', pos: null, gps: 'buscando', mover: null,
+    sugerencias: modo === 'punto' && uso ? uso.puntos.filter((n) => !(e.puntos || []).some((p) => sinAcentos(p.name) === sinAcentos(n))) : [] });
+  abrirHoja(marcaHTML, montarMarca, 'marca');
+  getPos().then((p) => { if (M.gid !== gid) return; M.pos = p; M.gps = 'ok'; if (M.mover) M.mover(p); pintarGpsMarca(); })
+    .catch(() => { M.gps = M.pos ? 'ok' : 'error'; pintarGpsMarca(); });
+}
+function marcaHTML() {
+  const punto = M.modo === 'punto';
+  return `${cabeza(punto ? `${ic('flag')} ${esc(C.AYUDA.punto_nuevo)}` : `${ic('eye')} ${esc(C.ENCUENTRO_MIRA)}`)}
+    ${punto ? `<div class="field"><label for="marca-nombre">${ic('pencil')} Nombre</label><input id="marca-nombre" class="in" maxlength="40" value="${esc(M.nombre)}" placeholder="Parque España" autocomplete="off">
+      ${M.sugerencias.length ? `<div class="chips" style="flex-wrap:wrap;margin-top:8px">${M.sugerencias.map((n) => `<button type="button" class="chip" data-act="sugerir_punto" data-v="${esc(n)}">${esc(n)}</button>`).join('')}</div>` : ''}</div>` : ''}
+    ${M.vistaUrl ? `<img class="big" id="vista-marca" src="${M.vistaUrl}" alt="">` : ''}
+    <div class="row" style="gap:10px;margin-bottom:10px">
+      <label class="btn alt grow" data-tip="${esc(C.AYUDA.camara)}" aria-label="${esc(C.AYUDA.camara)}">${ic('camera')}<input type="file" accept="image/*" capture="environment" hidden data-in="foto-marca"></label>
+      <label class="btn alt grow" data-tip="${esc(C.AYUDA.galeria)}" aria-label="${esc(C.AYUDA.galeria)}">${ic('upload')}<input type="file" accept="image/*" hidden data-in="foto-marca"></label>
+      ${M.foto ? ib('quitar_foto_marca', 'x', 'quitar_captura', '', 'sm') : ''}</div>
+    <div class="field"><label for="marca-nota">${ic('info-circle')} Nota</label><textarea id="marca-nota" class="in" maxlength="${C.ENCUENTRO_NOTA_MAX}" rows="2" placeholder="${punto ? 'Junto a la fuente' : 'Aquí reparten agua'}">${esc(M.nota)}</textarea></div>
+    <div class="field"><label class="row">${ic('map-pin')} <span id="gps-marca">${gpsTexto(M)}</span></label><div class="minimap" id="mini-marca"></div></div>
+    <button class="btn block" data-act="guardar_marca">${ic('check')} Guardar</button>`;
+}
+function recordarMarca() {
+  const n = $('#marca-nombre'), t = $('#marca-nota');
+  if (n) M.nombre = n.value; if (t) M.nota = t.value;
+}
+function montarMarca(raiz) {
+  $$('[data-in="foto-marca"]', raiz).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && tomarFotoMarca(inp.files[0])));
+  const el = $('#mini-marca', raiz);
+  if (el) { const mm = miniMapa(el, M.pos, (p) => { M.pos = p; M.gps = 'ok'; pintarGpsMarca(); }); M.mover = mm.mover; }
+}
+function pintarGpsMarca() { const el = $('#gps-marca'); if (el) el.innerHTML = gpsTexto(M); }
+async function fotosDe(blob) {
+  const img = await cargarImagen(blob);
+  return { grande: await lienzoABlob(escalar(img, C.FOTO_LADO), C.FOTO_CALIDAD, false), mini: await lienzoABlob(escalar(img, C.MINIATURA_LADO), C.MINIATURA_CALIDAD, false) };
+}
+async function tomarFotoMarca(file) {
+  try {
+    recordarMarca();
+    const img = await cargarImagen(file);
+    M.foto = await lienzoABlob(escalar(img, C.FOTO_LADO), C.FOTO_CALIDAD, false);
+    if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl);
+    M.vistaUrl = URL.createObjectURL(M.foto);
+    dibujarHoja();
+  } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
+}
+async function subirFotosDe(fotos, carpeta) {
+  if (!fotos || !fotos.grande) return { pFoto: null, pMini: null };
+  const id = uuid(), pFoto = `${carpeta}/${id}.${ext(fotos.grande)}`, pMini = `${carpeta}/${id}_t.${ext(fotos.mini)}`;
+  await api.upload(pFoto, fotos.grande);
+  try { await api.upload(pMini, fotos.mini); } catch (e) { api.removeFiles([pFoto]).catch(() => null); throw e; }
+  return { pFoto, pMini };
+}
+const carpetaEncuentro = (gid) => `priv:${S.user.id}/enc/${gid}`;
+async function guardarMarca(btn) {
+  recordarMarca();
+  const punto = M.modo === 'punto', nombre = M.nombre.trim(), nota = M.nota.trim();
+  if (punto && !nombre) { const n = $('#marca-nombre'); if (n) n.focus(); return aviso('Ponle un nombre', 'pencil'); }
+  if (!punto && !nota) { const t = $('#marca-nota'); if (t) t.focus(); return aviso('Escribe una nota corta', 'pencil'); }
+  if (!M.pos) return aviso('Falta la ubicación: toca el mapa', 'map-pin');
+  ocupado(btn, true);
+  const D = encuentroActual(), gid = M.gid;
+  const fila = punto ? { group_id: gid, name: nombre, note: nota || null, lat: M.pos.lat, lng: M.pos.lng }
+    : { group_id: gid, note: nota, lat: M.pos.lat, lng: M.pos.lng, created_at: new Date().toISOString() };
+  let fotos = null, subidas = null;
+  try {
+    fotos = M.foto ? await fotosDe(M.foto) : null;
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    subidas = await subirFotosDe(fotos, carpetaEncuentro(gid));
+    Object.assign(fila, { photo: subidas.pFoto, thumb: subidas.pMini });
+    if (punto) await api.addPunto(fila); else { await api.addMira(fila); api.dispararPush(); }
+    cerrarHoja(); aviso(punto ? 'Punto propuesto' : 'Marcado en el mapa del grupo', punto ? 'flag' : 'eye');
+    if (D) await D.cargar();
+  } catch (err) {
+    if (subidas && subidas.pFoto) api.removeFiles([subidas.pFoto, subidas.pMini]).catch(() => null);
+    if (!esErrorRed(err)) { ocupado(btn, false); return fallo(err); }
+    delete fila.photo; delete fila.thumb;
+    try { await guardarPendiente({ tipo: punto ? 'punto' : 'mira', datos: fila, fotos }); }
+    catch (err2) { ocupado(btn, false); return fallo(err); }
+    cerrarHoja(); aviso(C.PENDIENTE_GUARDADO, 'cloud-off');
+  }
+}
+// Juego: cuando tus "Mira esto" ganan un premio, se celebra (solo dentro del grupo)
+function revisarPremioMira(D) {
+  const e = D.e; if (!e || !e.grupo.juego) { D.premio = null; return; }
+  const yo = e.miembros.find((m) => m.user_id === S.user.id); if (!yo) return;
+  const n = nivelPremio(yo.premio || 0);
+  if (D.premio != null && n > D.premio) {
+    const pr = C.PREMIOS[n];
+    setTimeout(() => {
+      abrirHoja(() => `${cabeza('')}<div class="unlock"><div class="burst" aria-hidden="true"></div>
+        <h1 class="serif unlock-t">¡Premio!</h1>
+        <div class="premio-nuevo"><div class="pin-muestra">${pinHTML('#3F6E73', 'eye', n, yo.premio_color)}</div>
+        <p><b>${esc(C.ENCUENTRO_PREMIO.replace('{grupo}', e.grupo.name).replace('{premio}', pr ? pr.nombre : ''))}</b></p>
+        ${n >= 100 ? `<p class="tiny">${esc(C.AYUDA.color_premio)}</p>${selectorColorPremio('grupo', e.grupo.id, yo.premio_color || 'oro')}` : ''}</div>
+        <button class="btn block" data-act="cerrar" style="margin-top:18px">${ic('check')}</button></div>`, null, 'logro');
+      confeti(160, 2200);
+    }, 300);
+  }
+  D.premio = n;
+}
+
+/* Ubicación por tiempo limitado: solo con la app abierta; se guarda únicamente el último punto */
+async function iniciarCompartir(gid, minutos, btn) {
+  ocupado(btn, true);
+  let p;
+  try { p = await getPos(); } catch (err) { ocupado(btn, false); return aviso(C.GUIA_SIN_GPS, 'current-location'); }
+  try {
+    const hasta = await api.compartirUbicacion(gid, p, minutos);
+    pararCompartir(true);
+    S.comparte = { gid, hasta: new Date(hasta).getTime(), ultimo: { p, t: Date.now() }, pos: p, watch: null, tFin: null, tPulso: null };
+    vigilarCompartir();
+    aviso(`Compartiendo tu ubicación ${minutos} min`, 'current-location');
+    const D = encuentroActual(); if (D) D.cargar();
+  } catch (err) { ocupado(btn, false); fallo(err); }
+}
+function vigilarCompartir() {
+  const X = S.comparte; if (!X) return;
+  if (Date.now() >= X.hasta) return pararCompartir(false);
+  clearTimeout(X.tFin);
+  X.tFin = setTimeout(() => { pararCompartir(false); const D = encuentroActual(); if (D) D.cargar(); }, X.hasta - Date.now() + 500);
+  if (navigator.geolocation && X.watch == null) {
+    X.watch = navigator.geolocation.watchPosition((pos) => {
+      const p = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: Math.round(pos.coords.accuracy) };
+      X.pos = p;
+      if (distancia(p, X.ultimo.p) >= 50) enviarPosicion(X, p);
+    }, () => null, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+  }
+  clearInterval(X.tPulso);
+  X.tPulso = setInterval(() => { if (X.pos && Date.now() - X.ultimo.t >= 60000) enviarPosicion(X, X.pos); }, 15000);
+}
+async function enviarPosicion(X, p) {
+  X.ultimo = { p, t: Date.now() };
+  try { const h = await api.compartirUbicacion(X.gid, p, null); if (!h && S.comparte === X) pararCompartir(false); }
+  catch (err) { /* sin red: se intenta con la siguiente lectura */ }
+}
+function pausarCompartir() {
+  const X = S.comparte; if (!X) return;
+  if (X.watch != null && navigator.geolocation) navigator.geolocation.clearWatch(X.watch);
+  X.watch = null; clearInterval(X.tPulso);
+}
+function pararCompartir(silencio) {
+  const X = S.comparte; if (!X) return;
+  pausarCompartir(); clearTimeout(X.tFin); S.comparte = null;
+  if (!silencio) aviso('Dejaste de compartir tu ubicación', 'current-location');
+}
+
+/* Ajustes (quien administra): juego, tema de colección y acuerdos */
+function hojaAjustesEncuentro() {
+  const D = encuentroActual(); if (!D || !D.e) return;
+  const g = D.e.grupo, uso = usoDe(g.uso);
+  abrirHoja(() => `${cabeza(`${ic('adjustments')} ${esc(C.AYUDA.encuentro_ajustes)}`)}
+    <div class="field"><label>${ic('gift')} ${esc(C.ENCUENTRO_JUEGO)}</label><div class="toggle" data-pick="juego">
+      <button type="button" data-act="elegir" data-v="0" class="${!g.juego ? 'on' : ''}">Apagado</button>
+      <button type="button" data-act="elegir" data-v="1" class="${g.juego ? 'on' : ''}">Encendido</button></div>
+      <p class="tiny">${esc(C.ENCUENTRO_JUEGO_TEXTO)}</p></div>
+    <div class="field"><label for="enc-tema">${ic('sparkles')} Tema de colección</label><input id="enc-tema" class="in" maxlength="${C.ENCUENTRO_TEMA_MAX}" value="${esc(g.tema || '')}" placeholder="${esc(C.ENCUENTRO_TEMA_PISTA)}" autocomplete="off"></div>
+    <div class="field"><label for="enc-acuerdo">${ic('info-circle')} Acuerdo</label><textarea id="enc-acuerdo" class="in" maxlength="${C.ENCUENTRO_ACUERDO_MAX}" rows="2" placeholder="${esc((uso && uso.acuerdo) || '')}">${esc(g.acuerdo || '')}</textarea></div>
+    <button class="btn block" data-act="guardar_ajustes_encuentro">${ic('check')} Guardar</button>`, null, 'ajustes_encuentro');
+}
+function hojaMiembroEncuentro(uid) {
+  const D = encuentroActual(), e = D && D.e, m = e && e.miembros.find((x) => x.user_id === uid);
+  if (!m) return;
+  abrirHoja(() => `${cabeza(`<span class="row">${avatar(m)} ${esc(m.name)}</span>`)}
+    <div class="list">
+      ${e.yo.duena ? `<button class="li" data-act="coadmin_encuentro" data-id="${uid}" data-v="${m.coadmin ? '0' : '1'}">${ic('shield')}<b class="grow" style="text-align:left">${m.coadmin ? 'Quitar cargo de coadministradora' : 'Nombrar coadministradora'}</b></button>` : ''}
+      <button class="li" data-act="sacar_encuentro" data-id="${uid}">${ic('user-minus')}<b class="grow" style="text-align:left">Sacar del grupo</b></button>
+    </div>`, null, 'miembro_encuentro');
+}
+
+/* ---------------------------------------------------------------------
+   NOTIFICACIONES (push): texto genérico; el detalle solo dentro de la app
+   --------------------------------------------------------------------- */
+const pushSoportado = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const esIphone = () => /iPhone|iPad|iPod/.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function bytesDe(b64) {
+  const s = atob(String(b64).replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((String(b64).length + 3) % 4));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+async function suscripcionActual() {
+  if (!pushSoportado() || !navigator.serviceWorker.controller && !(await navigator.serviceWorker.getRegistration())) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+function datosSuscripcion(sub) { const j = sub.toJSON(); return { endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }; }
+async function activarPush() {
+  if (!pushSoportado()) { aviso(esIphone() && !yaInstalada() ? C.PUSH_IPHONE : C.PUSH_NO_SOPORTA, 'bell-off'); return false; }
+  if (esIphone() && !yaInstalada()) { aviso(C.PUSH_IPHONE, 'device-mobile'); return false; }
+  const permiso = await Notification.requestPermission();
+  if (permiso !== 'granted') { aviso(C.PUSH_BLOQUEADAS, 'bell-off'); return false; }
+  try {
+    const llave = await api.llavePush();
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && sub.options && sub.options.applicationServerKey) {
+      const actual = new Uint8Array(sub.options.applicationServerKey), nueva = bytesDe(llave);
+      if (actual.length !== nueva.length || actual.some((x, i) => x !== nueva[i])) { await sub.unsubscribe().catch(() => null); sub = null; }
+    }
+    sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytesDe(llave) });
+    await api.registrarPush(datosSuscripcion(sub));
+    S.push = await api.pushPrefs();
+    aviso(C.PUSH_ACTIVAS, 'bell');
+    return true;
+  } catch (e) { fallo(e); return false; }
+}
+async function desactivarPush(silencio) {
+  try {
+    const sub = await suscripcionActual();
+    if (sub) { const ep = sub.endpoint; await sub.unsubscribe().catch(() => null); await api.quitarPush(ep).catch(() => null); }
+    S.push = null;
+    if (!silencio) aviso('Notificaciones desactivadas en este teléfono', 'bell-off');
+  } catch (e) { if (!silencio) fallo(e); }
+}
+// Al abrir la app: si este teléfono ya tiene notificaciones, se confirma con la cuenta actual
+async function sincronizarPush() {
+  try {
+    if (!pushSoportado() || Notification.permission !== 'granted') return;
+    const sub = await suscripcionActual(); if (!sub) return;
+    await api.registrarPush(datosSuscripcion(sub));
+    S.push = await api.pushPrefs();
+  } catch (e) { /* sin red: se intenta la próxima vez */ }
+}
+// Al crear o entrar a un grupo de encuentro
+async function ofrecerPush() {
+  if (!pushSoportado() && !esIphone()) return;
+  try { if (pushSoportado() && Notification.permission === 'granted' && await suscripcionActual()) return; } catch (e) { /* sigue */ }
+  if (pushSoportado() && Notification.permission === 'denied') return;
+  const P = { paso: 1 };
+  const hoja = { render: () => `${cabeza(`${ic('bell')} Notificaciones`)}
+    ${P.paso === 1 ? `<p style="font-size:18px">${esc(C.PUSH_OFRECER)}</p>
+      ${esIphone() && !yaInstalada() ? `<p class="tiny">${esc(C.PUSH_IPHONE)}</p>` : ''}
+      <button class="btn block" data-act="push_ofrecer_si">${ic('bell')} ${esc(C.PUSH_ACTIVAR)}</button>
+      <button class="btn alt block" data-act="cerrar" style="margin-top:10px">Ahora no</button>`
+    : `<p>${esc(C.PUSH_ACTIVAS)}</p>
+      <label class="check"><input type="checkbox" id="push-sonido"> <span>${esc(C.PUSH_PREFS.find((x) => x.k === 'sonido').nombre)}</span></label>
+      <button class="btn block" data-act="push_ofrecer_listo">${ic('check')} Listo</button>`}`, tipo: 'push_ofrecer', datos: P };
+  pila.push(hoja); dibujarHoja();
+}
+async function pintarNotificaciones() {
+  const el = $('#sec-notif'); if (!el) return;
+  let estado = 'apagadas';
+  if (!pushSoportado()) estado = esIphone() && !yaInstalada() ? 'iphone' : 'no';
+  else if (esIphone() && !yaInstalada()) estado = 'iphone';
+  else if (Notification.permission === 'denied') estado = 'bloqueadas';
+  else if (Notification.permission === 'granted' && await suscripcionActual().catch(() => null)) estado = 'activas';
+  if (estado === 'activas' && !S.push) S.push = await api.pushPrefs().catch(() => null);
+  const p = S.push || {};
+  el.innerHTML = `<h3 class="row">${ic('bell')} Notificaciones</h3>
+    ${estado === 'no' ? `<p class="muted">${esc(C.PUSH_NO_SOPORTA)}</p>` : ''}
+    ${estado === 'iphone' ? `<p class="muted">${esc(C.PUSH_IPHONE)}</p>${tipoInstalacion() ? `<button class="btn alt block" data-act="instalar">${ic('device-mobile')} ${esc(C.INSTALAR_BOTON)}</button>` : ''}` : ''}
+    ${estado === 'bloqueadas' ? `<p class="muted">${esc(C.PUSH_BLOQUEADAS)}</p>` : ''}
+    ${estado === 'apagadas' ? `<button class="btn alt block" data-act="activar_push">${ic('bell')} ${esc(C.PUSH_ACTIVAR)}</button>` : ''}
+    ${estado === 'activas' ? `<div class="list">${C.PUSH_PREFS.filter((x) => !x.admin || S.me.is_admin).map((x) =>
+      `<button class="li interruptor ${p[x.k] ? 'on' : ''}" data-act="push_pref" data-k="${x.k}" role="switch" aria-checked="${p[x.k] ? 'true' : 'false'}">
+        <span class="grow" style="text-align:left">${esc(x.nombre)}</span><span class="sw" aria-hidden="true"></span></button>`).join('')}</div>
+      <button class="linkbtn" data-act="desactivar_push" style="margin-top:6px">${ic('bell-off')} ${esc(C.PUSH_DESACTIVAR)}</button>` : ''}`;
+}
+
+/* ---------------------------------------------------------------------
+   SIN CONEXIÓN: registros que esperan señal (guardados en el teléfono)
+   --------------------------------------------------------------------- */
+const BDP = {
+  abrir() {
+    return new Promise((res, rej) => {
+      if (!window.indexedDB) return rej(new Error('SIN_BD'));
+      const r = indexedDB.open('cg-app', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('pendientes', { keyPath: 'id' });
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  },
+  async hacer(modo, fn) {
+    const db = await BDP.abrir();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('pendientes', modo); let out;
+      const q = fn(tx.objectStore('pendientes')); if (q) q.onsuccess = () => { out = q.result; };
+      tx.oncomplete = () => { db.close(); res(out); }; tx.onerror = () => { db.close(); rej(tx.error); };
+    });
+  },
+  todos: (uid) => BDP.hacer('readonly', (st) => st.getAll()).then((l) => (l || []).filter((x) => x.uid === uid).sort((a, b) => a.creado.localeCompare(b.creado))),
+  poner: (x) => BDP.hacer('readwrite', (st) => st.put(x)),
+  quitar: (id) => BDP.hacer('readwrite', (st) => st.delete(id))
+};
+async function guardarPendiente(x) {
+  const item = Object.assign({ id: uuid(), uid: S.user.id, creado: new Date().toISOString(), estado: 'pendiente' }, x);
+  await BDP.poner(item);
+  await contarPendientes();
+  return item;
+}
+async function contarPendientes() {
+  try { S.pendientes = S.user ? await BDP.todos(S.user.id) : []; } catch (e) { S.pendientes = []; }
+  pintarConexion(); pintarPendientes();
+}
+function pintarConexion() {
+  let el = $('#conexion');
+  const sin = !navigator.onLine, n = S.user ? (S.pendientes || []).length : 0;
+  if (!sin && !n) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('button'); el.id = 'conexion'; el.className = 'conexion'; el.dataset.act = 'ver_pendientes'; document.body.appendChild(el); }
+  el.classList.toggle('sin', sin);
+  el.setAttribute('aria-label', sin ? C.SIN_CONEXION : C.PENDIENTES_TITULO);
+  el.innerHTML = `${ic(sin ? 'cloud-off' : 'cloud-upload')}<span>${sin ? esc(C.SIN_CONEXION) : esc(C.PENDIENTES_TITULO)}${n ? ` · ${n}` : ''}</span>`;
+}
+let subiendo = false;
+async function subirPendientes() {
+  if (subiendo || !S.user || !navigator.onLine) return;
+  subiendo = true; let subidos = 0;
+  try {
+    for (const x of await BDP.todos(S.user.id)) {
+      if (x.estado === 'duda' || x.estado === 'error') continue;
+      try { await subirUno(x); await BDP.quitar(x.id); subidos++; }
+      catch (e) {
+        if (e && e.duda) { x.estado = 'duda'; await BDP.poner(x); continue; }
+        if (esErrorRed(e)) break;
+        x.estado = 'error'; x.error = mensajeError(e); await BDP.poner(x);
+      }
+    }
+  } finally { subiendo = false; await contarPendientes(); }
+  if (subidos) {
+    aviso(C.PENDIENTES_SUBIDOS.replace('{n}', subidos), 'cloud-upload');
+    S.stats = null; S.feed = []; refrescarActual();
+    const D = encuentroActual(); if (D) D.cargar();
+  }
+}
+async function subirUno(x) {
+  const d = Object.assign({}, x.datos), uid = S.user.id;
+  if (x.tipo === 'hallazgo') {
+    if (!x.forzar) {
+      const ya = await api.findByName(d.name, d.category_id, d.group_id);
+      if (ya) { x.existente = ya; throw Object.assign(new Error('NOMBRE_REPETIDO'), { duda: true }); }
+    }
+    const f = await subirFotosDe(x.fotos, (x.privado ? 'priv:' : '') + uid);
+    d.colonia = await api.colonia(d.lat, d.lng);
+    let id;
+    try { id = await api.addFind(Object.assign(d, { photo: f.pFoto, thumb: f.pMini })); }
+    catch (e) { if (f.pFoto) api.removeFiles([f.pFoto, f.pMini]).catch(() => null); throw e; }
+    if (x.etiquetas && x.etiquetas.length && !d.is_private) await api.etiquetar(id, x.etiquetas).catch(() => null);
+  } else if (x.tipo === 'reencuentro') {
+    const f = await subirFotosDe(x.fotos, (x.privado ? 'priv:' : '') + uid);
+    d.colonia = d.lat != null ? await api.colonia(d.lat, d.lng) : null;
+    try { await api.addSighting(Object.assign(d, { photo: f.pFoto, thumb: f.pMini })); }
+    catch (e) { if (f.pFoto) api.removeFiles([f.pFoto, f.pMini]).catch(() => null); throw e; }
+  } else if (x.tipo === 'estado') {
+    if (x.pos && d.colonia == null) d.colonia = await api.colonia(x.pos.lat, x.pos.lng);
+    try { await api.addEstado(d); } catch (e) { if (!errTexto(e).includes('ESPERA')) throw e; }
+    api.dispararPush();
+  } else if (x.tipo === 'mira' || x.tipo === 'punto') {
+    const f = await subirFotosDe(x.fotos, carpetaEncuentro(d.group_id));
+    Object.assign(d, { photo: f.pFoto, thumb: f.pMini });
+    try { if (x.tipo === 'mira') { await api.addMira(d); api.dispararPush(); } else await api.addPunto(d); }
+    catch (e) { if (f.pFoto) api.removeFiles([f.pFoto, f.pMini]).catch(() => null); throw e; }
+  }
+}
+const ICONO_PENDIENTE = { hallazgo: 'camera', reencuentro: 'repeat', estado: 'circle-check', mira: 'eye', punto: 'flag' };
+function textoPendiente(x) {
+  const d = x.datos || {};
+  if (x.tipo === 'hallazgo') return d.name;
+  if (x.tipo === 'reencuentro') return `${C.AYUDA.reencuentro}${x.nombre ? ': ' + x.nombre : ''}`;
+  if (x.tipo === 'estado') return (C.ENCUENTRO_ESTADOS[d.kind] || {}).nombre || '';
+  if (x.tipo === 'mira') return `${C.ENCUENTRO_MIRA}: ${d.note || ''}`;
+  return `${C.AYUDA.punto_nuevo}: ${d.name || ''}`;
+}
+function pintarPendientes() {
+  const el = $('#pendientes'); if (!el) return;
+  const l = S.pendientes || [];
+  el.innerHTML = l.length ? `<h4 class="row">${ic('cloud-upload')} ${esc(C.PENDIENTES_TITULO)} · ${l.length}</h4>
+    <div class="list">${l.map((x) => `<div class="li pendiente ${x.estado}">
+      <span class="thumb">${ic(ICONO_PENDIENTE[x.tipo] || 'cloud-upload')}</span>
+      <div class="grow" style="min-width:0"><b>${esc(textoPendiente(x))}</b>
+        <div class="tiny">${esc(hace(x.creado))}${x.estado === 'duda' ? ` · ${esc(C.PENDIENTE_DUDA)}` : ''}${x.estado === 'error' ? ` · ${esc(x.error || '')}` : ''}</div></div>
+      ${x.estado === 'duda' ? `${ib('pendiente_mismo', 'repeat', 'reencuentro', `data-id="${x.id}"`, 'sm')}${ib('pendiente_otro', 'pencil', 'editar', `data-id="${x.id}"`, 'sm')}` : ''}
+      ${ib('pendiente_borrar', 'trash', 'borrar', `data-id="${x.id}"`, 'sm')}</div>`).join('')}</div>
+    ${navigator.onLine ? `<button class="btn alt block" data-act="subir_ahora" style="margin-top:8px">${ic('cloud-upload')} ${esc(C.AYUDA.subir_ahora)}</button>` : ''}` : '';
+}
+async function guardarHallazgoSinConexion(btn, o) {
+  try {
+    const fotos = R.original ? await prepararFotos() : null;
+    const priv = !o.grupo && R.priv;
+    await guardarPendiente({ tipo: 'hallazgo', privado: priv, fotos, etiquetas: priv ? [] : R.etiquetas.slice(),
+      datos: { category_id: o.cat, group_id: o.grupo, name: o.nombre, note: o.nota || null, is_private: priv,
+        lat: R.pos.lat, lng: R.pos.lng, accuracy: R.pos.acc, created_at: new Date().toISOString() } });
+    cerrarTodo();
+    const g = o.grupo ? miGrupo(o.grupo) : null, ct = o.cat ? S.cats.find((x) => x.id === o.cat) : null;
+    celebrarHallazgo({ icono: (ct || g || {}).icon, color: (ct || g || {}).color, titulo: o.nombre, detalle: C.PENDIENTE_GUARDADO, foto: R.vistaUrl });
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+async function guardarReencuentroSinConexion(btn, c) {
+  try {
+    const fotos = R.original ? await prepararFotos() : null, pos = R.pos || null;
+    await guardarPendiente({ tipo: 'reencuentro', privado: !!c.is_private, fotos, nombre: c.name,
+      datos: { find_id: c.id, lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, note: (R.nota || '').trim() || null, created_at: new Date().toISOString() } });
+    cerrarTodo();
+    celebrarHallazgo({ icono: 'repeat', color: c.cat_color, titulo: c.name, detalle: C.PENDIENTE_GUARDADO, foto: R.original ? R.vistaUrl : '' });
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+// Fotos que quedaron fuera de un grupo de encuentro borrado: cada quien las quita de su almacén
+async function procesarFotosPorBorrar() {
+  try {
+    const l = await api.fotosPorBorrar(); if (!l || !l.length) return;
+    await api.removeFiles(l.map((x) => x.path)).catch(() => null);
+    await api.quitarFotosPorBorrar(l.map((x) => x.id));
+  } catch (e) { /* se reintenta al abrir otra vez */ }
+}
+// Copias en el teléfono (las administra el trabajador del teléfono)
+const fotosSinConexion = () => { try { return localStorage.getItem('cg_fotos_offline') !== '0'; } catch (e) { return true; } };
+function alTrabajador(msg) {
+  return new Promise((res) => {
+    const sw = 'serviceWorker' in navigator && navigator.serviceWorker.controller;
+    if (!sw) return res(null);
+    const ch = new MessageChannel(); const t = setTimeout(() => res(null), 4000);
+    ch.port1.onmessage = (e) => { clearTimeout(t); res(e.data); };
+    sw.postMessage(msg, [ch.port2]);
+  });
+}
+async function pintarSinConexion() {
+  const el = $('#sec-offline'); if (!el) return;
+  const si = fotosSinConexion();
+  el.innerHTML = `<h3 class="row">${ic('cloud-off')} ${esc(C.OFFLINE_TITULO)}</h3>
+    <div id="pendientes"></div>
+    <button class="li interruptor ${si ? 'on' : ''}" data-act="fotos_offline" role="switch" aria-checked="${si}"><span class="grow" style="text-align:left">${esc(C.GUARDAR_FOTOS)}</span><span class="sw" aria-hidden="true"></span></button>
+    <div class="row between" style="margin-top:8px"><span class="tiny grow" id="espacio">…</span><button class="btn alt sm" data-act="liberar_espacio">${ic('eraser')} ${esc(C.LIBERAR)}</button></div>`;
+  pintarPendientes();
+  const r = await alTrabajador({ tipo: 'espacio' });
+  const e = $('#espacio'); if (e) e.textContent = r ? textoEspacio(r) : '';
+}
+const textoEspacio = (r) => C.ESPACIO.replace('{mb}', (r.fotos / 1048576).toFixed(1)).replace('{tope}', Math.round(r.tope / 1048576)).replace('{t}', r.teselas);
+
+/* Trabajador del teléfono: abrir sin conexión, versión nueva y notificaciones */
+let trabajadorEsperando = null;
+function registrarTrabajador() {
+  if (!('serviceWorker' in navigator) || (window.__API_PRUEBAS__ && !window.__PROBAR_SW__)) return;
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    const avisarNueva = () => { if (reg.waiting && navigator.serviceWorker.controller) { trabajadorEsperando = reg.waiting; pintarVersionNueva(); } };
+    avisarNueva();
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing;
+      if (w) w.addEventListener('statechange', () => { if (w.state === 'installed') avisarNueva(); });
+    });
+    setInterval(() => { if (!document.hidden) reg.update().catch(() => null); }, 30 * 60 * 1000);
+  }).catch((e) => console.error(e));
+  let recargando = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (S.actualizando && !recargando) { recargando = true; location.reload(); return; }
+    if (S.user) alTrabajador({ tipo: 'ajustes', uid: S.user.id, fotos: fotosSinConexion() }); // primera vez que el trabajador toma el control
+  });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.tipo === 'abrir') abrirRuta(d.url);
+    if (d.tipo === 'push') revisarAvisos();
+  });
+}
+function pintarVersionNueva() {
+  if (!trabajadorEsperando || $('#version-nueva')) return;
+  const b = document.createElement('button');
+  b.id = 'version-nueva'; b.className = 'version-nueva'; b.dataset.act = 'actualizar';
+  b.innerHTML = `${ic('refresh')}<span>${esc(C.VERSION_NUEVA)}</span>`;
+  document.body.appendChild(b);
+}
+function abrirRuta(url) {
+  let h = '';
+  try { h = new URL(url, location.href).hash; } catch (e) { h = ''; }
+  if (!h) return;
+  if (location.hash === h) rutaHash(h); else location.hash = h;
 }
 
 /* Tarjeta para compartir por WhatsApp */
@@ -1959,7 +2741,7 @@ async function protegerFotosAntiguas() {
 
 /* Avisos (solo con la app abierta): reacciones, comentarios, reencuentros y seguidores;
    para la administradora también personas nuevas, buzón, moderación y uso del plan */
-const claveAviso = (a) => `${a.kind}|${a.find_id}|${a.actor_id}|${a.reaccion || ''}|${a.texto || ''}|${a.at}`;
+const claveAviso = (a) => `${a.kind}|${a.find_id}|${a.actor_id}|${a.reaccion || ''}|${a.texto || ''}|${a.at}|${a.grupo_id || ''}`;
 const RECURSOS = { fotos: 'fotos', base: 'base de datos' };
 function textoAviso(a) {
   const k = a.kind;
@@ -1972,11 +2754,15 @@ function textoAviso(a) {
   if (k === 'buzon') return `${a.actor_name} escribió al buzón: «${a.texto}»`;
   if (k === 'reporte') return `Aviso a moderación: ${a.find_name || 'un hallazgo'}`;
   if (k === 'uso') { const [rec, , pct] = String(a.texto || '').split(':'); return `Uso del plan: ${RECURSOS[rec] || rec} al ${pct} %`; }
+  if (k === 'ayuda') return `${a.actor_name} pidió ayuda en ${a.texto}`;
+  if (k === 'votacion') return `${a.actor_name} propone borrar ${a.texto}`;
+  if (k === 'grupo_borrado') { const t = String(a.texto || ''), i = t.lastIndexOf(':'); return `Se borró ${t.slice(0, i)} ${t.slice(i + 1) === 'votacion' ? 'por votación' : 'por inactividad'}`; }
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
   return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
 }
 function iconoAviso(a) {
-  const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages' };
+  const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages',
+    ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy' };
   if (fijo[a.kind]) return fijo[a.kind];
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
 }
@@ -1988,9 +2774,12 @@ function destinoAviso(a) {
   if (a.kind === 'buzon') return 'data-kind="admin" data-id="buzon"';
   if (a.kind === 'reporte') return 'data-kind="admin" data-id="avisos"';
   if (a.kind === 'uso') return 'data-kind="admin" data-id="uso"';
+  if (a.kind === 'ayuda' || a.kind === 'votacion') return `data-kind="encuentro" data-id="${a.grupo_id}" data-foco="${a.kind === 'ayuda' ? a.actor_id : ''}"`;
+  if (a.kind === 'grupo_borrado') return 'data-kind="nada" data-id=""';
   return `data-kind="ficha" data-id="${a.find_id}"`;
 }
 function caraAviso(a) {
+  if (a.kind === 'grupo_borrado') return `<span class="avatar" style="background:var(--tinta)">${ic('lifebuoy')}</span>`;
   return a.actor_id ? avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })
     : `<span class="avatar ${nivelAviso(a)}" style="background:var(--tinta)">${ic('shield')}</span>`;
 }
@@ -2144,7 +2933,18 @@ function vigilarAvisos() {
   revisarAvisos();
   tAvisos = setInterval(revisarAvisos, C.AVISOS_CADA_MS);
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) revisarAvisos(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    pausarCompartir();
+    if (S.user && pushSoportado() && Notification.permission === 'granted') api.appActiva(false).catch(() => null); // fuera de la vista vuelven las notificaciones
+    return;
+  }
+  revisarAvisos(); vigilarCompartir(); subirPendientes();
+  if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => null);
+  alTrabajador({ tipo: 'insignia' });
+});
+window.addEventListener('online', () => { pintarConexion(); subirPendientes(); revisarAvisos(); });
+window.addEventListener('offline', () => pintarConexion());
 
 /* Moderación: avisos de contenido y buzón */
 const tamano = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(2)} GB` : `${Math.round(b / 1048576)} MB`);
@@ -2425,8 +3225,194 @@ const ACCIONES = {
     try {
       const gid = await api.joinGroup(b.dataset.v); await recargarGrupos();
       cerrarTodo(); aviso('Ya eres parte del grupo', 'users'); abrirGrupo(gid); refrescarActual();
+      if (esEncuentro(miGrupo(gid))) ofrecerPush();
     } catch (e) { ocupado(b, false); fallo(e); }
   },
+
+  /* grupos de encuentro */
+  tipo_grupo(b) {
+    const top = hojaArriba(), E = top && top.datos; if (!E) return;
+    const raiz = $('.sheet'), n = $('#g-nombre', raiz);
+    E.nombre = n ? n.value : E.nombre; E.color = valor(raiz, 'color') || E.color; E.icon = iconoElegido(raiz) || E.icon;
+    const u = valor(raiz, 'uso'); if (u) E.uso = u;
+    E.tipo = b.dataset.v === 'encuentro' ? 'encuentro' : 'coleccion';
+    dibujarHoja();
+  },
+  encuentro: (b) => abrirEncuentro(b.dataset.id),
+  encuentro_guia: () => hojaGuiaEncuentro(),
+  encuentro_refrescar(b) { const D = encuentroActual(); if (D) { ocupado(b, true); D.cargar(); } },
+  estado_encuentro(b) { const D = encuentroActual(); if (D) hojaEstado(D.gid, b.dataset.v === 'ayuda' ? 'ayuda' : 'bien'); },
+  enviar_estado: (b) => enviarEstado(b, b.dataset.gid, b.dataset.v === 'ayuda' ? 'ayuda' : 'bien'),
+  whatsapp_estado: (b) => abrirWhatsApp(b.dataset.texto || ''),
+  mira_nuevo() { const D = encuentroActual(); if (D) hojaMarca(D.gid, 'mira'); },
+  punto_nuevo() { const D = encuentroActual(); if (D) hojaMarca(D.gid, 'punto'); },
+  sugerir_punto(b) { M.nombre = b.dataset.v; const n = $('#marca-nombre'); if (n) { n.value = b.dataset.v; n.focus(); } },
+  quitar_foto_marca() { recordarMarca(); if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl); M.foto = null; M.vistaUrl = null; dibujarHoja(); },
+  guardar_marca: (b) => guardarMarca(b),
+  ver_foto(b) { const src = b.dataset.src; if (src) abrirHoja(() => `${cabeza('')}<img class="big" src="${esc(src)}" alt="">`, null, 'foto'); },
+  ver_mira(b) {
+    const D = encuentroActual(), k = D && D.e && D.e.miras.find((x) => x.id === b.dataset.id); if (!k) return;
+    D.foco = { lat: k.lat, lng: k.lng }; dibujarHoja(); const el = $('#mapa-enc'); if (el) el.scrollIntoView({ block: 'center' });
+  },
+  ver_en_mapa_enc(b) { const D = encuentroActual(); if (!D) return; D.foco = b.dataset.id; dibujarHoja(); const el = $('#mapa-enc'); if (el) el.scrollIntoView({ block: 'center' }); },
+  async borrar_mira(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar('¿Quitar este "Mira esto"?'))) return;
+    try { await api.delMira(b.dataset.id); procesarFotosPorBorrar(); aviso('Quitado', 'trash'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  ir_punto_encuentro(b) {
+    const D = encuentroActual(), p = D && D.e && D.e.puntos.find((x) => x.id === b.dataset.id); if (!p) return;
+    const g = D.e.grupo; cerrarTodo();
+    irAlPunto({ id: 'punto-' + p.id, lat: p.lat, lng: p.lng, name: p.name, cat_color: g.color, cat_icon: 'flag', act: 'encuentro', actId: g.id });
+  },
+  async punto_principal(b) {
+    const D = encuentroActual(); if (!D) return;
+    try { await api.puntoPrincipal(b.dataset.id); aviso('Punto principal', 'star'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  async borrar_punto(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar('¿Borrar este punto de encuentro?'))) return;
+    try { await api.delPunto(b.dataset.id); procesarFotosPorBorrar(); aviso('Borrado', 'trash'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  miembro_encuentro: (b) => hojaMiembroEncuentro(b.dataset.id),
+  async coadmin_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    ocupado(b, true);
+    try { await api.nombrarCoadmin(D.gid, b.dataset.id, b.dataset.v === '1'); cerrarHoja(); aviso(b.dataset.v === '1' ? 'Ahora es coadministradora' : 'Ya no es coadministradora', 'shield'); D.cargar(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async sacar_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar('¿Sacar a esta persona del grupo? Se borra todo lo suyo aquí.', 'user-minus'))) return;
+    try { await api.sacarMiembro(D.gid, b.dataset.id); cerrarHoja(); aviso('Ya no es parte del grupo', 'user-minus'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  invitar_encuentro() {
+    const D = encuentroActual(), g = D && D.e && D.e.grupo; if (!g || !g.invite_code) return;
+    abrirWhatsApp(`${C.WHATSAPP_INVITACION} "${g.name}"\n${location.origin + location.pathname}#g=${g.invite_code}`);
+  },
+  ajustes_encuentro: () => hojaAjustesEncuentro(),
+  async guardar_ajustes_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    const raiz = $('.sheet');
+    const o = { juego: valor(raiz, 'juego') === '1', tema: $('#enc-tema', raiz).value.trim(), acuerdo: $('#enc-acuerdo', raiz).value.trim() };
+    ocupado(b, true);
+    try { await api.ajustesEncuentro(D.gid, o); api.dispararPush(); cerrarHoja(); aviso('Guardado'); D.cargar(); } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async borrar_lo_mio(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar(C.ENCUENTRO_BORRAR_MIO, 'eraser'))) return;
+    ocupado(b, true);
+    try {
+      await api.borrarLoMio(D.gid);
+      if (S.comparte && S.comparte.gid === D.gid) pararCompartir(true);
+      procesarFotosPorBorrar(); aviso('Se borró todo lo tuyo en este grupo', 'eraser'); D.cargar();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async votar_borrado(b) {
+    const D = encuentroActual(), v = D && D.e && D.e.votos; if (!v) return;
+    if (!v.mio && !(await confirmar(v.n ? C.ENCUENTRO_VOTAR_APOYO : C.ENCUENTRO_VOTAR, 'trash'))) return;
+    ocupado(b, true);
+    try {
+      const r = await api.votarBorrado(D.gid, !v.mio);
+      if (!v.mio) api.dispararPush();
+      if (r === 'borrado') { await recargarGrupos(); cerrarTodo(); procesarFotosPorBorrar(); aviso('El grupo se borró', 'trash'); if (S.tab === 'coleccion') pintarColeccion(); return; }
+      aviso(v.mio ? 'Retiraste tu voto' : 'Voto registrado', 'trash'); D.cargar();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async eliminar_inactivo(b) {
+    const D = encuentroActual(), e = D && D.e; if (!e) return;
+    if (!(await confirmar(C.ENCUENTRO_INACTIVO.replace('{d}', e.inactividad.dias), 'clock-x'))) return;
+    ocupado(b, true);
+    try { await api.eliminarPorInactividad(D.gid); api.dispararPush(); await recargarGrupos(); cerrarTodo(); procesarFotosPorBorrar(); aviso('El grupo se eliminó', 'trash'); if (S.tab === 'coleccion') pintarColeccion(); }
+    catch (err) { ocupado(b, false); fallo(err); }
+  },
+  async salir_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar(C.ENCUENTRO_SALIR, 'door-exit'))) return;
+    ocupado(b, true);
+    try {
+      await api.leaveGroup(D.gid, S.user.id);
+      if (S.comparte && S.comparte.gid === D.gid) pararCompartir(true);
+      await recargarGrupos(); cerrarTodo(); procesarFotosPorBorrar(); aviso('Saliste del grupo', 'door-exit');
+      if (S.tab === 'coleccion') pintarColeccion();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  compartir_ubicacion(b) { const D = encuentroActual(); if (D) iniciarCompartir(D.gid, +b.dataset.v === 30 ? 30 : 15, b); },
+  async dejar_compartir(b) {
+    const X = S.comparte; if (!X) return;
+    ocupado(b, true);
+    try { await api.dejarDeCompartir(X.gid); } catch (e) { /* sin red: deja de verse al terminar el tiempo */ }
+    pararCompartir(false);
+    const D = encuentroActual(); if (D) D.cargar();
+  },
+
+  /* notificaciones */
+  async activar_push(b) { ocupado(b, true); await activarPush(); ocupado(b, false); pintarNotificaciones(); },
+  async desactivar_push() { if (!(await confirmar(`${C.PUSH_DESACTIVAR}?`, 'bell-off'))) return; await desactivarPush(); pintarNotificaciones(); },
+  async push_pref(b) {
+    const k = b.dataset.k, p = Object.assign({}, S.push || {});
+    const nuevo = !p[k]; p[k] = nuevo;
+    b.classList.toggle('on', nuevo); b.setAttribute('aria-checked', String(nuevo));
+    try { await api.guardarPushPrefs(S.user.id, { [k]: nuevo }); S.push = p; }
+    catch (e) { b.classList.toggle('on', !nuevo); b.setAttribute('aria-checked', String(!nuevo)); fallo(e); }
+  },
+  async push_ofrecer_si(b) {
+    const top = hojaArriba(); ocupado(b, true);
+    const ok = await activarPush();
+    if (!ok) { ocupado(b, false); return; }
+    if (top && top.datos) { top.datos.paso = 2; dibujarHoja(); }
+  },
+  async push_ofrecer_listo(b) {
+    const s = $('#push-sonido'), si = !!(s && s.checked);
+    ocupado(b, true);
+    try { if (si) { await api.guardarPushPrefs(S.user.id, { sonido: true }); S.push = Object.assign({}, S.push || {}, { sonido: true }); } cerrarHoja(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+
+  /* sin conexión */
+  async fotos_offline(b) {
+    const si = !fotosSinConexion();
+    try { localStorage.setItem('cg_fotos_offline', si ? '1' : '0'); } catch (e) { /* nada */ }
+    b.classList.toggle('on', si); b.setAttribute('aria-checked', String(si));
+    await alTrabajador({ tipo: 'ajustes', uid: S.user.id, fotos: si });
+  },
+  async liberar_espacio(b) {
+    ocupado(b, true);
+    const r = await alTrabajador({ tipo: 'liberar' });
+    ocupado(b, false);
+    const e = $('#espacio'); if (e && r) e.textContent = textoEspacio(r);
+    aviso('Espacio liberado', 'eraser');
+  },
+  subir_ahora: () => subirPendientes(),
+  ver_pendientes() { cerrarTodo(); irA('perfil'); setTimeout(() => { const el = $('#sec-offline'); if (el) el.scrollIntoView({ block: 'start' }); }, 400); },
+  async pendiente_borrar(b) {
+    if (!(await confirmar('¿Borrar este registro sin subir?'))) return;
+    await BDP.quitar(b.dataset.id).catch(() => null); await contarPendientes();
+  },
+  async pendiente_mismo(b) {
+    const x = (S.pendientes || []).find((y) => y.id === b.dataset.id); if (!x || !x.existente) return;
+    try {
+      const c = await api.card(x.existente); if (!c) return aviso('Ese hallazgo ya no está disponible', 'alert-triangle');
+      const d = x.datos;
+      Object.assign(x, { tipo: 'reencuentro', privado: !!c.is_private, nombre: c.name, estado: 'pendiente', existente: null,
+        datos: { find_id: c.id, lat: d.lat, lng: d.lng, note: d.note, created_at: d.created_at } });
+      await BDP.poner(x); await contarPendientes(); subirPendientes();
+    } catch (e) { fallo(e); }
+  },
+  pendiente_otro(b) {
+    const x = (S.pendientes || []).find((y) => y.id === b.dataset.id); if (!x) return;
+    abrirHoja(() => `${cabeza(ic('pencil'))}<div class="field"><label for="p-renombrar">${ic('pencil')} Nombre</label>
+      <input id="p-renombrar" class="in" maxlength="60" value="${esc(x.datos.name)}"></div>
+      <button class="btn block" data-act="guardar_nombre_pendiente" data-id="${x.id}">${ic('check')} Guardar</button>`, null, 'renombrar');
+  },
+  async guardar_nombre_pendiente(b) {
+    const x = (S.pendientes || []).find((y) => y.id === b.dataset.id), n = $('#p-renombrar'); if (!x || !n) return;
+    const nombre = n.value.trim(); if (!nombre) return aviso('Ponle un nombre', 'pencil');
+    if (sinAcentos(nombre) === sinAcentos(x.datos.name)) return aviso('Cambia el nombre para registrarlo como nuevo', 'pencil');
+    x.datos.name = nombre; x.estado = 'pendiente'; x.existente = null;
+    await BDP.poner(x); cerrarHoja(); await contarPendientes(); subirPendientes();
+  },
+  actualizar() { if (!trabajadorEsperando) return location.reload(); S.actualizando = true; trabajadorEsperando.postMessage({ tipo: 'saltar' }); },
 
   /* perfil */
   async crear_perfil(b) {
@@ -2521,7 +3507,9 @@ const ACCIONES = {
   aviso_abrir(b) {
     cerrarNotif();
     const id = b.dataset.id, k = b.dataset.kind;
+    if (k === 'nada') return;
     if (!id) return hojaAvisos();
+    if (k === 'encuentro') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirEncuentro(id, b.dataset.foco || null); }
     if (k === 'perfil') return abrirPerfil(id);
     if (k === 'chat') return hojaChat(id);
     if (k === 'admin') { if (!S.me.is_admin) return; const adm = adminAbierto(); if (adm) { while (hojaArriba() !== adm) pila.pop(); adm.datos.vista = id; dibujarHoja(); return; } return hojaAdmin(id); }
@@ -2574,6 +3562,7 @@ const ACCIONES = {
       if (muestra) $$('.premio', muestra).forEach((el) => { el.innerHTML = svgPremio(el.className.replace(/.*p-/, '').trim(), v); });
       aviso(C.COLOR_PREMIO_LISTO, 'crown');
       if (S.tab === 'map') cargarPines();
+      const D = encuentroActual(); if (D && D.gid === id) D.cargar();
     } catch (e) { fallo(e); }
   },
   instalar: () => instalarApp(),
@@ -2585,12 +3574,17 @@ const ACCIONES = {
   },
   cerrar_notif: () => cerrarNotif(),
   tabla_metrica(b) { const D = $('.sheet')._tabla; D.metric = b.dataset.v; D.cargar(); },
-  async salir() { if (await confirmar('¿Cerrar sesión?', 'logout')) { await api.logout().catch(() => null); location.hash = ''; location.reload(); } },
+  async salir() {
+    const n = (S.pendientes || []).length;
+    if (!(await confirmar(n ? C.PENDIENTES_SALIR.replace('{n}', n) : '¿Cerrar sesión?', 'logout'))) return;
+    await limpiarTelefono();
+    await api.logout().catch(() => null); location.hash = ''; location.reload();
+  },
   async borrar_cuenta(b) {
     if (!(await confirmar('¿Borrar tu cuenta?', 'trash'))) return;
     if (!(await confirmar('Se borrarán tu perfil, tus hallazgos y tus fotos. No se puede deshacer.', 'alert-triangle', '', 'trash'))) return;
     ocupado(b, true);
-    try { await api.deleteAccount(S.user.id); location.hash = ''; location.reload(); }
+    try { await desactivarPush(true); await api.deleteAccount(S.user.id); await limpiarTelefono(); location.hash = ''; location.reload(); }
     catch (e) { ocupado(b, false); fallo(e); }
   },
 
@@ -2605,6 +3599,13 @@ const ACCIONES = {
     try { await api.setBlocked(b.dataset.id, false); aviso('Cuenta desbloqueada', 'lock-open'); trasModerar(); } catch (e) { fallo(e); }
   }
 };
+// Al cerrar sesión: se quitan las notificaciones de este teléfono, las copias y lo pendiente
+async function limpiarTelefono() {
+  pararCompartir(true);
+  await desactivarPush(true).catch(() => null);
+  await alTrabajador({ tipo: 'salir' });
+  try { for (const x of await BDP.todos(S.user.id)) await BDP.quitar(x.id); } catch (e) { /* nada */ }
+}
 function trasModerar() {
   const sh = $('.sheet');
   if (sh && sh._admin) sh._admin.cargar();
@@ -2656,6 +3657,9 @@ async function arrancar(user) {
     S.mutes = await api.muteList().catch(() => []);
     vigilarAvisos();
     cuandoDesocupado(protegerFotosAntiguas);
+    alTrabajador({ tipo: 'ajustes', uid: user.id, fotos: fotosSinConexion() });
+    contarPendientes().then(() => subirPendientes());
+    cuandoDesocupado(() => { sincronizarPush(); procesarFotosPorBorrar(); });
     if (!S.cats.length) return pedirCategorias();
     pintarApp(); rutaHash();
   } catch (e) { fallo(e); S.user = null; pantallaEntrada(); }
@@ -2663,19 +3667,21 @@ async function arrancar(user) {
 }
 // Enlaces compartidos: #f= hallazgo, #u= perfil, #v= vitrina, #g= invitación a grupo.
 // Se recuerdan durante el inicio de sesión con Google.
-const RX_DESTINO = /^#([fuv])=([0-9a-f-]{36})$|^#g=([0-9a-f]{6,40})$/i;
+const RX_DESTINO = /^#([fuvc])=([0-9a-f-]{36})$|^#g=([0-9a-f]{6,40})$|^#e=([0-9a-f-]{36})(?:\.([0-9a-f-]{36}))?$|^#b$/i;
 function guardarDestino() {
   if (RX_DESTINO.test(location.hash)) { try { localStorage.setItem('cg_destino', location.hash); } catch (e) { /* sin almacenamiento */ } }
 }
-function rutaHash() {
-  let h = location.hash;
+function rutaHash(forzada) {
+  let h = forzada || location.hash;
   if (!RX_DESTINO.test(h)) { try { h = localStorage.getItem('cg_destino') || ''; } catch (e) { h = ''; } }
   try { localStorage.removeItem('cg_destino'); } catch (e) { /* nada */ }
   const m = h.match(RX_DESTINO);
   if (location.hash) history.replaceState(null, '', location.pathname);
   if (!m) return;
-  if (m[3]) mostrarInvitacion(m[3]);
-  else if (m[1] === 'f') abrirFicha(m[2]); else if (m[1] === 'v') abrirVitrina(m[2]); else abrirPerfil(m[2]);
+  if (m[0].toLowerCase() === '#b') hojaAvisos();
+  else if (m[3]) mostrarInvitacion(m[3]);
+  else if (m[4]) { if (miGrupo(m[4])) abrirEncuentro(m[4], m[5] || null); else aviso('Este grupo ya no está disponible', 'alert-triangle'); }
+  else if (m[1] === 'f') abrirFicha(m[2]); else if (m[1] === 'v') abrirVitrina(m[2]); else if (m[1] === 'c') hojaChat(m[2]); else abrirPerfil(m[2]);
 }
 window.addEventListener('hashchange', () => {
   guardarDestino();
@@ -2687,15 +3693,18 @@ function pantallaSinCuenta() { const v = destinoVitrina(); if (v) pantallaVitrin
 
 async function iniciar() {
   guardarDestino();
+  registrarTrabajador();
   api = window.__API_PRUEBAS__ || (/^https:\/\//.test(C.SUPABASE_URL) ? supabaseApi() : null);
   if (!api) return pantallaConfig();
   api.onAuth((ev, u) => {
-    if (ev === 'SIGNED_OUT') { S.user = null; clearInterval(tAvisos); pantallaEntrada(); }
+    if (ev === 'SIGNED_OUT') { S.user = null; clearInterval(tAvisos); pararCompartir(true); alTrabajador({ tipo: 'salir' }); pantallaEntrada(); }
     else if (u && (ev === 'SIGNED_IN' || ev === 'INITIAL_SESSION')) arrancar(u);
   });
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
-window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas, tipoInstalacion };
+window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
+  subirPendientes, contarPendientes, BDP, encuentroActual, textoWhatsAppEstado, abrirEncuentro, pararCompartir,
+  versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
 iniciar();
 })();
