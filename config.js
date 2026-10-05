@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.9.2',
+  VERSION: '1.9.3',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -160,11 +160,44 @@ window.CONFIG = {
   DEST_GRUPOS: 'Grupos',
   ENC_MODO_MIRA: 'Mira esto',
   ENC_MODO_PUNTO: 'Punto de encuentro',
+  VER_MAS: 'Ver más',
+  AUSENCIAS_ATENUAR: 2,
+  AUSENCIA_OK: 'Quedó anotado que ya no está. Si alguien lo vuelve a ver, se quita.',
+  AUSENCIA_LEJOS: 'Para marcar que ya no está, tienes que estar en el lugar. Estás a {d}.',
+  AUSENCIA_APROXIMADA: 'Tu teléfono está dando una ubicación aproximada. Activa la ubicación exacta para marcar que ya no está.',
+  AUSENCIA_SIN_GPS: 'Activa el GPS para marcar que ya no está',
+  AUSENCIA_TENUE: 'Varias personas dicen que ya no está',
+  AUSENCIA_HISTORIA: 'Ya no está',
+  ANUNCIO_MAX: 220,
+  ANUNCIO_PRIMERO: 'Nueva función: grupos de encuentro. Dinámicas de exploración, organización y emergencias para tu red de personas. Créalos en Colección → Grupos → +.',
+  ANUNCIO_NUEVO: 'Nuevo anuncio',
+  ANUNCIO_PISTA: 'Lo que quieres contarle a toda la comunidad',
+  ANUNCIO_DESTINO: 'Al tocarlo',
+  ANUNCIO_SIN_DESTINO: 'Solo se lee',
+  ANUNCIO_DESTINO_ENCUENTRO: 'Crear grupo de encuentro',
+  ANUNCIO_DURACION: 'Cuánto dura',
+  ANUNCIO_DURACIONES: [{ dias: null, nombre: 'Sin fecha de fin' }, { dias: 7, nombre: '1 semana' }, { dias: 30, nombre: '1 mes' }, { dias: 90, nombre: '3 meses' }],
+  ANUNCIO_VISTA: 'Así se verá en el buzón',
+  ANUNCIO_PUBLICAR: 'Enviar a toda la comunidad',
+  ANUNCIO_CONFIRMAR: '¿Enviar este anuncio a toda la comunidad? Llega a su buzón; quien tenga notificaciones recibe "Tienes un aviso nuevo".',
+  ANUNCIO_VACIO: 'Escribe el anuncio',
+  ANUNCIO_LISTO: 'Anuncio enviado',
+  ANUNCIO_LISTA: 'Anuncios enviados',
+  ANUNCIO_NINGUNO: 'Aún no has enviado anuncios',
+  ANUNCIO_ESTADO: { activo: 'Activo', terminado: 'Terminado', retirado: 'Retirado' },
+  ANUNCIO_HASTA: 'hasta el {f}',
+  ANUNCIO_SIN_FIN: 'sin fecha de fin',
+  ANUNCIO_CAMBIAR: 'Cambiar duración (desde hoy):',
+  ANUNCIO_CAMBIADO: 'Duración cambiada',
+  ANUNCIO_RETIRAR: 'Retirar anuncio',
+  ANUNCIO_RETIRAR_CONFIRMAR: '¿Retirar este anuncio? Sale del buzón de todas las personas.',
+  ANUNCIO_RETIRADO: 'Anuncio retirado',
   GALERIA_DE: 'Colección de {c}',
   GALERIA_VACIA: 'Aún no hay hallazgos públicos con foto en esta colección',
   GALERIA_VITRINA: 'Ver toda su vitrina',
   CANDIDATO_PREGUNTA: '¿Lo volviste a ver? Tócalo para sumarlo como reencuentro',
-  ENCUADRE_PISTA: 'Arrastra y pellizca para encuadrar',
+  FONDO_FOTO: '#EADFCB',   // beige de la app detrás de las fotos (mismo tono que --papel2)
+  ENCUADRE_PISTA: 'Arrastra para mover y pellizca para acercar o alejar (hasta ver la foto completa). Dos toques: volver al inicio.',
   NOMBRE_PISTA: 'Nombre (Michi naranja)',
   NOTA_PISTA: 'Nota (opcional)',
   PUNTO_PISTA: 'Nombre del punto',
@@ -225,8 +258,6 @@ window.CONFIG = {
   VISTO_SIN_GPS: 'Activa el GPS para marcar que lo viste',
 
   // Quitar una sola foto de la historia de un hallazgo
-  QUITAR_FOTO_CONFIRMAR: '¿Quitar esta foto? El hallazgo y el resto de su historia se conservan.',
-  QUITAR_FOTO_LISTO: 'Foto quitada',
 
   // Ir al punto: la guía en el mapa de la app (sin servicios externos)
   LLEGADA_METROS: 15,
@@ -247,6 +278,12 @@ window.CONFIG = {
   GUIA: [
     { icono: 'map-2', titulo: '¿Qué es Collector Go?',
       texto: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo. Empiezas con 5 colecciones por categoría (gatos, puertas, letreros, lo que quieras) y puedes llegar a 15 a medida que crecen.' },
+    { icono: 'users', titulo: 'Grupos',
+      pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Invita por WhatsApp: quien abra el enlace y entre con Google queda dentro.',
+              'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.',
+              'Puedes crear hasta 10 grupos y unirte a todos los que quieras.'] },
+    { icono: 'lifebuoy', titulo: 'Grupos de encuentro',
+      texto: 'Un grupo privado y oculto para cuidarse en un viaje, un rally, una marcha, un festival o un sismo. Al crear un grupo, elige "Grupo de encuentro". Dentro del grupo, el botón de ayuda explica cómo funciona.' },
     { icono: 'camera', titulo: 'Registrar un hallazgo',
       pasos: ['Toca la cámara del centro, abajo.', 'Toma la foto o elígela de tu galería. Encuádrala con los dedos; si quieres, toca las tijeras para quitar el fondo.',
               'Elige la categoría (o un grupo) y ponle un nombre.', 'Toca Guardar. Si el punto no quedó bien, corrígelo en el mapa de abajo antes de guardar.'] },
@@ -270,12 +307,6 @@ window.CONFIG = {
       texto: 'Si se siguen mutuamente, pueden escribirse en el buzón. Puedes etiquetar en un hallazgo a quien sigues o te sigue.' },
     { icono: 'volume-off', titulo: 'Silenciar',
       texto: 'Si no quieres ver el contenido de alguien, o de un grupo del que no formas parte, abre su perfil y toca silenciar. Deja de aparecer en tu Muro y tu mapa, y no puede escribirte ni etiquetarte; no se le avisa. No es posible silenciar a quienes comparten un grupo contigo.' },
-    { icono: 'users', titulo: 'Grupos',
-      pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Invita por WhatsApp: quien abra el enlace y entre con Google queda dentro.',
-              'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.',
-              'Puedes crear hasta 10 grupos y unirte a todos los que quieras.'] },
-    { icono: 'lifebuoy', titulo: 'Grupos de encuentro',
-      texto: 'Un grupo privado y oculto para cuidarse en un viaje, un rally, una marcha, un festival o un sismo. Al crear un grupo, elige "Grupo de encuentro". Dentro del grupo, el botón de ayuda explica cómo funciona.' },
     { icono: 'medal', titulo: 'Medallas y récords',
       texto: 'Ganas medallas por cantidad en cada categoría, por colonias exploradas, por semanas seguidas y por reencuentros. Toca una medalla para ver cuánto te falta. La copa muestra la tabla general.' },
     { icono: 'current-location', titulo: 'Ubicación',
@@ -291,20 +322,24 @@ window.CONFIG = {
   ],
   // Privacidad: la pantalla de entrada muestra DATOS; la guía del mapa agrega DATOS_EXTRA
   DATOS_TITULO: '¿Qué pasa con mis datos?',
+  // Privacidad: primero lo más importante, después los detalles
+  DATOS_CLAVE: [
+    { titulo: 'Tus datos están protegidos.', texto: 'Todo lo que sale de tu teléfono viaja y se guarda cifrado. Solo la administradora puede entrar a la base de datos, y únicamente para mantener la app y atender reportes.' },
+    { titulo: 'Nadie hace negocio con tu información.', texto: 'No hay publicidad, no vendemos datos y no usamos herramientas de rastreo ni de analítica. Tu información no pasa por algoritmos de recomendación ni por inteligencia artificial. El Muro se ordena solo por fecha.' },
+    { titulo: 'Una comunidad por invitación.', texto: 'Collector Go no se publica: llegas porque alguien te compartió el enlace. Tú decides quién ve cada cosa: lo público es para la comunidad; lo que marcas con candado solo lo ves tú; a los grupos y grupos de encuentro solo se entra por invitación de sus miembros.' }
+  ],
+  DATOS_ADEMAS: 'Además',
   DATOS: [
-    'Guardamos lo necesario para que la app funcione: tu nombre, frase y avatar; tu correo de Google, que solo sirve para entrar; y de cada hallazgo la foto, el nombre, la nota, la fecha y la ubicación. También a quién sigues, tus grupos y tus reacciones.',
-    'Tu nombre, frase y avatar los ve cualquier persona. Tu correo no aparece en la app; solo lo ve la administradora en el panel de la base de datos.',
-    'Lo público, incluida su ubicación, lo ve cualquier persona. Lo que marcas con candado solo lo ves tú. Lo de un grupo privado solo lo ven sus miembros.',
-    'Los datos y las fotos se guardan en Supabase. Google solo confirma quién eres al entrar. Para saber el nombre de la colonia, la app envía las coordenadas a OpenStreetMap, que también dibuja el mapa. El recorte de fondo se hace en tu teléfono.',
-    'Al marcar "¡Lo vi!", tu ubicación se usa solo para comprobar que estás cerca y no se guarda.',
-    'Los mensajes del buzón solo los ven las dos personas de la conversación. Como el resto de los datos, se guardan en la base de datos de Collector Go.',
-    'Tu información personal (nombre, correo, ubicación y actividad) no pasa por ningún algoritmo de recomendación ni por inteligencia artificial. El Muro se ordena solo por fecha.',
-    'Los grupos de encuentro solo los ven sus miembros, ni siquiera la administradora desde la app. Si compartes tu ubicación con uno, solo se guarda tu último punto y se borra al terminar el tiempo.',
-    'Las notificaciones viajan cifradas por el servicio de tu teléfono (Google o Apple) y solo dicen algo general. Si las activas, guardamos la dirección que da tu teléfono para recibirlas. Se borra al desactivarlas o al cerrar sesión.',
-    'Las copias para usar sin conexión se guardan en tu teléfono y se borran al cerrar sesión.',
-    'No vendemos tus datos ni hay publicidad.',
-    'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta", en tu perfil, elimina tu perfil, tus hallazgos y tus fotos.',
-    'La administradora puede quitar contenido público que alguien reporte y bloquear cuentas que no respeten la comunidad.'
+    'Guardamos solo lo necesario: tu nombre, frase y avatar; tu correo de Google, que solo sirve para entrar y no aparece en la app; y de cada hallazgo, la foto, el nombre, la nota, la fecha y la ubicación.',
+    'Los datos se guardan en Supabase. Google solo confirma quién eres al entrar. OpenStreetMap dibuja el mapa y recibe las coordenadas para saber el nombre de la colonia. El recorte de fondo se hace en tu teléfono.',
+    'Si compartes tu vitrina por WhatsApp, quien reciba el enlace puede ver esas fotos públicas sin tener cuenta.',
+    'Las notificaciones solo dicen algo general.',
+    'Al marcar "¡Lo vi!" o "¡Ya no está!", tu ubicación solo se usa para comprobar que estás cerca y no se guarda.',
+    'Si compartes tu ubicación con un grupo de encuentro, solo se guarda tu último punto, y se borra al terminar el tiempo.',
+    'Los mensajes del buzón solo los ven las dos personas de la conversación.',
+    'Las copias para usar sin conexión viven en tu teléfono y se borran al cerrar sesión.',
+    'Puedes borrar cualquier hallazgo cuando quieras. "Borrar mi cuenta" elimina tu perfil, tus hallazgos y tus fotos.',
+    'La administradora puede quitar contenido público reportado y bloquear cuentas que no respeten la comunidad.'
   ],
   DATOS_EXTRA: [
     'Los comentarios los ve cualquier persona que pueda ver el hallazgo. Puedes borrar los tuyos, y quien registró el hallazgo también puede borrarlos.'
@@ -479,7 +514,7 @@ window.CONFIG = {
   AYUDA: {
     mapa: 'Mapa', muro: 'Muro', nuevo: 'Registrar hallazgo', coleccion: 'Mi colección', perfil: 'Perfil',
     ubicar: 'Mi ubicación', cerca: 'Cerca de mí', filtro_mios: 'Solo lo mío', filtro_todos: 'Todo', filtro_siguiendo: 'Personas que sigo',
-    ir_al_punto: 'Ir al punto', quitar_foto: 'Quitar esta foto', visto: '¡Lo vi!', instalar: 'Instalar en mi teléfono', reencuentro: 'Lo volví a ver', editar: 'Editar', borrar: 'Borrar', avisar: 'Avisar a moderación',
+    ir_al_punto: 'Ir al punto', visto: '¡Lo vi!', instalar: 'Instalar en mi teléfono', reencuentro: 'Lo volví a ver', editar: 'Editar', borrar: 'Borrar', avisar: 'Avisar a moderación',
     compartir: 'Compartir', whatsapp: 'Compartir por WhatsApp', privado: 'Privado: solo tú lo ves', publico: 'Público',
     recortar: 'Recortar fondo', original: 'Usar foto original', tabla: 'Tabla general', admin: 'Moderación', salir: 'Cerrar sesión',
     camara: 'Tomar foto', galeria: 'Elegir de la galería', sin_foto: 'Solo marcar, sin foto', guardar: 'Guardar', cerrar: 'Cerrar', atras: 'Atrás',
@@ -495,6 +530,6 @@ window.CONFIG = {
     principal: 'Hacer punto principal', borrar_lo_mio: 'Borrar lo mío', votar_borrado: 'Proponer borrar el grupo', quitar_voto: 'Retirar mi voto',
     eliminar_inactivo: 'Eliminar por inactividad', refrescar: 'Actualizar', ver_en_mapa: 'Ver en el mapa', miembro: 'Opciones de esta persona',
     coadmin: 'Coadministradora', duena: 'Creó el grupo', dejar_compartir: 'Dejar de compartir', subir_ahora: 'Subir ahora',
-    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', capa_encuentro: 'Ver u ocultar el grupo en el mapa', col_mosaico: 'Ver todas las colecciones', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
+    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', anuncios: 'Anuncios a la comunidad', ausencia: '¡Ya no está!', ausencia_ayuda: 'Ya no está en el lugar (solo estando ahí)', capa_encuentro: 'Ver u ocultar el grupo en el mapa', col_mosaico: 'Ver todas las colecciones', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
   }
 };

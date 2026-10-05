@@ -317,7 +317,6 @@ label.ib{cursor:pointer}
 
 /* 1.6 · quitar una foto y "Yo también lo vi" en el lugar */
 .foto-grande{position:relative}
-.ib.sobre-foto{position:absolute;top:8px;right:8px;background:var(--papel3)}
 .react.visto-ok{animation:visto .7s ease-out}
 @keyframes visto{0%{transform:scale(1)}40%{transform:scale(1.15)}100%{transform:scale(1)}}
 @media (prefers-reduced-motion:reduce){.react.visto-ok{animation:none}}
@@ -512,3 +511,28 @@ textarea.in.crece{min-height:44px;height:44px;resize:none;overflow:hidden;line-h
 /* Los huecos de la barra del mapa no bloquean tocar o mover el mapa */
 .map-top{pointer-events:none}
 .map-top .chip,.map-top .ib,#chips-mapa{pointer-events:auto}
+
+/* 1.9.3 · encuadre, "¡Ya no está!", "Mira esto" desplegado, comentarios, Ver más, anuncios y privacidad */
+.pista-abajo{display:flex;align-items:center;gap:6px;margin:8px 0 0;color:var(--tinta2)}
+.pin.tenue,.pinw.tenue{opacity:.5;filter:grayscale(.5)}
+.ausencia-fila{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px}
+.react.ausencia.on{background:#E7DCCB}
+.hist-i.ausente{color:var(--tinta2)}
+.li.mira{flex-direction:column;align-items:stretch}
+.li.mira.abierta{border-width:2px}
+.mira-grande{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.mira-grande img{width:100%;aspect-ratio:1/1;object-fit:contain;background:var(--papel2);border:var(--borde);border-radius:12px}
+.mira-grande .btn{align-self:flex-start}
+.coms-caja{margin-top:6px}
+.coment-campo{display:flex;align-items:center;gap:6px;margin-top:8px;padding:0 6px 0 12px;border:var(--borde);border-radius:12px;background:var(--papel3)}
+.coment-campo:focus-within{outline:3px solid var(--mostaza);outline-offset:1px}
+.coment-campo .in.compacto{padding-left:0}
+.coment-n{text-align:right;margin-top:2px;color:var(--tinta2)}
+.meta-fila{gap:8px;align-items:center}
+.meta-fila .tiny{min-width:0}
+.ver-mas{flex:none;display:inline-flex;align-items:center;gap:2px;font-weight:700;font-size:14px;color:var(--tinta);padding:4px 0 4px 6px}
+.anuncio-vista{pointer-events:none}
+.li.anuncio.retirado,.li.anuncio.terminado{opacity:.6}
+.datos-clave p{margin:0 0 10px}
+.datos h4{margin:14px 0 6px;font-size:15px}
+.datos-mas{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}

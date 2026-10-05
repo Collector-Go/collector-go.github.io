@@ -227,6 +227,12 @@ function supabaseApi() {
       ok(await sb.from('tags').delete().eq('find_id', findId).eq('tagger', user && user.id).in('user_id', ids));
     },
     marcarVisto: (findId, p) => sb.rpc('marcar_visto', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
+    marcarAusencia: (findId, p) => sb.rpc('marcar_ausencia', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
+    historiaAusencias: (findId) => sb.rpc('historia_ausencias', { fid: findId }).then(ok),
+    anuncios: () => sb.from('anuncios').select('*').order('created_at', { ascending: false }).then(ok),
+    publicarAnuncio: (texto, destino, dias) => sb.rpc('publicar_anuncio', { p_texto: texto, p_destino: destino || null, p_dias: dias || null }).then(ok),
+    duracionAnuncio: (id, dias) => sb.rpc('duracion_anuncio', { p_id: id, p_dias: dias || null }).then(ok),
+    retirarAnuncio: (id) => sb.rpc('retirar_anuncio', { p_id: id }).then(ok),
     comments: (findId) => sb.from('comment_cards').select('*').eq('find_id', findId).order('created_at').then(ok),
     addComment: (findId, body) => sb.from('comments').insert({ find_id: findId, body }).then(ok),
     delComment: (id) => sb.from('comments').delete().eq('id', id).then(ok),
@@ -681,9 +687,10 @@ function pinHTML(color, icono, nivel, colorK, pinCls) {
 }
 function pinIcono(c) {
   const n = c.premio_nivel || 0;
-  const base = `<div class="pin ${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>`;
+  const tenue = atenuado(c) ? 'tenue' : '';   // varias personas dicen que ya no está: se atenúa, nunca desaparece
+  const base = `<div class="pin ${c.is_private ? 'priv' : ''} ${tenue} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>`;
   return L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36],
-    html: n >= 10 ? pinHTML(c.cat_color, c.cat_icon, n, c.premio_color, `${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}`) : base });
+    html: n >= 10 ? pinHTML(c.cat_color, c.cat_icon, n, c.premio_color, `${c.is_private ? 'priv' : ''} ${tenue} ${c.id === S.nuevoId ? 'cae' : ''}`) : base });
 }
 function crearMapa() {
   document.documentElement.style.setProperty('--map-filter', C.MAPA_FILTRO);
@@ -753,7 +760,7 @@ async function marcarVisto(btn, c) {
     ocupado(btn, false);
     if (r && r.ok) {
       const rs = Object.assign({}, c.reactions || {}); rs.eye = (rs.eye || 0) + 1;
-      guarda([Object.assign({}, c, { reactions: rs, my_reactions: (c.my_reactions || []).concat('eye') })]);
+      guarda([Object.assign({}, c, { reactions: rs, my_reactions: (c.my_reactions || []).concat('eye'), ausencias: 0 })]);
       refrescarFicha(c.id);
       $$(`[data-act="reaccion"][data-id="${c.id}"][data-v="eye"]`).forEach((x) => x.classList.add('visto-ok'));
       return aviso(C.VISTO_OK, 'eye-check');
@@ -765,6 +772,31 @@ async function marcarVisto(btn, c) {
         : `<button class="btn alt block" data-act="info_precision" data-acc="${p.acc || ''}">${ic('current-location')} ${esc(C.PRECISION_TITULO)}</button>`}`, null, 'visto');
   } catch (e) { ocupado(btn, false); fallo(e); }
 }
+
+/* "¡Ya no está!": también solo estando en el lugar. Con 2 personas el marcador se atenúa;
+   un "¡Lo vi!" o un reencuentro lo devuelve a normal. La ubicación se usa para medir y no se guarda. */
+async function marcarAusencia(btn, c) {
+  ocupado(btn, true);
+  let p;
+  try { p = await getPos(); } catch (e) { ocupado(btn, false); return aviso(C.AUSENCIA_SIN_GPS, 'current-location'); }
+  try {
+    const r = await api.marcarAusencia(c.id, p);
+    ocupado(btn, false);
+    if (r && r.ok) {
+      guarda([Object.assign({}, S.cache.get(c.id) || c, { ausencias: r.ausencias != null ? r.ausencias : (c.ausencias || 0) + 1 })]);
+      if (fichaH && fichaH.id === c.id) fichaH.cargar();
+      refrescarFicha(c.id);
+      if (S.tab === 'map') cargarPines();
+      return aviso(C.AUSENCIA_OK, 'map-pin-off');
+    }
+    const lejos = r && r.motivo === 'lejos';
+    abrirHoja(() => `${cabeza(`${ic('map-pin-off')} ${esc(C.AYUDA.ausencia)}`)}
+      <p>${esc(lejos ? C.AUSENCIA_LEJOS.replace('{d}', metros(r.distancia)) : C.AUSENCIA_APROXIMADA)}</p>
+      ${lejos ? `<button class="btn block" data-act="ir_al_punto" data-id="${c.id}">${ic('navigation')} ${esc(C.AYUDA.ir_al_punto)}</button>`
+        : `<button class="btn alt block" data-act="info_precision" data-acc="${p.acc || ''}">${ic('current-location')} ${esc(C.PRECISION_TITULO)}</button>`}`, null, 'visto');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+const atenuado = (c) => (c.ausencias || 0) >= C.AUSENCIAS_ATENUAR;
 
 /* Ir al punto: el mapa de la app lleva hasta un hallazgo. La distancia y la dirección
    se calculan en el teléfono; la ubicación no se envía a ningún servicio de mapas. */
@@ -918,7 +950,8 @@ function tarjeta(c) {
     <div class="body row"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left">${avatar(c)}<b class="grow">${esc(c.user_name)}</b></button>${etiquetaDe(c)}</div>
     ${c.photo || c.thumb ? `<img class="photo" src="${foto(c, true)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
     <div class="body"><div class="row between"><div class="grow"><h3>${esc(c.name)}</h3>
-      <div class="tiny">${c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}${c.comments_count ? ` · ${ic('message-circle')} ${c.comments_count}` : ''}</div></div></div>
+      <div class="row meta-fila"><span class="tiny grow">${c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}${c.comments_count ? ` · ${ic('message-circle')} ${c.comments_count}` : ''}</span>
+        <button class="ver-mas" data-act="ficha" data-id="${c.id}" aria-label="${esc(C.VER_MAS)}: ${esc(c.name)}">${esc(C.VER_MAS)}${ic('chevron-right')}</button></div></div></div>
       <div style="margin-top:8px">${reaccionesHTML(c)}</div></div></article>`;
 }
 // Novedad del Muro: un reencuentro con foto nueva
@@ -1102,12 +1135,12 @@ function hojaDudas() {
   abrirHoja(() => `${cabeza(`${ic('help')} ${esc(C.AYUDA.dudas)}`)}
     <div class="dudas guia">${C.GUIA.map((d) => `<div class="duda"><h3 class="row"><span class="gicon">${ic(d.icono)}</span>${esc(d.titulo)}</h3>
       ${d.texto ? `<p>${esc(d.texto)}</p>` : ''}${d.pasos ? `<ol>${d.pasos.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}</div>`).join('')}
-    <div class="duda datos"><h3 class="row">${ic('lock')} ${esc(C.DATOS_TITULO)}</h3>${C.DATOS.concat(C.DATOS_EXTRA || []).map((t) => `<p>${esc(t)}</p>`).join('')}</div>
+    <div class="duda datos"><h3 class="row">${ic('lock')} ${esc(C.DATOS_TITULO)}</h3>${datosHTML(true)}</div>
     <button class="btn alt block" data-act="buzon" style="margin-top:16px">${ic('mail')} ${esc(C.AYUDA.buzon)}</button></div>`, null, 'dudas');
 }
 function hojaPrivacidad() {
   abrirHoja(() => `${cabeza(`${ic('lock')} ${esc(C.AYUDA.privacidad)}`)}
-    <div class="dudas"><div class="duda datos"><h3>${esc(C.DATOS_TITULO)}</h3>${C.DATOS.map((t) => `<p>${esc(t)}</p>`).join('')}</div></div>`, null, 'privacidad');
+    <div class="dudas"><div class="duda datos"><h3>${esc(C.DATOS_TITULO)}</h3>${datosHTML(false)}</div></div>`, null, 'privacidad');
 }
 /* Ubicación exacta: si el teléfono da una aproximada, explica cómo activarla */
 const esAproximada = (p) => p && p.acc != null && p.acc > C.GPS_PRECISION_MAX;
@@ -1141,30 +1174,34 @@ async function abrirFicha(id) {
   H.cargar = async () => {
     const cc = S.cache.get(id) || c;
     try {
-      const [lista, coms] = await Promise.all([api.history(id), cc.is_private ? Promise.resolve([]) : api.comments(id)]);
-      H.lista = lista; H.coms = coms;
-    } catch (e) { H.lista = H.lista || []; H.coms = H.coms || []; }
+      const [lista, coms, aus] = await Promise.all([api.history(id), cc.is_private ? Promise.resolve([]) : api.comments(id),
+        api.historiaAusencias(id).catch(() => [])]);
+      H.lista = lista; H.coms = coms; H.aus = aus || [];
+    } catch (e) { H.lista = H.lista || []; H.coms = H.coms || []; H.aus = H.aus || []; }
     const top = hojaArriba(); if (top && top.tipo === 'ficha' && pila.includes(top)) dibujarHoja();
   };
   H.cargar();
   return H;
 }
+// "¡Ya no está!": en todo lo que puedes ver (en lo secreto, solo quien lo registró)
+const puedoMarcarAusencia = (c) => !S.me.blocked && (!c.is_private || c.user_id === S.user.id) && (!c.group_id || c.group_public || !!miGrupo(c.group_id));
 // Comentarios de la ficha
 const puedoComentar = (c) => !c.is_private && !S.me.blocked && (!c.group_id || c.group_public || !!miGrupo(c.group_id));
 function comentariosHTML(c, H) {
   const coms = H.coms;
   const mios = (coms || []).filter((k) => k.user_id === S.user.id).length;
   const puedoBorrar = (k) => k.user_id === S.user.id || c.user_id === S.user.id || S.me.is_admin;
-  return `<div class="sec" id="comentarios" style="margin-top:14px"><h3>${ic('message-circle')} Comentarios${coms ? ` · ${coms.length}` : ''}</h3>
+  // Sin título ni contador: los comentarios se ven directo
+  return `<div class="coms-caja" id="comentarios">
     ${coms === undefined ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>` : `
     <div class="coms">${coms.map((k) => `<div class="com">
       <button data-act="perfil" data-id="${k.user_id}" aria-label="${esc(k.user_name)}">${avatar(k)}</button>
       <div class="grow"><div><b>${esc(k.user_name)}</b> <span class="tiny">${hace(k.created_at)}</span></div><p>${esc(k.body)}</p></div>
       ${puedoBorrar(k) ? ib('borrar_comentario', 'trash', 'borrar_comentario', `data-id="${k.id}" data-find="${c.id}"`, 'sm ghost') : ''}</div>`).join('')}</div>
-    ${puedoComentar(c) ? (mios < C.COMENTARIOS_POR_PERSONA ? `<div class="row" style="align-items:flex-end;margin-top:8px">
-      <div class="grow"><input id="coment-in" class="in" maxlength="${C.COMENTARIO_MAX}" placeholder="Escribe un comentario" value="${esc(H.borrador || '')}" autocomplete="off">
-      <div class="tiny" style="text-align:right"><span id="coment-n">${(H.borrador || '').length}</span>/${C.COMENTARIO_MAX}</div></div>
-      ${ib('comentar', 'send', 'comentar', `data-id="${c.id}"`, 'on')}</div>`
+    ${puedoComentar(c) ? (mios < C.COMENTARIOS_POR_PERSONA ? `<div class="coment-campo">
+      <input id="coment-in" class="in compacto" maxlength="${C.COMENTARIO_MAX}" placeholder="Escribe un comentario" aria-label="Comentario" value="${esc(H.borrador || '')}" autocomplete="off">
+      ${ib('comentar', 'send', 'comentar', `data-id="${c.id}"`, 'sm on')}</div>
+      <div class="tiny coment-n"><span id="coment-n">${(H.borrador || '').length}</span>/${C.COMENTARIO_MAX}</div>`
       : `<p class="tiny">Ya dejaste ${C.COMENTARIOS_POR_PERSONA} comentarios aquí.</p>`) : ''}`}</div>`;
 }
 
@@ -1174,30 +1211,7 @@ function galeria(c, H) {
   const todas = (H.lista || []).concat([inicial]).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   return todas;
 }
-// Cada quien solo quita sus propias fotos (la principal es de quien registró el hallazgo)
-const esMiaLaFoto = (c, h) => (h.inicial ? c.user_id === S.user.id : h.user_id === S.user.id);
-async function quitarFoto(btn, c, h) {
-  if (!esMiaLaFoto(c, h)) return;
-  if (!(await confirmar(C.QUITAR_FOTO_CONFIRMAR, 'trash', api.photoUrl(h.thumb || h.photo)))) return;
-  ocupado(btn, true);
-  try {
-    const viejas = [h.photo, h.thumb];
-    if (h.inicial) {
-      // La foto más reciente de tus reencuentros pasa a ser la principal; ese momento queda sin foto
-      const hist = await api.history(c.id);
-      const sig = hist.filter((x) => x.user_id === S.user.id && (x.photo || x.thumb)).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))[0];
-      if (sig) { await api.updateFind(c.id, { photo: sig.photo, thumb: sig.thumb }); await api.updateSighting(sig.id, { photo: null, thumb: null }); }
-      else await api.updateFind(c.id, { photo: null, thumb: null });
-    } else {
-      await api.updateSighting(h.id, { photo: null, thumb: null });
-    }
-    await api.removeFiles(viejas).catch(() => null);
-    const nueva = await api.card(c.id); if (nueva) guarda([nueva]);
-    S.feed = []; S.stats = null; MOSAICOS.clear();
-    if (fichaH && fichaH.id === c.id) { fichaH.i = 0; await fichaH.cargar(); }
-    refrescarFicha(c.id); aviso(C.QUITAR_FOTO_LISTO, 'trash');
-  } catch (e) { ocupado(btn, false); fallo(e); }
-}
+// La foto de un hallazgo no se quita sola: para eso se borra el hallazgo completo (ninguna ficha queda sin imagen)
 function fichaHTML(c, H) {
   const propio = c.user_id === S.user.id;
   const hist = galeria(c, H);
@@ -1206,8 +1220,7 @@ function fichaHTML(c, H) {
   const actual = fotos[H.i];
   const puntos = hist.filter((h) => h.lat != null && h.lng != null);
   return `${cabeza(esc(c.name), c.is_private ? `<span class="ib ghost" data-tip="${C.AYUDA.privado}">${ic('lock')}</span>` : '')}
-    ${actual ? `<div class="foto-grande"><img class="big" src="${api.photoUrl(actual.photo || actual.thumb)}" alt="${esc(c.name)}">
-      ${esMiaLaFoto(c, actual) ? ib('quitar_foto', 'trash', 'quitar_foto', `data-id="${c.id}" data-i="${H.i}"`, 'sm sobre-foto') : ''}</div>` : ''}
+    ${actual ? `<div class="foto-grande"><img class="big" src="${api.photoUrl(actual.photo || actual.thumb)}" alt="${esc(c.name)}"></div>` : ''}
     ${fotos.length > 1 ? `<div class="strip">${fotos.map((f, i) => `<button class="${i === H.i ? 'on' : ''}" data-act="galeria" data-i="${i}" aria-label="Foto ${i + 1}">
       <img src="${api.photoUrl(f.thumb || f.photo)}" alt="" loading="lazy"></button>`).join('')}</div>` : ''}
     <div class="row between" style="margin:12px 0">
@@ -1215,7 +1228,10 @@ function fichaHTML(c, H) {
       ${etiquetaDe(c)}</div>
     ${c.note ? `<p style="margin:6px 0 12px">${esc(c.note)}</p>` : ''}
     ${esAproximada({ acc: c.accuracy }) ? `<button class="linkbtn tiny" data-act="info_precision" data-acc="${c.accuracy}" style="padding:0;color:var(--tinta2)">${ic('alert-triangle')} Ubicación aproximada ±${metros(c.accuracy)}</button>` : ''}
-    ${!c.is_private ? `<div style="margin:12px 0">${reaccionesHTML(c)}</div>` : ''}
+    ${!c.is_private ? `<div style="margin:12px 0 8px">${reaccionesHTML(c)}</div>` : ''}
+    ${puedoMarcarAusencia(c) ? `<div class="ausencia-fila">
+      <button class="react con-texto ausencia ${atenuado(c) ? 'on' : ''}" data-act="ya_no_esta" data-id="${c.id}" data-tip="${esc(C.AYUDA.ausencia_ayuda)}" aria-label="${esc(C.AYUDA.ausencia_ayuda)}">${ic('map-pin-off')}<span class="react-lbl">${esc(C.AYUDA.ausencia)}</span>${c.ausencias ? `<span class="n">${c.ausencias}</span>` : ''}</button>
+      ${atenuado(c) ? `<span class="tiny">${esc(C.AUSENCIA_TENUE)}</span>` : ''}</div>` : ''}
     ${!c.is_private ? comentariosHTML(c, H) : ''}
     <div class="row wrap" style="margin-top:14px">
       ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'on')}
@@ -1227,14 +1243,20 @@ function fichaHTML(c, H) {
       ${!propio ? ib('avisar', 'flag', 'avisar', `data-id="${c.id}"`) : ''}
       ${propio || S.me.is_admin ? ib('borrar_hallazgo', 'trash', 'borrar', `data-id="${c.id}"`) : ''}
     </div>
-    <div class="sec"><h3>${ic('history')} Historia · ${hist.length}</h3>
+    ${(() => {
+      // Historia: registro, reencuentros y "ya no está", del más reciente al más antiguo
+      const items = hist.concat((H.aus || []).map((a) => ({ created_at: a.created_at, user_name: a.user_name, ausencia: true })))
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      return `<div class="sec"><h3>${ic('history')} Historia · ${items.length}</h3>
       ${H.lista === null ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>` : `
       ${puntos.length > 1 ? '<div class="minimap" id="mapa-historia" style="height:170px;margin-bottom:10px"></div>' : ''}
-      <div class="hist">${hist.map((h) => `<div class="row hist-i">
+      <div class="hist">${items.map((h) => h.ausencia ? `<div class="row hist-i ausente">
+        <span class="dotline">${ic('map-pin-off')}</span>
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}</div></div></div>` : `<div class="row hist-i">
         <span class="dotline">${ic(h.inicial ? 'star' : 'repeat')}</span>
         <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${h.colonia ? esc(h.colonia) : '—'}${c.group_id ? ` · ${esc(h.user_name || '')}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</div></div>
         ${h.photo || h.thumb ? `<span class="tiny">${ic('photo')}</span>` : ''}</div>`).join('')}</div>`}
-    </div>`;
+    </div>`; })()}`;
 }
 function montarFicha(raiz, c, H) {
   const el = $('#mapa-historia', raiz);
@@ -1274,13 +1296,14 @@ function registroHTML() {
       <div class="toggle mini">
         <button type="button" class="${!R.usarRecorte ? 'on' : ''}" data-act="usar_original" data-tip="${C.AYUDA.original}" aria-label="${C.AYUDA.original}">${ic('photo')}</button>
         <button type="button" class="${R.usarRecorte ? 'on' : ''}" data-act="recortar" data-tip="${C.AYUDA.recortar}" aria-label="${C.AYUDA.recortar}">${ic('scissors')}</button></div>
+      ${R.usarRecorte ? '' : `<button type="button" class="ib mini" data-act="pista_encuadre" data-tip="${esc(C.AYUDA.encuadrar)}" aria-label="${esc(C.AYUDA.encuadrar)}">${ic('arrows-move')}</button>`}
       ${R.destino || enc ? '' : `<div class="toggle mini" data-pick="priv" id="campo-priv" ${esGrupo ? 'hidden' : ''}>
         <button type="button" data-act="elegir" data-v="0" class="${R.priv ? '' : 'on'}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button><button type="button" data-act="elegir" data-v="1" class="${R.priv ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div>
       <button type="button" class="ib mini ${R.etiquetas.length ? 'on' : ''}" id="campo-etiquetas" ${R.priv ? 'hidden' : ''} data-act="etiquetar_registro" data-tip="${esc(R.etiquetas.length ? (R.etiquetasNombres.join(', ') || R.etiquetas.length + ' personas') : C.AYUDA.etiquetar)}" aria-label="${esc(C.AYUDA.etiquetar)}">${ic('tag')}${R.etiquetas.length ? `<b class="cuenta">${R.etiquetas.length}</b>` : ''}</button>`}
     </div>`;
   return `${cabeza(titulo)}
     ${R.original ? `<div class="foto-caja">${R.usarRecorte ? `<img class="big" id="vista" src="${R.vistaUrl}" alt="">`
-      : `<canvas class="encuadre" id="encuadre" aria-label="${esc(C.AYUDA.encuadrar)}"></canvas><span class="pista">${ic('arrows-move')} ${esc(C.ENCUADRE_PISTA)}</span>`}
+      : `<canvas class="encuadre" id="encuadre" aria-label="${esc(C.AYUDA.encuadrar)}"></canvas>`}
       <div class="progress foto-prog" id="prog" hidden><div></div></div>${herr}</div>` : ''}
     ${R.destino ? '' : `<div class="campo-fila">${selectorDestino(R.dest)}</div>
     ${enc ? `<div class="toggle mini enc-modo" role="group">
@@ -1394,19 +1417,25 @@ function soltarLienzo(cv) { try { if (cv) { cv.width = 0; cv.height = 0; } } cat
    El cuadro siempre queda lleno de foto: no hay bandas vacías. */
 function nuevoEncuadre(img) { const w = img.width, h = img.height; return { img, w, h, z: 1, cx: w / 2, cy: h / 2 }; }
 const ladoVisible = (E) => Math.min(E.w, E.h) / E.z;
+// Se puede alejar hasta ver la foto completa (el espacio que sobra queda transparente y se ve el fondo beige); nunca se gira
+const zoomMinimo = (E) => Math.min(E.w, E.h) / Math.max(E.w, E.h);
 function limitarEncuadre(E) {
-  E.z = Math.min(C.ENCUADRE_ZOOM_MAX, Math.max(1, E.z));
+  E.z = Math.min(C.ENCUADRE_ZOOM_MAX, Math.max(zoomMinimo(E), E.z));
   const l = ladoVisible(E) / 2;
-  E.cx = Math.min(E.w - l, Math.max(l, E.cx)); E.cy = Math.min(E.h - l, Math.max(l, E.cy));
+  // Si la foto es más chica que el cuadro en un sentido, se mueve sin salirse del cuadro
+  const ent = (c, t) => Math.min(Math.max(l, t - l), Math.max(Math.min(l, t - l), c));
+  E.cx = ent(E.cx, E.w); E.cy = ent(E.cy, E.h);
 }
 function pintarEncuadre(cv, E) {
-  const l = ladoVisible(E), cx = cv.getContext('2d');
+  const l = ladoVisible(E), cx = cv.getContext('2d'), k = cv.width / l;
+  cx.clearRect(0, 0, cv.width, cv.height);
   cx.imageSmoothingQuality = 'high';
-  cx.drawImage(E.img, E.cx - l / 2, E.cy - l / 2, l, l, 0, 0, cv.width, cv.height);
+  // La foto completa, colocada y escalada; lo que queda fuera del cuadro no se dibuja
+  cx.drawImage(E.img, (l / 2 - E.cx) * k, (l / 2 - E.cy) * k, E.w * k, E.h * k);
 }
 function cuadroDe(E, lado) {
   limitarEncuadre(E);
-  const n = Math.max(1, Math.round(Math.min(lado, ladoVisible(E))));
+  const n = Math.max(1, Math.round(Math.min(lado, ladoVisible(E))));   // resolución real del recorte; al alejar incluye el margen
   const cv = document.createElement('canvas'); cv.width = n; cv.height = n;
   pintarEncuadre(cv, E);
   return cv;
@@ -1417,7 +1446,11 @@ function montarEncuadre(cv, E, alSoltar) {
   cv.width = cv.height = Math.max(1, Math.round(ancho() * dpr));
   limitarEncuadre(E); pintarEncuadre(cv, E);
   const dedos = new Map();
-  let base = null, cuadro = 0, tSoltar = 0;
+  let base = null, cuadro = 0, tSoltar = 0, toque = null, ultimoToque = 0;
+  // En iPhone, Safari toma el pellizco y el arrastre como zoom o desplazamiento de la página y corta los dedos a medias:
+  // sobre la foto se bloquean esos gestos del navegador para que todo el movimiento llegue al encuadre
+  const bloquear = (ev) => { if (ev.cancelable) ev.preventDefault(); };
+  ['touchstart', 'touchmove', 'gesturestart', 'gesturechange', 'gestureend'].forEach((t) => cv.addEventListener(t, bloquear, { passive: false }));
   const repintar = () => { E.sucio = true; E.ver = (E.ver || 0) + 1; if (cuadro) return; cuadro = requestAnimationFrame(() => { cuadro = 0; pintarEncuadre(cv, E); }); };
   const soltar = () => { clearTimeout(tSoltar); tSoltar = setTimeout(alSoltar, 120); };
   const estado = () => {
@@ -1431,6 +1464,7 @@ function montarEncuadre(cv, E, alSoltar) {
     if (E.ocupado) return;
     try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* nada */ }
     dedos.set(ev.pointerId, { x: ev.clientX, y: ev.clientY }); base = estado();
+    toque = dedos.size === 1 ? { x: ev.clientX, y: ev.clientY, t: Date.now() } : null;
   });
   cv.addEventListener('pointermove', (ev) => {
     if (!dedos.has(ev.pointerId) || !base) return;
@@ -1444,6 +1478,12 @@ function montarEncuadre(cv, E, alSoltar) {
   const fin = (ev) => {
     if (!dedos.has(ev.pointerId)) return;
     dedos.delete(ev.pointerId);
+    // Doble toque: vuelve al encuadre inicial
+    if (toque && ev.type === 'pointerup' && !dedos.size && Date.now() - toque.t < 300 && Math.hypot(ev.clientX - toque.x, ev.clientY - toque.y) < 10) {
+      if (Date.now() - ultimoToque < 350) { E.z = 1; E.cx = E.w / 2; E.cy = E.h / 2; limitarEncuadre(E); repintar(); ultimoToque = 0; }
+      else ultimoToque = Date.now();
+    }
+    toque = null;
     base = dedos.size ? estado() : null;
     if (!dedos.size) soltar();
   };
@@ -1453,7 +1493,7 @@ function montarEncuadre(cv, E, alSoltar) {
     if (E.ocupado) return;
     E.z = E.z * Math.exp(-ev.deltaY * 0.0015); limitarEncuadre(E); repintar(); soltar();
   }, { passive: false });
-  cv.addEventListener('dblclick', () => { if (E.ocupado) return; E.z = 1; limitarEncuadre(E); repintar(); soltar(); });
+
 }
 
 
@@ -1475,8 +1515,15 @@ function escalar(img, lado) {
   return cv;
 }
 function lienzoABlob(cv, calidad, alfa) {
-  const a = (tipo) => new Promise((res) => cv.toBlob((b) => res(b), tipo, calidad));
-  return a('image/webp').then((b) => (b && b.type === 'image/webp') ? b : a(alfa ? 'image/png' : 'image/jpeg'));
+  const a = (l, tipo) => new Promise((res) => l.toBlob((b) => res(b), tipo, calidad));
+  return a(cv, 'image/webp').then((b) => {
+    if (b && b.type === 'image/webp') return b;
+    if (alfa) return a(cv, 'image/png');
+    // Sin WebP (algunos iPhone) la foto va en JPEG, que no guarda transparencia: el margen se pinta del beige de la app
+    const f = document.createElement('canvas'); f.width = cv.width; f.height = cv.height;
+    const x = f.getContext('2d'); x.fillStyle = C.FONDO_FOTO; x.fillRect(0, 0, f.width, f.height); x.drawImage(cv, 0, 0);
+    return a(f, 'image/jpeg').then((j) => { soltarLienzo(f); return j; });
+  });
 }
 // Quita el espacio transparente y centra el objeto en un cuadro: ocupa el 90 %, con el mismo margen alrededor
 async function recortarVacio(blob) {
@@ -1920,8 +1967,8 @@ function abrirGrupo(gid) {
   D.cargar();
 }
 // Al crear se elige el tipo (queda fijo): grupo de colección o grupo de encuentro (privado y oculto)
-function editarGrupo(gid) {
-  const g = miGrupo(gid) || { id: '', name: '', icon: 'users', color: C.COLORES_CATEGORIA[1], is_public: false, tipo: 'coleccion' };
+function editarGrupo(gid, tipoInicial) {
+  const g = miGrupo(gid) || { id: '', name: '', icon: 'users', color: C.COLORES_CATEGORIA[1], is_public: false, tipo: tipoInicial === 'encuentro' ? 'encuentro' : 'coleccion' };
   const E = { tipo: g.tipo || 'coleccion', uso: g.uso || C.ENCUENTRO_USOS[0].id };
   const render = () => {
     const enc = E.tipo === 'encuentro';
@@ -2001,10 +2048,12 @@ function premioMini(n, k) {
   const id = v >= 500 ? 'sombrero' : v >= 250 ? 'corona2' : v >= 100 ? 'corona' : v >= 50 ? '' : v >= 25 ? 'brote' : 'patito';
   return `<span class="premio-mini" data-tip="${esc((C.PREMIOS[v] || {}).nombre || '')}">${id ? svgPremio(id, k) : BRILLO}</span>`;
 }
-function abrirEncuentro(gid, foco) {
+function abrirEncuentro(gid, foco, op) {
+  const mira = op && op.mira;
   const ya = pila.find((h) => h.tipo === 'encuentro' && h.datos && h.datos.gid === gid);
-  if (ya) { while (hojaArriba() !== ya) pila.pop(); if (foco) ya.datos.foco = foco; dibujarHoja(); ya.datos.cargar(true); return; }
-  const D = { gid, e: null, foco: foco || null, error: false, vista: null, premio: null, tab: 'tablero', abierto: {}, firma: '', miPos: null };
+  if (ya) { while (hojaArriba() !== ya) pila.pop(); if (foco) ya.datos.foco = foco; if (mira) { ya.datos.tab = 'mira'; ya.datos.miraAbierta = mira; ya.datos.irAMira = true; } dibujarHoja(); ya.datos.cargar(true); return; }
+  const D = { gid, e: null, foco: foco || null, error: false, vista: null, premio: null, tab: mira ? 'mira' : 'tablero', abierto: {}, firma: '', miPos: null,
+    miraAbierta: mira || null, irAMira: !!mira };
   const hoja = { render: () => encuentroHTML(D), after: (r) => montarEncuentro(r, D), tipo: 'encuentro', datos: D };
   pila.push(hoja); dibujarHoja();
   // Cada 20 s se revisa; la pantalla solo cambia si llegó algo nuevo, y el mapa no se vuelve a crear
@@ -2041,6 +2090,7 @@ function actualizarEncuentro(D) {
   const a = $('#enc-arriba', raiz), b = $('#enc-abajo', raiz);
   if (!a || !b) return dibujarHoja();
   a.innerHTML = encArribaHTML(D); b.innerHTML = encAbajoHTML(D);
+  llevarAMira(D);
   pintarCompartirEncuentro(D);
   pintarMarcasEncuentro(D);
   if (D.foco) enfocarEncuentro(D);
@@ -2096,7 +2146,8 @@ function encAbajoHTML(D) {
   let cuerpo = '';
   if (D.tab === 'puntos') cuerpo = `<div class="row between enc-sub"><span class="muted">${esc(C.ENCUENTRO_PUNTOS_TEXTO)}</span>${ib('punto_nuevo', 'plus', 'punto_nuevo', '', 'sm on')}</div>
     ${e.puntos.length ? `<div class="list">${e.puntos.map((p) => filaPunto(p, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_PUNTOS)}</p>`}`;
-  else if (D.tab === 'mira') cuerpo = e.miras.length ? `<div class="list">${e.miras.slice(0, 30).map((k) => filaMira(k, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_MIRA)}</p>`;
+  else if (D.tab === 'mira') cuerpo = e.miras.length ? `<div class="list">${(() => { const l = e.miras.slice(0, 30); const ab = D.miraAbierta && e.miras.find((k) => k.id === D.miraAbierta);
+      if (ab && !l.includes(ab)) l.unshift(ab); return l.map((k) => filaMira(k, e, D)).join(''); })()}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_MIRA)}</p>`;
   else if (D.tab === 'grupo') cuerpo = `${v.n ? `<p class="banner">${ic('trash')} ${esc(C.ENCUENTRO_VOTOS.replace('{n}', v.n).replace('{t}', v.total))}</p>` : ''}
       <div class="row wrap">
         ${yo.admin && g.invite_code ? ib('invitar_encuentro', 'brand-whatsapp', 'invitar', '', 'on') : ''}
@@ -2132,17 +2183,23 @@ function filaPunto(p, e) {
     ${e.yo.admin && !p.principal ? ib('punto_principal', 'star', 'principal', `data-id="${p.id}"`, 'sm') : ''}
     ${mio || e.yo.admin ? ib('borrar_punto', 'trash', 'borrar', `data-id="${p.id}"`, 'sm') : ''}</div>`;
 }
-function filaMira(k, e) {
+function filaMira(k, e, D) {
   const autora = (e.miembros.find((m) => m.user_id === k.user_id) || {}).name || '';
-  return `<div class="li mira">${k.thumb || k.photo ? `<img class="thumb" src="${api.photoUrl(k.thumb || k.photo)}" alt="" data-act="ver_foto" data-src="${esc(api.photoUrl(k.photo || k.thumb))}">` : `<span class="thumb">${ic('eye')}</span>`}
-    <button class="grow" data-act="ver_mira" data-id="${k.id}" style="text-align:left;min-width:0"><b>${esc(k.note)}</b><div class="tiny">${esc(autora)} · ${esc(hace(k.created_at))}</div></button>
-    ${k.user_id === S.user.id || e.yo.admin ? ib('borrar_mira', 'trash', 'borrar', `data-id="${k.id}"`, 'sm') : ''}</div>`;
+  const abierta = D && D.miraAbierta === k.id, foto = k.photo || k.thumb;
+  // Tocar la fila despliega su foto; desplegada, se puede ver en el mapa
+  return `<div class="li mira ${abierta ? 'abierta' : ''}" data-id="${k.id}">
+    <div class="row" style="gap:10px;width:100%">${k.thumb || k.photo ? `<img class="thumb" src="${api.photoUrl(k.thumb || k.photo)}" alt="">` : `<span class="thumb">${ic('eye')}</span>`}
+    <button class="grow" data-act="enc_mira_abrir" data-id="${k.id}" aria-expanded="${abierta}" style="text-align:left;min-width:0"><b>${esc(k.note)}</b><div class="tiny">${esc(autora)} · ${esc(hace(k.created_at))}</div></button>
+    ${k.user_id === S.user.id || e.yo.admin ? ib('borrar_mira', 'trash', 'borrar', `data-id="${k.id}"`, 'sm') : ''}</div>
+    ${abierta ? `<div class="mira-grande">${foto ? `<img src="${api.photoUrl(k.photo || k.thumb)}" alt="${esc(k.note)}">` : ''}
+      <button class="btn alt sm" data-act="ver_mira" data-id="${k.id}">${ic('map-pin')} ${esc(C.AYUDA.ver_en_mapa)}</button></div>` : ''}</div>`;
 }
 function montarEncuentro(raiz, D) {
   const el = $('#mapa-enc', raiz); if (!el || !D.e) return;
   const m = L.map(el, { zoomControl: false, attributionControl: false });
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
   D.mapa = m; D.capa = L.layerGroup().addTo(m); D.yoMarca = null;
+  setTimeout(() => llevarAMira(D), 60);
   const pts = pintarMarcasEncuentro(D);
   if (D.foco) enfocarEncuentro(D);
   else if (D.vista) m.setView(D.vista.c, D.vista.z);
@@ -2156,7 +2213,7 @@ function pintarMarcasEncuentro(D) {
   capa.clearLayers();
   const e = D.e;
   const avisar = (foco) => {
-    if (foco.tipo === 'punto') aviso(foco.texto, 'flag'); else if (foco.tipo === 'mira') aviso(foco.texto, 'eye');
+    if (foco.tipo === 'punto') aviso(foco.texto, 'flag'); else if (foco.tipo === 'mira') abrirMira(D, foco.id);
     else if (foco.tipo === 'ayuda') aviso(foco.texto, 'urgent'); else aviso(foco.texto, 'current-location');
   };
   marcasEncuentro(e, capa, (foco) => avisar(foco));
@@ -2175,7 +2232,7 @@ function marcasEncuentro(e, capa, alTocar) {
       .on('click', () => alTocar({ lat: p.lat, lng: p.lng, tipo: 'punto', texto: p.name })).addTo(capa); });
   e.miras.forEach((k) => { const a = e.miembros.find((x) => x.user_id === k.user_id) || {};
     L.marker([k.lat, k.lng], { icon: icono(pinHTML('#3F6E73', 'eye', g.juego ? a.premio : 0, a.premio_color)) })
-      .on('click', () => alTocar({ lat: k.lat, lng: k.lng, tipo: 'mira', texto: k.note })).addTo(capa); });
+      .on('click', () => alTocar({ lat: k.lat, lng: k.lng, tipo: 'mira', id: k.id, texto: k.note })).addTo(capa); });
   e.miembros.forEach((x) => { const st = x.estado;
     if (st && st.kind === 'ayuda' && st.lat != null) {
       L.marker([st.lat, st.lng], { icon: icono(`<div class="pin enc-ayuda">${ic('urgent')}</div>`) })
@@ -2214,6 +2271,17 @@ async function miUbicacionEncuentro(btn) {
   pintarMarcasEncuentro(D);
   D.mapa.setView([p.lat, p.lng], 17);
   const b = $('[data-act="enc_mi_ubicacion"]'); if (b) b.classList.add('on');
+}
+// Un "Mira esto": se abre su pestaña con la foto desplegada
+function abrirMira(D, id) {
+  if (!D || !D.e) return;
+  D.tab = 'mira'; D.miraAbierta = id; D.irAMira = true;
+  const el = $('#enc-abajo'); if (el && D.mapa) { el.innerHTML = encAbajoHTML(D); llevarAMira(D); } else dibujarHoja();
+}
+function llevarAMira(D) {
+  if (!D.irAMira) return;
+  const el = $(`.li.mira[data-id="${D.miraAbierta}"]`);
+  if (el) { D.irAMira = false; el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
 }
 // Lleva la vista al mapa del grupo (está arriba) y lo centra donde se pidió
 function verMapaEncuentro(D) {
@@ -2331,7 +2399,7 @@ function pintarCapas() {
   S.capaDatos.forEach(({ e }, gid) => {
     if (!S.capas.has(gid)) return;
     // Tocar un marcador abre el grupo justo en ese punto
-    marcasEncuentro(e, S.capaEnc, (foco) => abrirEncuentro(gid, foco));
+    marcasEncuentro(e, S.capaEnc, (foco) => (foco.tipo === 'mira' ? abrirEncuentro(gid, foco, { mira: foco.id }) : abrirEncuentro(gid, foco)));
   });
 }
 // Solo con sesión, en el mapa y sin hojas abiertas encima (el grupo abierto ya se actualiza por su cuenta)
@@ -2472,7 +2540,8 @@ async function tomarFotoMarca(file) {
 // Encuadrar en su propia hoja (puntos y "Mira esto"): la foto cuadrada se ve completa y se ajusta con los dedos
 function hojaEncuadre(E, alListo) {
   abrirHoja(() => `${cabeza(`${ic('crop')} ${esc(C.AYUDA.encuadrar)}`)}
-    <div class="foto-caja"><canvas class="encuadre" id="encuadre-solo"></canvas><span class="pista">${ic('arrows-move')} ${esc(C.ENCUADRE_PISTA)}</span></div>
+    <div class="foto-caja"><canvas class="encuadre" id="encuadre-solo"></canvas></div>
+    <p class="tiny pista-abajo">${ic('arrows-move')} ${esc(C.ENCUADRE_PISTA)}</p>
     <button class="btn block guardar" data-act="encuadre_listo" style="margin-top:12px">${ic('check')} Listo</button>`,
   (raiz) => { const cv = $('#encuadre-solo', raiz); if (cv) montarEncuadre(cv, E, () => alListo()); raiz._encuadre = alListo; }, 'encuadre');
 }
@@ -3251,13 +3320,15 @@ function textoAviso(a) {
   if (k === 'uso') { const [rec, , pct] = String(a.texto || '').split(':'); return `Uso del plan: ${RECURSOS[rec] || rec} al ${pct} %`; }
   if (k === 'ayuda') return `${a.actor_name} pidió ayuda en ${a.texto}`;
   if (k === 'votacion') return `${a.actor_name} propone borrar ${a.texto}`;
+  if (k === 'ausencia') return `${a.actor_name} dice que ${a.find_name} ya no está`;
+  if (k === 'anuncio') return a.texto || '';
   if (k === 'grupo_borrado') { const t = String(a.texto || ''), i = t.lastIndexOf(':'); return `Se borró ${t.slice(0, i)} ${t.slice(i + 1) === 'votacion' ? 'por votación' : 'por inactividad'}`; }
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
   return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
 }
 function iconoAviso(a) {
   const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages',
-    ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy' };
+    ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy', ausencia: 'map-pin-off', anuncio: 'speakerphone' };
   if (fijo[a.kind]) return fijo[a.kind];
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
 }
@@ -3271,6 +3342,7 @@ function destinoAviso(a) {
   if (a.kind === 'uso') return 'data-kind="admin" data-id="uso"';
   if (a.kind === 'ayuda' || a.kind === 'votacion') return `data-kind="encuentro" data-id="${a.grupo_id}" data-foco="${a.kind === 'ayuda' ? a.actor_id : ''}"`;
   if (a.kind === 'grupo_borrado') return 'data-kind="nada" data-id=""';
+  if (a.kind === 'anuncio') return a.reaccion === 'encuentro_nuevo' ? 'data-kind="encuentro_nuevo" data-id="-"' : 'data-kind="nada" data-id=""';
   return `data-kind="ficha" data-id="${a.find_id}"`;
 }
 function caraAviso(a) {
@@ -3297,6 +3369,8 @@ function notificar(html, act, attrs) {
   clearTimeout(tNotif); tNotif = setTimeout(() => el.classList.remove('show'), C.AVISO_MS);
 }
 function cerrarNotif() { const el = $('#notif'); if (el) el.classList.remove('show'); }
+const adminDatos = () => { const a = adminAbierto(); return a ? a.datos : null; };
+function recordarAnuncio(D) { const t = $('#anuncio-in'); if (t) D.nuevo.texto = t.value; }
 async function revisarAvisos() {
   if (!S.user || !S.me || document.hidden || !api.avisos) return;
   let lista;
@@ -3461,15 +3535,51 @@ function usoHTML(u) {
       <div class="stat">${ic('cards')}<div class="v">${u.hallazgos}</div><div class="lbl">hallazgos en total</div></div></div>
     <p class="tiny" style="margin-top:12px">${esc(C.USO_TRANSFERENCIA)}</p>`;
 }
+// Privacidad: primero lo más importante (en negritas), después los detalles
+function datosHTML(conExtra) {
+  return `<div class="datos-clave">${C.DATOS_CLAVE.map((d) => `<p><b>${esc(d.titulo)}</b> ${esc(d.texto)}</p>`).join('')}</div>
+    <h4>${esc(C.DATOS_ADEMAS)}</h4><ul class="datos-mas">${C.DATOS.concat(conExtra ? (C.DATOS_EXTRA || []) : []).map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`;
+}
+/* Anuncios a toda la comunidad: llegan al buzón (también a quien se una después) hasta que terminan o se retiran.
+   La notificación dice solo "Tienes un aviso nuevo". */
+const estadoAnuncio = (a) => (a.retirado ? 'retirado' : a.hasta && new Date(a.hasta) <= new Date() ? 'terminado' : 'activo');
+function anunciosHTML(D) {
+  const N = D.nuevo, primero = D.anuncios && !D.anuncios.length;
+  if (N.texto == null) N.texto = primero ? C.ANUNCIO_PRIMERO : '';
+  const dur = (sel, act, extra = '') => `<div class="chips" style="flex-wrap:wrap">${C.ANUNCIO_DURACIONES.map((d) =>
+    `<button type="button" class="chip ${String(d.dias) === String(sel) ? 'on' : ''}" data-act="${act}" data-v="${d.dias == null ? '' : d.dias}" ${extra}>${esc(d.nombre)}</button>`).join('')}</div>`;
+  const vista = { kind: 'anuncio', texto: N.texto || '…', actor_avatar: S.me.avatar, actor_color: S.me.avatar_color, actor_id: S.user.id };
+  return `<div class="sec" style="margin-top:0"><h3>${ic('speakerphone')} ${esc(C.ANUNCIO_NUEVO)}</h3>
+      <div class="field"><textarea id="anuncio-in" class="in" maxlength="${C.ANUNCIO_MAX}" rows="3" placeholder="${esc(C.ANUNCIO_PISTA)}">${esc(N.texto)}</textarea>
+        <div class="tiny" style="text-align:right"><span id="anuncio-n">${(N.texto || '').length}</span>/${C.ANUNCIO_MAX}</div></div>
+      <div class="field"><label>${ic('pointer')} ${esc(C.ANUNCIO_DESTINO)}</label><div class="toggle" style="display:flex">
+        <button type="button" class="${N.destino ? '' : 'on'}" data-act="anuncio_destino" data-v="" style="flex:1;font-size:14px">${esc(C.ANUNCIO_SIN_DESTINO)}</button>
+        <button type="button" class="${N.destino === 'encuentro_nuevo' ? 'on' : ''}" data-act="anuncio_destino" data-v="encuentro_nuevo" style="flex:1;font-size:14px">${ic('lifebuoy')} ${esc(C.ANUNCIO_DESTINO_ENCUENTRO)}</button></div></div>
+      <div class="field"><label>${ic('clock')} ${esc(C.ANUNCIO_DURACION)}</label>${dur(N.dias, 'anuncio_dias')}</div>
+      <div class="field"><label>${ic('eye')} ${esc(C.ANUNCIO_VISTA)}</label>
+        <div class="li aviso nuevo anuncio-vista">${caraAviso(vista)}<span class="grow">${ic('speakerphone')} <span id="anuncio-vista-t">${esc(vista.texto)}</span></span></div></div>
+      <button class="btn block" data-act="publicar_anuncio">${ic('send')} ${esc(C.ANUNCIO_PUBLICAR)}</button></div>
+    <div class="sec"><h3>${ic('list')} ${esc(C.ANUNCIO_LISTA)}</h3>
+      ${D.anuncios === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.anuncios.length ? `<div class="list">${D.anuncios.map((a) => {
+        const est = estadoAnuncio(a);
+        return `<div class="li anuncio ${est}" style="flex-direction:column;align-items:stretch">
+          <div class="row"><span class="grow">${esc(a.texto)}</span></div>
+          <div class="tiny">${esc(fecha(a.created_at))} · ${esc(C.ANUNCIO_ESTADO[est])}${est === 'activo' ? ` · ${a.hasta ? esc(C.ANUNCIO_HASTA.replace('{f}', fecha(a.hasta))) : esc(C.ANUNCIO_SIN_FIN)}` : ''}</div>
+          ${est === 'retirado' ? '' : `<div class="tiny">${esc(C.ANUNCIO_CAMBIAR)}</div>${dur('ninguna', 'anuncio_cambiar', `data-id="${a.id}"`)}
+          <button class="btn alt sm" data-act="retirar_anuncio" data-id="${a.id}" style="align-self:flex-start">${ic('x')} ${esc(C.ANUNCIO_RETIRAR)}</button>`}</div>`; }).join('')}</div>`
+        : `<p class="muted">${esc(C.ANUNCIO_NINGUNO)}</p>`}</div>`;
+}
 function hojaAdmin(vista) {
-  const D = { vista: vista || 'avisos', avisos: null, bloqueados: [], peticiones: null, uso: null };
+  const D = { vista: vista || 'avisos', avisos: null, bloqueados: [], peticiones: null, uso: null, anuncios: null,
+    nuevo: { texto: null, destino: 'encuentro_nuevo', dias: null } };
   const pendientes = () => (D.peticiones || []).filter((r) => r.status === 'recibido').length;
   const hoja = { render: () => `${cabeza(ic('shield'))}
     <div class="toggle" style="margin-bottom:14px">
       <button type="button" data-act="admin_vista" data-v="avisos" class="${D.vista === 'avisos' ? 'on' : ''}" aria-label="Avisos">${ic('flag')}<span style="font-size:15px">${D.avisos ? D.avisos.length : ''}</span></button>
       <button type="button" data-act="admin_vista" data-v="buzon" class="${D.vista === 'buzon' ? 'on' : ''}" aria-label="${esc(C.AYUDA.buzon)}">${ic('mail')}<span style="font-size:15px">${pendientes() || ''}</span></button>
-      <button type="button" data-act="admin_vista" data-v="uso" class="${D.vista === 'uso' ? 'on' : ''}" aria-label="${esc(C.AYUDA.uso)}" data-tip="${esc(C.AYUDA.uso)}">${ic('gauge')}</button></div>
-    ${D.vista === 'uso' ? usoHTML(D.uso) : D.vista === 'buzon' ? (D.peticiones === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+      <button type="button" data-act="admin_vista" data-v="uso" class="${D.vista === 'uso' ? 'on' : ''}" aria-label="${esc(C.AYUDA.uso)}" data-tip="${esc(C.AYUDA.uso)}">${ic('gauge')}</button>
+      <button type="button" data-act="admin_vista" data-v="anuncios" class="${D.vista === 'anuncios' ? 'on' : ''}" aria-label="${esc(C.AYUDA.anuncios)}" data-tip="${esc(C.AYUDA.anuncios)}">${ic('speakerphone')}</button></div>
+    ${D.vista === 'anuncios' ? anunciosHTML(D) : D.vista === 'uso' ? usoHTML(D.uso) : D.vista === 'buzon' ? (D.peticiones === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
       : D.peticiones.length ? `<div class="list">${D.peticiones.map((r) => peticionHTML(r, true)).join('')}</div>` : `<div class="empty">${ic('mail')}<p>Sin mensajes</p></div>`) : `
     <div class="sec" style="margin-top:0"><h3>${ic('flag')} ${D.avisos ? D.avisos.length : ''}</h3>
     ${!D.avisos ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.avisos.length ? `<div class="list">${D.avisos.map((a) => a.card ? `
@@ -3493,6 +3603,7 @@ function hojaAdmin(vista) {
     } catch (e) { D.avisos = []; fallo(e); }
     try { D.peticiones = await api.allRequests(); } catch (e) { D.peticiones = []; fallo(e); }
     try { D.uso = await api.usoPlan(); } catch (e) { D.uso = { recursos: [] }; fallo(e); }
+    try { D.anuncios = await api.anuncios(); } catch (e) { D.anuncios = []; }
     if (pila.includes(hoja)) dibujarHoja();
   };
   D.cargar();
@@ -3602,11 +3713,6 @@ const ACCIONES = {
     catch (e) { guarda([c]); refrescarFicha(c.id); fallo(e); }
   },
   ir_al_punto(b) { const c = S.cache.get(b.dataset.id); if (!c) return; cerrarTodo(); irAlPunto(c); },
-  quitar_foto(b) {
-    const c = S.cache.get(b.dataset.id); if (!c || !fichaH) return;
-    const fotos = galeria(c, fichaH).filter((h) => h.photo || h.thumb), h = fotos[+b.dataset.i];
-    if (h) quitarFoto(b, c, h);
-  },
   cerrar_guia: () => terminarGuia(),
   // Solo se comparte lo propio: tus hallazgos y tu vitrina
   whatsapp: (b) => { const c = S.cache.get(b.dataset.id); if (c && c.user_id === S.user.id) compartirHallazgo(c, b); },
@@ -3624,6 +3730,8 @@ const ACCIONES = {
   },
   ver_vitrina: (b) => abrirVitrina(b.dataset.id),
   aviso_rapido: (b) => hojaAvisoRapido(b.dataset.id || null),
+  ya_no_esta(b) { const c = S.cache.get(b.dataset.id); if (c) marcarAusencia(b, c); },
+  pista_encuadre: () => aviso(C.ENCUADRE_PISTA, 'arrows-move'),
   reg_enc_modo(b) { recordarFormulario(); R.encModo = b.dataset.v === 'punto' ? 'punto' : 'mira'; dibujarHoja(); },
   aviso_tipo(b) { recordarRapido(); Q.kind = b.dataset.v === 'bien' ? 'bien' : 'ayuda'; dibujarHoja(); },
   aviso_grupo(b) { recordarRapido(); const id = b.dataset.id; if (Q.sel.has(id)) Q.sel.delete(id); else Q.sel.add(id); dibujarHoja(); },
@@ -3780,6 +3888,11 @@ const ACCIONES = {
   ver_mira(b) {
     const D = encuentroActual(), k = D && D.e && D.e.miras.find((x) => x.id === b.dataset.id); if (!k) return;
     D.foco = { lat: k.lat, lng: k.lng }; verMapaEncuentro(D);
+  },
+  enc_mira_abrir(b) {
+    const D = encuentroActual(); if (!D) return;
+    D.miraAbierta = D.miraAbierta === b.dataset.id ? null : b.dataset.id;
+    const el = $('#enc-abajo'); if (el && D.mapa) el.innerHTML = encAbajoHTML(D); else dibujarHoja();
   },
   ver_en_mapa_enc(b) { const D = encuentroActual(); if (!D) return; D.foco = b.dataset.id; verMapaEncuentro(D); },
   enc_tab(b) {
@@ -4048,12 +4161,36 @@ const ACCIONES = {
     if (k === 'nada') return;
     if (!id) return hojaAvisos();
     if (k === 'encuentro') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirEncuentro(id, b.dataset.foco || null); }
+    if (k === 'encuentro_nuevo') { cerrarTodo(); return editarGrupo('', 'encuentro'); }
     if (k === 'perfil') return abrirPerfil(id);
     if (k === 'chat') return hojaChat(id);
     if (k === 'admin') { if (!S.me.is_admin) return; const adm = adminAbierto(); if (adm) { while (hojaArriba() !== adm) pila.pop(); adm.datos.vista = id; dibujarHoja(); return; } return hojaAdmin(id); }
     S.cache.delete(id); abrirFicha(id);
   },
   admin_uso: () => hojaAdmin('uso'),
+  anuncio_destino(b) { const D = adminDatos(); if (!D) return; recordarAnuncio(D); D.nuevo.destino = b.dataset.v || null; dibujarHoja(); },
+  anuncio_dias(b) { const D = adminDatos(); if (!D) return; recordarAnuncio(D); D.nuevo.dias = b.dataset.v ? +b.dataset.v : null; dibujarHoja(); },
+  async publicar_anuncio(b) {
+    const D = adminDatos(); if (!D) return; recordarAnuncio(D);
+    const t = (D.nuevo.texto || '').trim();
+    if (!t) { const x = $('#anuncio-in'); if (x) x.focus(); return aviso(C.ANUNCIO_VACIO, 'speakerphone'); }
+    if (!(await confirmar(C.ANUNCIO_CONFIRMAR, 'speakerphone'))) return;
+    ocupado(b, true);
+    try { await api.publicarAnuncio(t, D.nuevo.destino, D.nuevo.dias); api.dispararPush(); D.nuevo = { texto: '', destino: null, dias: null };
+      D.anuncios = await api.anuncios(); aviso(C.ANUNCIO_LISTO, 'speakerphone'); dibujarHoja(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async anuncio_cambiar(b) {
+    const D = adminDatos(); if (!D) return; recordarAnuncio(D);
+    try { await api.duracionAnuncio(b.dataset.id, b.dataset.v ? +b.dataset.v : null); D.anuncios = await api.anuncios(); aviso(C.ANUNCIO_CAMBIADO, 'clock'); dibujarHoja(); }
+    catch (e) { fallo(e); }
+  },
+  async retirar_anuncio(b) {
+    const D = adminDatos(); if (!D) return; recordarAnuncio(D);
+    if (!(await confirmar(C.ANUNCIO_RETIRAR_CONFIRMAR, 'x'))) return;
+    try { await api.retirarAnuncio(b.dataset.id); D.anuncios = await api.anuncios(); aviso(C.ANUNCIO_RETIRADO, 'x'); dibujarHoja(); }
+    catch (e) { fallo(e); }
+  },
   chat: (b) => hojaChat(b.dataset.id),
   async enviar_mensaje(b) {
     const t = $('#chat-in'), texto = (t ? t.value : '').trim(), top = hojaArriba();
@@ -4161,6 +4298,10 @@ document.addEventListener('click', (ev) => {
 });
 let tBuscar;
 document.addEventListener('input', (ev) => {
+  if (ev.target.id === 'anuncio-in') {
+    const n = $('#anuncio-n'); if (n) n.textContent = ev.target.value.length;
+    const v = $('#anuncio-vista-t'); if (v) v.textContent = ev.target.value || '…';
+  }
   if (ev.target.id === 'coment-in') { if (fichaH) fichaH.borrador = ev.target.value; const n = $('#coment-n'); if (n) n.textContent = ev.target.value.length; }
   if (ev.target.id === 'chat-in') { const top = hojaArriba(); if (top && top.datos) top.datos.borrador = ev.target.value; const n = $('#chat-n'); if (n) n.textContent = ev.target.value.length; }
   if (ev.target.id === 'buzon-in') { const D = $('.sheet') && $('.sheet')._buzon; if (D) D.texto = ev.target.value; const n = $('#buzon-n'); if (n) n.textContent = ev.target.value.length; }

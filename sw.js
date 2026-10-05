@@ -1,11 +1,11 @@
 /* =====================================================================
-   Collector Go · trabajador del teléfono (service worker) · v1.9.2
+   Collector Go · trabajador del teléfono (service worker) · v1.9.3
    1. La app abre al instante y sin conexión (archivos guardados en el teléfono).
    2. Copias para ver sin conexión: datos, fotos (tope ~50 MB) y mapa ya visto.
    3. Notificaciones: el texto es genérico y se escribe aquí, en el teléfono.
    Cada parche cambia VERSION: así el teléfono sabe que hay una versión nueva.
    ===================================================================== */
-const VERSION = '1.9.2';
+const VERSION = '1.9.3';
 self.window = self;
 importScripts('config.js');
 const C = self.CONFIG;
