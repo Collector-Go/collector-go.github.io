@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.9.3',
+  VERSION: '1.9.4',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -96,9 +96,9 @@ window.CONFIG = {
   REACCIONES: [
     { tipo: 'heart', icono: 'heart',      ayuda: 'Me encanta' },
     { tipo: 'flame', icono: 'flame',      ayuda: 'Increíble' },
-    { tipo: 'eye',   icono: 'eye-check',  ayuda: '¡Lo vi!', etiqueta: '¡Lo vi!' },
+    { tipo: 'laugh', icono: 'mood-xd',    ayuda: 'Me da risa' },
     { tipo: 'sad',   icono: 'mood-sad',   ayuda: 'Me entristece' },
-    { tipo: 'angry', icono: 'mood-angry', ayuda: 'Me enoja' }
+    { tipo: 'eye',   icono: 'eye-check',  ayuda: 'Lo vi (solo estando ahí)', etiqueta: 'Lo vi' }
   ],
 
   // Metas del juego
@@ -168,6 +168,69 @@ window.CONFIG = {
   AUSENCIA_SIN_GPS: 'Activa el GPS para marcar que ya no está',
   AUSENCIA_TENUE: 'Varias personas dicen que ya no está',
   AUSENCIA_HISTORIA: 'Ya no está',
+  // Fotos de la comunidad ("Lo vi" y "No está" con foto)
+  COL_NOTA_MAX: 60,
+  COL_TITULO_VISTO: '¡Lo viste!',
+  COL_TITULO_NO_ESTA: 'No está',
+  COL_TEXTO_VISTO: 'Suma una foto de hoy (opcional). La verá la comunidad.',
+  COL_TEXTO_NO_ESTA: 'Foto del lugar (opcional). Queda en la historia y le avisa a quien lo registró.',
+  COL_NOTA: 'Nota (opcional)',
+  COL_GUARDAR_VISTO: 'Sumar mi foto',
+  COL_GUARDAR_NO_ESTA: 'Guardar foto',
+  COL_SIN_FOTO: 'Listo, sin foto',
+  COL_FALTA_FOTO: 'Toma o elige una foto',
+  COL_SEMANA: 'Una foto por persona en cada hallazgo, cada semana.',
+  COL_YA_ESTA_SEMANA: 'Ya sumaste una foto a este hallazgo esta semana.',
+  COL_LISTO_VISTO: 'Tu foto se sumó al hallazgo',
+  COL_LISTO_NO_ESTA: 'La foto quedó en la historia',
+  COL_ETIQUETA: 'Colaboración',
+  COL_DE: 'Foto de {n}',
+  COL_BORRAR: 'Borrar mi foto',
+  COL_BORRAR_CONFIRMAR: '¿Borrar tu foto y tu nota de este hallazgo?',
+  COL_BORRADA: 'Tu foto se borró',
+  COL_YA_NO_ESTA: 'Esa foto ya no está aquí',
+  TIENE_COLABORACIONES: 'Tiene fotos de la comunidad: no puede volverse secreto',
+  COL_REPORTAR: 'Reportar foto',
+  COL_REPORTAR_TEXTO: 'La foto sigue publicada hasta que la administradora la revise.',
+  COL_REPORTAR_MOTIVO: 'Motivo',
+  COL_REPORTAR_ENVIAR: 'Enviar a la administradora',
+  COL_REPORTE_VACIO: 'Escribe el motivo',
+  COL_REPORTE_LISTO: 'Enviado a la administradora',
+  COL_REPORTE_YA: 'Ya habías reportado esta foto',
+  COL_CELEBRA: '¡La comunidad lo encontró!',
+  COL_CELEBRA_TEXTO: '{n} volvió a ver tu {h}',
+  COL_MURO: '{n} lo vio de nuevo · hallazgo de {d}',
+  COL_HISTORIA_VISTO: 'Visto por {n}',
+  COL_MODERACION: 'Fotos de la comunidad reportadas',
+  COL_QUITAR: 'Quitar la foto',
+  COL_QUITAR_CONFIRMAR: '¿Quitar esta foto de la comunidad? Se borra también su nota.',
+  // Hallazgos heredados (traspaso)
+  PERFIL_COLECCIONES: 'Colecciones',
+  TOP_FOTOS: 'Top de los 7 días',
+  TOP_TEXTO: 'Top de los 7 días: reacciones, Lo vi y comentarios de la comunidad.',
+  TOP_VACIO: 'Esta semana todavía no hay fotos con interacción',
+  BLOQUEADA_TITULO: 'Tu cuenta está bloqueada',
+  BLOQUEADA_TEXTO: 'No puedes usar Collector Go con esta cuenta. Si crees que es un error, habla con quien te invitó.',
+  SIN_COLECCION: 'Sin colección',
+  COLOR_SIN_COLECCION: '#8A8278',
+  SIN_COLECCION_ELEGIR: 'Elige en qué colección guardarlo',
+  TRASPASO_AVISO: '{h} ahora es tuyo: {d} borró su registro',
+  BORRAR_CONFIRMAR: '¿Borrar "{h}" y toda su historia?',
+  BORRAR_CONFIRMAR_COL: '¿Borrar "{h}"? Tiene fotos de la comunidad: seguirá con la siguiente persona que lo retrató, sin tu foto ni tus datos.',
+  BORRADO_TRASPASO: 'Borrado. Sigue en la comunidad con otra persona.',
+  // Fichas en PDF
+  PDF_TITULO: 'Descargar fichas',
+  PDF_TEXTO: 'Un PDF con foto, fecha, colonia y coordenadas de cada hallazgo. Se arma en tu teléfono.',
+  PDF_ORDEN: 'Orden',
+  PDF_ORDENES: [{ id: 'antiguos', nombre: 'Antiguos' }, { id: 'recientes', nombre: 'Recientes' }, { id: 'colonia', nombre: 'Colonia' }, { id: 'persona', nombre: 'Persona' }],
+  PDF_CREAR: 'Crear PDF',
+  PDF_PREPARANDO: 'Preparando fotos… {i} de {n}',
+  PDF_GUARDAR: 'Guardar o compartir',
+  PDF_VACIO: 'No hay nada que descargar aquí',
+  PDF_LISTO: 'PDF listo',
+  PDF_SIN_COLONIA: 'Sin colonia',
+  PDF_PIE: 'Descargado de Collector Go el {f}',
+  PDF_PESO: 'unos {m} MB',
   ANUNCIO_MAX: 220,
   ANUNCIO_PRIMERO: 'Nueva función: grupos de encuentro. Dinámicas de exploración, organización y emergencias para tu red de personas. Créalos en Colección → Grupos → +.',
   ANUNCIO_NUEVO: 'Nuevo anuncio',
@@ -301,8 +364,10 @@ window.CONFIG = {
       texto: 'Al registrar eliges el ojo (público: lo ve la comunidad) o el candado (privado: solo tú). Lo de un grupo privado solo lo ven sus miembros.' },
     { icono: 'layout-grid', titulo: 'Muro, seguir y reacciones',
       pasos: ['El Muro muestra lo más reciente. Arriba filtras: todos, personas que sigues o un grupo.', 'Abre un perfil y toca el botón de seguir.'] },
-    { icono: 'eye-check', titulo: '¡Lo vi!',
-      texto: 'Solo se marca estando en el lugar, a menos de 50 m del hallazgo. Es la forma de confirmar que sigue ahí.' },
+    { icono: 'eye-check', titulo: 'Lo vi y No está',
+      texto: 'Solo se marcan estando en el lugar, a menos de 50 m del hallazgo. Al marcarlos puedes sumar una foto de ese día: con "Lo vi" se comparte con la comunidad; con "No está" queda en la historia del hallazgo. Una foto por hallazgo cada semana.' },
+    { icono: 'download', titulo: 'Descargar fichas',
+      texto: 'En tu colección (o dentro de un grupo) toca el botón de descarga: obtienes un PDF con cada hallazgo, su foto, fecha, lugar y coordenadas. Ábrelo con la app de archivos de tu teléfono o mándalo por WhatsApp o correo.' },
     { icono: 'mail-heart', titulo: 'Buzón',
       texto: 'Si se siguen mutuamente, pueden escribirse en el buzón. Puedes etiquetar en un hallazgo a quien sigues o te sigue.' },
     { icono: 'volume-off', titulo: 'Silenciar',
@@ -334,7 +399,7 @@ window.CONFIG = {
     'Los datos se guardan en Supabase. Google solo confirma quién eres al entrar. OpenStreetMap dibuja el mapa y recibe las coordenadas para saber el nombre de la colonia. El recorte de fondo se hace en tu teléfono.',
     'Si compartes tu vitrina por WhatsApp, quien reciba el enlace puede ver esas fotos públicas sin tener cuenta.',
     'Las notificaciones solo dicen algo general.',
-    'Al marcar "¡Lo vi!" o "¡Ya no está!", tu ubicación solo se usa para comprobar que estás cerca y no se guarda.',
+    'Al marcar "Lo vi" o "No está", tu ubicación solo se usa para comprobar que estás cerca y no se guarda.',
     'Si compartes tu ubicación con un grupo de encuentro, solo se guarda tu último punto, y se borra al terminar el tiempo.',
     'Los mensajes del buzón solo los ven las dos personas de la conversación.',
     'Las copias para usar sin conexión viven en tu teléfono y se borran al cerrar sesión.',
@@ -530,6 +595,6 @@ window.CONFIG = {
     principal: 'Hacer punto principal', borrar_lo_mio: 'Borrar lo mío', votar_borrado: 'Proponer borrar el grupo', quitar_voto: 'Retirar mi voto',
     eliminar_inactivo: 'Eliminar por inactividad', refrescar: 'Actualizar', ver_en_mapa: 'Ver en el mapa', miembro: 'Opciones de esta persona',
     coadmin: 'Coadministradora', duena: 'Creó el grupo', dejar_compartir: 'Dejar de compartir', subir_ahora: 'Subir ahora',
-    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', anuncios: 'Anuncios a la comunidad', ausencia: '¡Ya no está!', ausencia_ayuda: 'Ya no está en el lugar (solo estando ahí)', capa_encuentro: 'Ver u ocultar el grupo en el mapa', col_mosaico: 'Ver todas las colecciones', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
+    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', anuncios: 'Anuncios a la comunidad', ausencia: 'No está', ausencia_ayuda: 'Ya no está en el lugar (solo estando ahí)', capa_encuentro: 'Ver u ocultar el grupo en el mapa', col_mosaico: 'Ver todas las colecciones', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
   }
 };

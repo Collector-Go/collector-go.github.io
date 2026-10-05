@@ -83,6 +83,8 @@ function uuid() {
   if (crypto.randomUUID) return crypto.randomUUID();
   return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
 }
+// Una ruta de foto nunca puede salirse del atributo donde se escribe
+const rutaSegura = (t) => String(t || '').replace(/["'<>`\s\\]/g, (c) => encodeURIComponent(c));
 const errTexto = (e) => String((e && (e.message || e.code)) || e || '');
 function mensajeError(e) {
   const m = errTexto(e);
@@ -99,6 +101,7 @@ function mensajeError(e) {
   if (m.includes('messages_body_check')) return `Máximo ${C.MENSAJE_MAX} caracteres`;
   if (m.includes('"messages"')) return C.CHAT_BLOQUEADO;
   if (m.includes('NOMBRE_REPETIDO')) return 'Ese nombre ya existe aquí';
+  if (m.includes('TIENE_COLABORACIONES')) return C.TIENE_COLABORACIONES;
   if (m.includes('MAX_COMENTARIOS')) return `Máximo ${C.COMENTARIOS_POR_PERSONA} comentarios por hallazgo`;
   if (m.includes('comments_body_check')) return `Máximo ${C.COMENTARIO_MAX} caracteres`;
   if (m.includes('INVITACION_INVALIDA')) return 'Esa invitación ya no es válida';
@@ -229,6 +232,15 @@ function supabaseApi() {
     marcarVisto: (findId, p) => sb.rpc('marcar_visto', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
     marcarAusencia: (findId, p) => sb.rpc('marcar_ausencia', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
     historiaAusencias: (findId) => sb.rpc('historia_ausencias', { fid: findId }).then(ok),
+    puedoColaborar: (findId) => sb.rpc('puedo_colaborar', { hallazgo: findId }).then(ok),
+    colaborar: (findId, tipo, p, photo, thumb, nota) => sb.rpc('colaborar', { hallazgo: findId, p_tipo: tipo, lat: p.lat, lng: p.lng,
+      precision_m: p.acc == null ? 999 : p.acc, p_photo: photo, p_thumb: thumb, p_nota: nota || null }).then(ok),
+    delSighting: (id) => sb.from('sightings').delete().eq('id', id).select('id').then(ok),
+    reportarColaboracion: (sid, motivo) => sb.from('reportes_colaboracion').insert({ sighting_id: sid, motivo }).then(ok),
+    reportesColaboracion: () => sb.from('reporte_colaboracion_cards').select('*').order('created_at', { ascending: false }).then(ok).then(firmar),
+    descartarReporteColaboracion: (id) => sb.from('reportes_colaboracion').delete().eq('id', id).then(ok),
+    borrarHallazgo: (findId) => sb.rpc('borrar_hallazgo', { fid: findId }).then(ok),
+    sightingsDe: (ids) => (ids.length ? sb.from('sighting_cards').select('*').in('find_id', ids).order('created_at').then(ok).then(firmar) : Promise.resolve([])),
     anuncios: () => sb.from('anuncios').select('*').order('created_at', { ascending: false }).then(ok),
     publicarAnuncio: (texto, destino, dias) => sb.rpc('publicar_anuncio', { p_texto: texto, p_destino: destino || null, p_dias: dias || null }).then(ok),
     duracionAnuncio: (id, dias) => sb.rpc('duracion_anuncio', { p_id: id, p_dias: dias || null }).then(ok),
@@ -250,6 +262,7 @@ function supabaseApi() {
     report: (findId) => sb.from('reports').insert({ find_id: findId }).then(ok),
     stats: (uid) => sb.rpc('profile_stats', { p_uid: uid, tz: C.ZONA_HORARIA }).then(ok),
     leaderboard: (metric, grupo) => sb.rpc('leaderboard', { metric, lim: 30, grupo: grupo || null }).then(ok),
+    topFotos: (grupo) => sb.rpc('top_fotos', { grupo: grupo || null }).then(ok),
     following: (uid) => sb.from('follows').select('followee').eq('follower', uid).then(ok).then((r) => r.map((x) => x.followee)),
     follow(uid, on, me) {
       return on ? sb.from('follows').insert({ followee: uid }).then(ok)
@@ -311,8 +324,8 @@ function supabaseApi() {
       ok(await sb.rpc('delete_my_account'));
       await sb.auth.signOut().catch(() => null);
     },
-    photoUrl: (path) => (!path ? '' : String(path).startsWith('priv:') ? (URLS.get(path) || '')
-      : `${C.SUPABASE_URL}/storage/v1/object/public/fotos/${path}`),
+    photoUrl: (path) => (!path ? '' : String(path).startsWith('priv:') ? rutaSegura(URLS.get(path) || '')
+      : `${C.SUPABASE_URL}/storage/v1/object/public/fotos/${rutaSegura(path)}`),
     async colonia(lat, lng) {
       try {
         const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 4000);
@@ -379,7 +392,12 @@ const S = {
   map: null, capa: null, yo: null, mini: null, arrancando: false,
   mutes: [], avisos: [], avisosVistos: new Set(), avisosListo: false
 };
-const guarda = (arr) => { (arr || []).forEach((c) => S.cache.set(c.id, c)); return arr || []; };
+// Un hallazgo heredado llega sin colección: se ve con "?" hasta que su nueva dueña elija una
+function sinColeccion(c) {
+  if (c && !c.category_id && !c.group_id && !c.cat_icon) Object.assign(c, { cat_name: '?', cat_icon: 'question-mark', cat_color: C.COLOR_SIN_COLECCION });
+  return c;
+}
+const guarda = (arr) => { (arr || []).forEach((c) => S.cache.set(c.id, sinColeccion(c))); return arr || []; };
 const foto = (c, mini) => api.photoUrl(mini ? (c.thumb || c.photo) : (c.photo || c.thumb));
 const miGrupo = (gid) => S.groups.find((g) => g.id === gid);
 const esEncuentro = (g) => !!(g && g.tipo === 'encuentro');
@@ -763,7 +781,7 @@ async function marcarVisto(btn, c) {
       guarda([Object.assign({}, c, { reactions: rs, my_reactions: (c.my_reactions || []).concat('eye'), ausencias: 0 })]);
       refrescarFicha(c.id);
       $$(`[data-act="reaccion"][data-id="${c.id}"][data-v="eye"]`).forEach((x) => x.classList.add('visto-ok'));
-      return aviso(C.VISTO_OK, 'eye-check');
+      return ofrecerFotoCol(c, 'visto', C.VISTO_OK);
     }
     const lejos = r && r.motivo === 'lejos';
     abrirHoja(() => `${cabeza(`${ic('eye-check')} ${esc(C.AYUDA.visto)}`)}
@@ -787,7 +805,7 @@ async function marcarAusencia(btn, c) {
       if (fichaH && fichaH.id === c.id) fichaH.cargar();
       refrescarFicha(c.id);
       if (S.tab === 'map') cargarPines();
-      return aviso(C.AUSENCIA_OK, 'map-pin-off');
+      return ofrecerFotoCol(c, 'no_esta', C.AUSENCIA_OK);
     }
     const lejos = r && r.motivo === 'lejos';
     abrirHoja(() => `${cabeza(`${ic('map-pin-off')} ${esc(C.AYUDA.ausencia)}`)}
@@ -797,6 +815,120 @@ async function marcarAusencia(btn, c) {
   } catch (e) { ocupado(btn, false); fallo(e); }
 }
 const atenuado = (c) => (c.ausencias || 0) >= C.AUSENCIAS_ATENUAR;
+
+/* Fotos de la comunidad: al marcar "Lo vi" o "No está" estando en el lugar se puede sumar una foto de ese día.
+   Una por persona en cada hallazgo, cada semana. Se guarda con la ubicación del hallazgo, no la del teléfono. */
+const K = {};
+async function ofrecerFotoCol(c, tipo, textoOk) {
+  let puede = false;
+  if (!c.is_private && navigator.onLine) { try { puede = await api.puedoColaborar(c.id); } catch (e) { puede = false; } }
+  if (!puede) return aviso(textoOk, tipo === 'visto' ? 'eye-check' : 'map-pin-off');
+  limpiarCol();
+  Object.assign(K, { fid: c.id, tipo, foto: null, enc: null, vistaUrl: null, nota: '' });
+  abrirHoja(colHTML, montarCol, 'colaborar');
+}
+function limpiarCol() {
+  if (K.vistaUrl) URL.revokeObjectURL(K.vistaUrl);
+  if (K.enc) soltarLienzo(K.enc.img);
+  Object.assign(K, { foto: null, enc: null, vistaUrl: null });
+}
+function colHTML() {
+  const visto = K.tipo === 'visto';
+  return `${cabeza(`${ic(visto ? 'eye-check' : 'map-pin-off')} ${esc(visto ? C.COL_TITULO_VISTO : C.COL_TITULO_NO_ESTA)}`)}
+    <p class="tiny" style="margin:0 0 12px">${esc(visto ? C.COL_TEXTO_VISTO : C.COL_TEXTO_NO_ESTA)}</p>
+    <div class="col-foto" style="margin-bottom:12px">
+      <label class="ib" data-tip="${esc(C.AYUDA.camara)}" aria-label="${esc(C.AYUDA.camara)}">${ic('camera')}<input type="file" accept="image/*" capture="environment" hidden data-in="foto-col"></label>
+      <label class="ib" data-tip="${esc(C.AYUDA.galeria)}" aria-label="${esc(C.AYUDA.galeria)}">${ic('upload')}<input type="file" accept="image/*" hidden data-in="foto-col"></label>
+      ${K.foto ? `<button type="button" class="foto-mini" data-act="encuadrar_col" data-tip="${esc(C.AYUDA.encuadrar)}" aria-label="${esc(C.AYUDA.encuadrar)}"><img id="vista-col" src="${K.vistaUrl}" alt=""></button>${ib('quitar_foto_col', 'x', 'quitar_captura', '', 'sm')}` : ''}
+    </div>
+    <label class="campo-ic">${ic('pencil')}<textarea id="col-nota" class="in compacto crece" rows="1" maxlength="${C.COL_NOTA_MAX}" placeholder="${esc(C.COL_NOTA)}" aria-label="${esc(C.COL_NOTA)}">${esc(K.nota)}</textarea></label>
+    <button class="btn block" data-act="col_guardar" style="margin-top:12px">${ic(visto ? 'camera' : 'map-pin-off')} ${esc(visto ? C.COL_GUARDAR_VISTO : C.COL_GUARDAR_NO_ESTA)}</button>
+    <button class="btn alt block" data-act="cerrar" style="margin-top:8px">${ic('check')} ${esc(C.COL_SIN_FOTO)}</button>
+    <p class="tiny" style="text-align:center">${esc(C.COL_SEMANA)}</p>`;
+}
+function montarCol(raiz) {
+  $$('[data-in="foto-col"]', raiz).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && tomarFotoCol(inp.files[0])));
+}
+function recordarCol() { const t = $('#col-nota'); if (t) K.nota = t.value; }
+async function cuadroCol() {
+  const E = K.enc; if (!E) return;
+  E.sucio = false;
+  const cv = cuadroDe(E, C.FOTO_LADO), b = await lienzoABlob(cv, C.FOTO_CALIDAD, false);
+  soltarLienzo(cv);
+  if (K.enc !== E) return;
+  K.foto = b;
+  if (K.vistaUrl) URL.revokeObjectURL(K.vistaUrl);
+  K.vistaUrl = URL.createObjectURL(b);
+  const v = $('#vista-col'); if (v) v.src = K.vistaUrl;
+}
+async function tomarFotoCol(file) {
+  try {
+    recordarCol();
+    const img = await cargarImagen(file);
+    if (K.enc) soltarLienzo(K.enc.img);
+    K.enc = nuevoEncuadre(escalar(img, C.ENCUADRE_FUENTE));
+    await cuadroCol();
+    dibujarHoja();
+    hojaEncuadre(K.enc, async () => { await cuadroCol(); });
+  } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
+}
+async function guardarCol(btn) {
+  recordarCol();
+  if (!K.foto) return aviso(C.COL_FALTA_FOTO, 'camera');
+  const visto = K.tipo === 'visto';
+  ocupado(btn, true);
+  if (K.enc && K.enc.sucio) await cuadroCol();
+  let p;
+  try { p = await getPos(); } catch (e) { ocupado(btn, false); return aviso(visto ? C.VISTO_SIN_GPS : C.AUSENCIA_SIN_GPS, 'current-location'); }
+  let sub = null;
+  try {
+    const fotos = await fotosDe(K.foto);
+    sub = await subirFotosDe(fotos, S.user.id);
+    const r = await api.colaborar(K.fid, K.tipo, p, sub.pFoto, sub.pMini, (K.nota || '').trim().slice(0, C.COL_NOTA_MAX));
+    if (!r || !r.ok) {
+      api.removeFiles([sub.pFoto, sub.pMini]).catch(() => null);
+      ocupado(btn, false);
+      if (r && r.motivo === 'semana') return aviso(C.COL_YA_ESTA_SEMANA, 'calendar');
+      if (r && r.motivo === 'lejos') return aviso((visto ? C.VISTO_LEJOS : C.AUSENCIA_LEJOS).replace('{d}', metros(r.distancia)), 'navigation');
+      return aviso(visto ? C.VISTO_APROXIMADA : C.AUSENCIA_APROXIMADA, 'current-location');
+    }
+    const fid = K.fid;
+    limpiarCol(); cerrarHoja();
+    aviso(visto ? C.COL_LISTO_VISTO : C.COL_LISTO_NO_ESTA, visto ? 'camera' : 'map-pin-off');
+    const nueva = await api.card(fid).catch(() => null); if (nueva) guarda([nueva]);
+    S.feed = [];
+    if (fichaH && fichaH.id === fid) await fichaH.cargar();
+    refrescarFicha(fid);
+  } catch (e) {
+    if (sub && sub.pFoto) api.removeFiles([sub.pFoto, sub.pMini]).catch(() => null);
+    ocupado(btn, false); fallo(e);
+  }
+}
+// Quien subió una foto de la comunidad la puede borrar completa (foto y nota)
+async function borrarColaboracion(btn, sid, fid) {
+  const h = fichaH && (fichaH.lista || []).find((x) => x.id === sid);
+  if (!h || h.user_id !== S.user.id) return;
+  if (!(await confirmar(C.COL_BORRAR_CONFIRMAR, 'trash', api.photoUrl(h.thumb || h.photo)))) return;
+  ocupado(btn, true);
+  try {
+    const borradas = await api.delSighting(sid);
+    if (!borradas || !borradas.length) { ocupado(btn, false); await fichaH.cargar(); refrescarFicha(fid); return aviso(C.COL_YA_NO_ESTA, 'alert-triangle'); }
+    await api.removeFiles([h.photo, h.thumb]).catch(() => null);
+    const nueva = await api.card(fid).catch(() => null); if (nueva) guarda([nueva]);
+    S.feed = []; fichaH.i = 0; await fichaH.cargar(); refrescarFicha(fid);
+    aviso(C.COL_BORRADA, 'trash');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+// Quien registró el hallazgo no borra fotos ajenas: las reporta con un motivo y decide la administradora
+function hojaReportarColaboracion(sid) {
+  const h = fichaH && (fichaH.lista || []).find((x) => x.id === sid); if (!h) return;
+  abrirHoja(() => `${cabeza(`${ic('flag')} ${esc(C.COL_REPORTAR)}`)}
+    <div class="row" style="gap:12px;margin-bottom:10px"><img class="thumb" src="${api.photoUrl(h.thumb || h.photo)}" alt="" style="width:84px;height:84px">
+      <span class="tiny">${esc(C.COL_DE.replace('{n}', h.user_name || ''))} · ${esc(fecha(h.created_at))}</span></div>
+    <label class="campo-ic">${ic('pencil')}<textarea id="col-motivo" class="in compacto crece" rows="2" maxlength="200" placeholder="${esc(C.COL_REPORTAR_MOTIVO)}" aria-label="${esc(C.COL_REPORTAR_MOTIVO)}"></textarea></label>
+    <p class="tiny">${esc(C.COL_REPORTAR_TEXTO)}</p>
+    <button class="btn block" data-act="col_reporte_enviar" data-id="${sid}">${ic('send')} ${esc(C.COL_REPORTAR_ENVIAR)}</button>`, null, 'reportar_col');
+}
 
 /* Ir al punto: el mapa de la app lleva hasta un hallazgo. La distancia y la dirección
    se calculan en el teléfono; la ubicación no se envía a ningún servicio de mapas. */
@@ -938,12 +1070,13 @@ function refrescarActual() { if (S.tab === 'map') cargarPines(); else if ($('#sc
 /* Muro */
 function reaccionesHTML(c) {
   const propio = c.user_id === S.user.id;
+  const noEsta = puedoMarcarAusencia(c) ? `<button class="react con-texto ausencia ${atenuado(c) ? 'on' : ''}" data-act="ya_no_esta" data-id="${c.id}" data-tip="${esc(C.AYUDA.ausencia_ayuda)}" aria-label="${esc(C.AYUDA.ausencia_ayuda)}">${ic('map-pin-off')}<span class="react-lbl">${esc(C.AYUDA.ausencia)}</span>${c.ausencias ? `<span class="n">${c.ausencias}</span>` : ''}</button>` : '';
   return `<div class="reacts">${C.REACCIONES.map((r) => {
     const n = (c.reactions || {})[r.tipo] || 0, mia = (c.my_reactions || []).includes(r.tipo);
     const cara = `${ic(r.icono)}${r.etiqueta ? `<span class="react-lbl">${esc(r.etiqueta)}</span>` : ''}${n ? `<span class="n">${n}</span>` : ''}`;
     if (propio || c.is_private) return n ? `<span class="react ${r.etiqueta ? 'con-texto' : ''}" data-tip="${esc(r.ayuda)}">${cara}</span>` : '';
     return `<button class="react ${r.etiqueta ? 'con-texto' : ''} ${mia ? 'on' : ''}" data-act="reaccion" data-id="${c.id}" data-v="${r.tipo}" data-tip="${esc(r.ayuda)}" aria-label="${esc(r.ayuda)}">${cara}</button>`;
-  }).join('')}</div>`;
+  }).join('')}${noEsta}</div>`;
 }
 function tarjeta(c) {
   return `<article class="card" data-card="${c.id}">
@@ -956,11 +1089,13 @@ function tarjeta(c) {
 }
 // Novedad del Muro: un reencuentro con foto nueva
 function tarjetaReencuentro(it) {
-  return `<article class="card novedad" data-item="${it.item_id}">
-    <div class="body row"><button class="row grow" data-act="perfil" data-id="${it.actor_id}" style="text-align:left">${avatar({ avatar: it.actor_avatar, avatar_color: it.actor_color })}<b class="grow">${esc(it.actor_name)}</b></button>${etiquetaDe(it)}</div>
-    <img class="photo" src="${api.photoUrl(it.thumb || it.photo)}" alt="${esc(it.name)}" loading="lazy" data-act="ficha" data-id="${it.find_id}">
+  const col = it.tipo === 'visto' && it.actor_id !== it.owner_id;
+  return `<article class="card novedad ${col ? 'colaboracion' : ''}" data-item="${it.item_id}">
+    <div class="body row"><button class="row grow" data-act="perfil" data-id="${it.actor_id}" style="text-align:left">${avatar({ avatar: it.actor_avatar, avatar_color: it.actor_color })}<b class="grow">${esc(it.actor_name)}</b></button>${col ? `<span class="catb col-chip">${ic('users')}${esc(C.COL_ETIQUETA)}</span>` : etiquetaDe(it)}</div>
+    <img class="photo" src="${api.photoUrl(it.thumb || it.photo)}" alt="${esc(it.name)}" loading="lazy" data-act="ficha" data-id="${it.find_id}" data-s="${it.item_id}">
     <div class="body"><h3>${esc(it.name)}</h3>
-      <div class="tiny row">${ic('repeat')} Visto de nuevo · ${it.vez}ª vez${it.colonia ? ` · ${esc(it.colonia)}` : ''} · ${hace(it.at)}</div></div></article>`;
+      <div class="tiny row">${col ? `${ic('eye-check')} ${esc(C.COL_MURO.replace('{n}', it.actor_name).replace('{d}', it.owner_name || ''))}` : `${ic('repeat')} Visto de nuevo · ${it.vez}ª vez`}${it.colonia ? ` · ${esc(it.colonia)}` : ''} · ${hace(it.at)}</div>
+      ${col && it.nota ? `<div class="nota-col">«${esc(it.nota)}»</div>` : ''}</div></article>`;
 }
 // Convierte una novedad de tipo "hallazgo" en tarjeta (sin ubicación: la ficha la pide completa)
 function cartaDeNovedad(it) {
@@ -983,6 +1118,7 @@ async function pintarMuro(masViejo) {
   try {
     const antes = S.feed.length ? S.feed[S.feed.length - 1].at : null;
     const lote = await api.feed(antes, opcionesFiltro(S.muro));
+    lote.forEach(sinColeccion);
     lote.forEach((it) => { if (it.kind === 'find') { const ya = S.cache.get(it.find_id); S.cache.set(it.find_id, ya && !ya.parcial ? Object.assign({}, ya, { reactions: it.reactions, my_reactions: it.my_reactions }) : cartaDeNovedad(it)); } });
     S.feed = S.feed.concat(lote);
     if (lote.length < 20) S.feedFin = true;
@@ -1008,7 +1144,8 @@ function filaColecciones(total, cuenta) {
   const fila = abierta
     ? `<div class="col-fila abierta">${mosaico}${todas(true)}${S.cats.map((c) => `<button type="button" class="chip cc ico ${sel === c.id ? 'on' : ''}" style="--c:${okColor(c.color)}" data-act="colcat" data-v="${c.id}" data-tip="${esc(c.name)}" aria-label="${esc(c.name)}">${ic(c.icon)}</button>`).join('')}</div>`
     : `<div class="col-fila">${mosaico}<div class="chips una-fila">${todas(false)}${S.cats.map((c) => chipColor('colcat', c.id, c.name, c.icon, c.color, sel === c.id)).join('')}</div></div>`;
-  return `${fila}<div class="tiny col-total">${esc(cat ? cat.name : C.COL_TODAS)} · ${cat ? cuenta(cat.id) : total} ${esc(C.COL_HALLAZGOS)}</div>`;
+  return `${fila}<div class="row between col-total-fila"><div class="tiny col-total">${esc(cat ? cat.name : C.COL_TODAS)} · ${cat ? cuenta(cat.id) : total} ${esc(C.COL_HALLAZGOS)}</div>
+    ${total ? ib('descargar_fichas', 'download', C.PDF_TITULO, `data-tipo="coleccion" data-id="${sel || ''}"`, 'sm') : ''}</div>`;
 }
 // "rapido": al elegir una colección o abrir el mosaico se usa lo ya cargado, sin volver a pedirlo ni parpadear
 async function pintarColeccion(rapido) {
@@ -1081,18 +1218,45 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
       <div class="stat" data-tip="Reencuentros">${ic('repeat')}<div class="v">${st.reencuentros || 0}</div><div class="lbl">reencuentros</div></div>
       <div class="stat" data-tip="Reacciones recibidas">${ic('heart')}<div class="v">${st.reacciones || 0}</div><div class="lbl">reacciones</div></div>
     </div>
+    ${!propio && tarjetas ? coleccionesPersona(p, st, tarjetas) : ''}
     <div class="sec"><h3>${ic('medal')} Medallas por categoría</h3><div class="list">${porCat || '<div class="muted">—</div>'}</div></div>
     ${(st.premios_grupos || []).length ? `<div class="sec"><h3>${ic('users')} Medallas en grupos</h3><div class="list">${(st.premios_grupos || []).map((g) => `<div class="li" style="flex-direction:column;align-items:stretch">
       <div class="row between">${catBadge(g.name, g.icon, g.color)}<span class="muted">${g.total} ${g.total === 1 ? 'hallazgo' : 'hallazgos'}</span></div>
       <div class="medals">${ls.filter((l) => l.tipo === 'grupo' && l.grupo === g.id).map(medalla).join('')}</div></div>`).join('')}</div></div>` : ''}
-    <div class="sec"><h3>${ic('map-pin')} ${esc(C.TITULOS_MEDALLAS.col)}</h3><div class="medals">${grupo('col')}</div>
+    ${propio ? `<div class="sec"><h3>${ic('map-pin')} ${esc(C.TITULOS_MEDALLAS.col)}</h3><div class="medals">${grupo('col')}</div>
       <div class="chips" style="flex-wrap:wrap;margin-top:10px">${(st.colonias || []).map((c) => `<span class="chip" data-tip="${esc(fecha(c.first_at))}">${esc(c.colonia)} · ${c.n}</span>`).join('')}</div></div>
     <div class="sec"><h3>${ic('flame')} ${esc(C.TITULOS_MEDALLAS.racha)}</h3><div class="medals">${grupo('racha')}</div></div>
-    <div class="sec"><h3>${ic('repeat')} ${esc(C.TITULOS_MEDALLAS.reen)}</h3><div class="medals">${grupo('reen')}</div></div>
-    ${tarjetas ? `<div class="sec"><h3>${ic('cards')} ${tarjetas.length}</h3>${tarjetas.length ? rejilla(tarjetas, false) : '<div class="muted">—</div>'}</div>` : ''}
+    <div class="sec"><h3>${ic('repeat')} ${esc(C.TITULOS_MEDALLAS.reen)}</h3><div class="medals">${grupo('reen')}</div></div>` : ''}
     ${propio ? `<div class="sec" id="sec-notif"></div><div class="sec" id="sec-offline"></div>` : ''}
     ${propio ? `<div style="text-align:center;margin-top:30px"><button class="linkbtn" data-act="borrar_cuenta">${ic('trash')} ${esc(C.AYUDA.borrar_cuenta)}</button>
       <p class="tiny">Collector Go · v${esc(C.VERSION)}</p></div>` : ''}`;
+}
+let ultimaPersona = null;
+// Lo que una persona heredó sin colección ("?")
+function hojaSinColeccion(uid) {
+  const l = ultimaPersona && ultimaPersona.uid === uid ? ultimaPersona.cards.filter((x) => !x.category_id && !x.group_id) : [];
+  abrirHoja(() => `${cabeza(catBadge('?', 'question-mark', C.COLOR_SIN_COLECCION))}${l.length ? rejilla(l, false) : `<div class="empty">${ic('photo')}<p>${esc(C.GALERIA_VACIA)}</p></div>`}`, null, 'sin_coleccion');
+}
+// Perfil de otra persona: sus colecciones con sus fotos públicas más recientes; cada una abre su galería
+function coleccionesPersona(p, st, cards) {
+  const cols = (st.categorias || []).map((c) => {
+    const suyas = cards.filter((x) => x.category_id === c.id);
+    return { c, n: suyas.length, fotos: suyas.filter((x) => x.thumb || x.photo) };
+  }).filter((x) => x.n);
+  // Sus hallazgos en grupos que puedes ver y lo que heredó sin colección
+  const grupos = {};
+  cards.filter((x) => x.group_id).forEach((x) => { (grupos[x.group_id] = grupos[x.group_id] || { g: { id: x.group_id, name: x.cat_name, icon: x.cat_icon, color: x.cat_color }, l: [] }).l.push(x); });
+  Object.values(grupos).forEach(({ g, l }) => cols.push({ c: g, n: l.length, fotos: l.filter((x) => x.thumb || x.photo), grupo: true }));
+  const sin = cards.filter((x) => !x.category_id && !x.group_id);
+  if (sin.length) cols.push({ c: { id: '', name: '?', icon: 'question-mark', color: C.COLOR_SIN_COLECCION }, n: sin.length, fotos: sin.filter((x) => x.thumb || x.photo), sinCol: true });
+  ultimaPersona = { uid: p.id, cards };
+  if (!cols.length) return '';
+  return `<div class="sec"><h3>${ic('cards')} ${esc(C.PERFIL_COLECCIONES)}</h3><div class="colecciones-persona">${cols.map(({ c, n, fotos, grupo, sinCol }) => {
+    const ver = fotos.length >= 4 ? fotos.slice(0, 4) : fotos.slice(0, 1);
+    const destino = grupo ? `data-act="grupo" data-id="${c.id}"` : sinCol ? `data-act="persona_sin_col" data-id="${p.id}"` : `data-act="galeria_cat" data-id="${p.id}" data-cat="${c.id}"`;
+    return `<button class="col-portada" ${destino} aria-label="${esc(c.name)}">
+      <span class="portada ${ver.length < 4 ? 'una' : ''}">${ver.map((x) => `<img src="${foto(x, true)}" alt="" loading="lazy">`).join('') || '<span></span>'}</span>
+      ${catBadge(c.name, c.icon, c.color)}<span class="tiny">${n} ${n === 1 ? 'hallazgo' : 'hallazgos'}</span></button>`; }).join('')}</div></div>`;
 }
 async function pintarPerfil() {
   const scr = $('#scr');
@@ -1161,14 +1325,14 @@ function avisarPrecision(p, forzar) {
    --------------------------------------------------------------------- */
 /* Ficha de un hallazgo con su historia */
 let fichaH = null; // historia de la ficha abierta (para la galería)
-async function abrirFicha(id) {
+async function abrirFicha(id, op) {
   let c = S.cache.get(id);
   if (!c || c.parcial) {
     try { c = await api.card(id); } catch (e) { return fallo(e); }
     if (!c) return aviso('Este hallazgo no está disponible', 'alert-triangle');
     guarda([c]);
   }
-  const H = { id, lista: null, i: 0 };
+  const H = { id, lista: null, i: 0, foto: op && op.foto };
   fichaH = H;
   abrirHoja(() => fichaHTML(S.cache.get(id) || c, H), (raiz) => montarFicha(raiz, S.cache.get(id) || c, H), 'ficha');
   H.cargar = async () => {
@@ -1177,6 +1341,7 @@ async function abrirFicha(id) {
       const [lista, coms, aus] = await Promise.all([api.history(id), cc.is_private ? Promise.resolve([]) : api.comments(id),
         api.historiaAusencias(id).catch(() => [])]);
       H.lista = lista; H.coms = coms; H.aus = aus || [];
+      if (H.foto) { const i = galeria(S.cache.get(id) || cc, H).filter((h) => h.photo || h.thumb).findIndex((h) => h.id === H.foto); if (i > 0) H.i = i; H.foto = null; }
     } catch (e) { H.lista = H.lista || []; H.coms = H.coms || []; H.aus = H.aus || []; }
     const top = hojaArriba(); if (top && top.tipo === 'ficha' && pila.includes(top)) dibujarHoja();
   };
@@ -1207,10 +1372,24 @@ function comentariosHTML(c, H) {
 
 // Todas las fotos del sujeto: la más reciente primero
 function galeria(c, H) {
-  const inicial = { photo: c.photo, thumb: c.thumb, created_at: c.created_at, colonia: c.colonia, lat: c.lat, lng: c.lng, user_name: c.user_name, inicial: true };
-  const todas = (H.lista || []).concat([inicial]).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-  return todas;
+  const inicial = { photo: c.photo, thumb: c.thumb, created_at: c.created_at, colonia: c.colonia, lat: c.lat, lng: c.lng, user_name: c.user_name, user_id: c.user_id, inicial: true };
+  const resto = (H.lista || []).slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  return [inicial].concat(resto);
 }
+// Debajo de una foto que no es la original: de quién es, cuándo, su nota y qué se puede hacer con ella
+function pieFoto(c, h) {
+  if (!h || h.inicial) return '';
+  const quien = h.tipo === 'no_esta' ? `${ic('map-pin-off')} ${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}`
+    : h.tipo === 'visto' ? `${ic('users')} ${esc(C.COL_DE.replace('{n}', h.user_name || ''))}`
+    : `${ic('repeat')} ${esc(c.group_id && h.user_name ? h.user_name : C.AYUDA.reencuentro)}`;
+  const mia = h.user_id === S.user.id && c.user_id !== S.user.id;
+  const ajenaEnLoMio = c.user_id === S.user.id && h.user_id && h.user_id !== S.user.id;
+  return `<div class="foto-pie"><span class="grow">${quien} · ${esc(fecha(h.created_at))}${h.note ? ` · «${esc(h.note)}»` : ''}</span>
+    ${mia ? `<button class="linkbtn" data-act="col_borrar" data-id="${h.id}" data-f="${c.id}">${ic('trash')} ${esc(C.COL_BORRAR)}</button>` : ''}
+    ${ajenaEnLoMio ? `<button class="linkbtn" data-act="col_reportar" data-id="${h.id}">${ic('flag')} ${esc(C.COL_REPORTAR)}</button>` : ''}</div>`;
+}
+const marcaFoto = (f) => (f.tipo === 'visto' ? `<span class="marca-col" aria-hidden="true">${ic('users')}</span>`
+  : f.tipo === 'no_esta' ? `<span class="marca-col no-esta" aria-hidden="true">${ic('map-pin-off')}</span>` : '');
 // La foto de un hallazgo no se quita sola: para eso se borra el hallazgo completo (ninguna ficha queda sin imagen)
 function fichaHTML(c, H) {
   const propio = c.user_id === S.user.id;
@@ -1220,18 +1399,17 @@ function fichaHTML(c, H) {
   const actual = fotos[H.i];
   const puntos = hist.filter((h) => h.lat != null && h.lng != null);
   return `${cabeza(esc(c.name), c.is_private ? `<span class="ib ghost" data-tip="${C.AYUDA.privado}">${ic('lock')}</span>` : '')}
-    ${actual ? `<div class="foto-grande"><img class="big" src="${api.photoUrl(actual.photo || actual.thumb)}" alt="${esc(c.name)}"></div>` : ''}
+    ${actual ? `<div class="foto-grande"><img class="big" src="${api.photoUrl(actual.photo || actual.thumb)}" alt="${esc(c.name)}"></div>${pieFoto(c, actual)}` : ''}
     ${fotos.length > 1 ? `<div class="strip">${fotos.map((f, i) => `<button class="${i === H.i ? 'on' : ''}" data-act="galeria" data-i="${i}" aria-label="Foto ${i + 1}">
-      <img src="${api.photoUrl(f.thumb || f.photo)}" alt="" loading="lazy"></button>`).join('')}</div>` : ''}
+      <img src="${api.photoUrl(f.thumb || f.photo)}" alt="" loading="lazy">${marcaFoto(f)}</button>`).join('')}</div>` : ''}
+    ${c.user_id === S.user.id && !c.category_id && !c.group_id ? `<button class="banner sin-col" data-act="editar_hallazgo" data-id="${c.id}">${ic('question-mark')}<span class="grow">${esc(C.SIN_COLECCION_ELEGIR)}</span>${ic('chevron-right')}</button>` : ''}
     <div class="row between" style="margin:12px 0">
       <button class="row" data-act="perfil" data-id="${c.user_id}">${avatar(c)}<b>${esc(c.user_name)}</b></button>
       ${etiquetaDe(c)}</div>
     ${c.note ? `<p style="margin:6px 0 12px">${esc(c.note)}</p>` : ''}
     ${esAproximada({ acc: c.accuracy }) ? `<button class="linkbtn tiny" data-act="info_precision" data-acc="${c.accuracy}" style="padding:0;color:var(--tinta2)">${ic('alert-triangle')} Ubicación aproximada ±${metros(c.accuracy)}</button>` : ''}
-    ${!c.is_private ? `<div style="margin:12px 0 8px">${reaccionesHTML(c)}</div>` : ''}
-    ${puedoMarcarAusencia(c) ? `<div class="ausencia-fila">
-      <button class="react con-texto ausencia ${atenuado(c) ? 'on' : ''}" data-act="ya_no_esta" data-id="${c.id}" data-tip="${esc(C.AYUDA.ausencia_ayuda)}" aria-label="${esc(C.AYUDA.ausencia_ayuda)}">${ic('map-pin-off')}<span class="react-lbl">${esc(C.AYUDA.ausencia)}</span>${c.ausencias ? `<span class="n">${c.ausencias}</span>` : ''}</button>
-      ${atenuado(c) ? `<span class="tiny">${esc(C.AUSENCIA_TENUE)}</span>` : ''}</div>` : ''}
+    ${!c.is_private || propio ? `<div style="margin:12px 0 8px">${reaccionesHTML(c)}</div>` : ''}
+    ${atenuado(c) ? `<p class="tiny ausencia-tenue">${ic('map-pin-off')} ${esc(C.AUSENCIA_TENUE)}</p>` : ''}
     ${!c.is_private ? comentariosHTML(c, H) : ''}
     <div class="row wrap" style="margin-top:14px">
       ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'on')}
@@ -1252,7 +1430,15 @@ function fichaHTML(c, H) {
       ${puntos.length > 1 ? '<div class="minimap" id="mapa-historia" style="height:170px;margin-bottom:10px"></div>' : ''}
       <div class="hist">${items.map((h) => h.ausencia ? `<div class="row hist-i ausente">
         <span class="dotline">${ic('map-pin-off')}</span>
-        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}</div></div></div>` : `<div class="row hist-i">
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}</div></div></div>`
+        : h.tipo === 'no_esta' ? `<div class="row hist-i ausente">
+        <span class="dotline">${ic('map-pin-off')}</span>
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</div></div>
+        ${h.photo || h.thumb ? `<span class="tiny">${ic('photo')}</span>` : ''}</div>`
+        : h.tipo === 'visto' ? `<div class="row hist-i colaboracion">
+        <span class="dotline">${ic('eye-check')}</span>
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.COL_HISTORIA_VISTO.replace('{n}', h.user_name || ''))}${h.note ? ` · ${esc(h.note)}` : ''}</div></div>
+        ${h.photo || h.thumb ? `<span class="tiny">${ic('photo')}</span>` : ''}</div>` : `<div class="row hist-i">
         <span class="dotline">${ic(h.inicial ? 'star' : 'repeat')}</span>
         <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${h.colonia ? esc(h.colonia) : '—'}${c.group_id ? ` · ${esc(h.user_name || '')}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</div></div>
         ${h.photo || h.thumb ? `<span class="tiny">${ic('photo')}</span>` : ''}</div>`).join('')}</div>`}
@@ -1870,15 +2056,38 @@ function tablaGeneral(grupo) {
   const hoja = { render: () => `${cabeza(`${ic('trophy')} ${g ? esc(g.name) : ''}`)}
     <div class="toggle" style="margin-bottom:12px">
       <button type="button" data-act="tabla_metrica" data-v="total" class="${D.metric === 'total' ? 'on' : ''}" data-tip="Hallazgos" aria-label="Hallazgos">${ic('photo')}</button>
-      <button type="button" data-act="tabla_metrica" data-v="colonias" class="${D.metric === 'colonias' ? 'on' : ''}" data-tip="Colonias" aria-label="Colonias">${ic('map-pin')}</button></div>
-    ${!D.filas ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.filas.length ? `<div class="list">${D.filas.map((f, i) => `
+      <button type="button" data-act="tabla_metrica" data-v="colonias" class="${D.metric === 'colonias' ? 'on' : ''}" data-tip="Colonias" aria-label="Colonias">${ic('map-pin')}</button>
+      <button type="button" data-act="tabla_metrica" data-v="fotos" class="${D.metric === 'fotos' ? 'on' : ''}" data-tip="${esc(C.TOP_FOTOS)}" aria-label="${esc(C.TOP_FOTOS)}">${ic('sparkles')}</button></div>
+    ${D.metric === 'fotos' ? topFotosHTML(D) : !D.filas ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.filas.length ? `<div class="list">${D.filas.map((f, i) => `
       <button class="li" data-act="perfil" data-id="${f.user_id}" style="${f.user_id === S.user.id ? 'background:var(--mostaza)' : ''}">
         <span class="rank">${i < 3 ? ic(['crown', 'medal', 'medal'][i]) : i + 1}</span>${avatar(f)}<b class="grow" style="text-align:left">${esc(f.name)}</b>
         <b>${D.metric === 'colonias' ? f.colonias : f.total}</b></button>`).join('')}</div>` : `<div class="empty">${ic('trophy')}<p>Todavía no hay nadie en la tabla</p></div>`}`,
     after: (r) => { r._tabla = D; }, tipo: 'tabla' };
   pila.push(hoja); dibujarHoja();
-  D.cargar = async () => { D.filas = null; dibujarHoja(); try { D.filas = await api.leaderboard(D.metric, D.grupo); } catch (e) { D.filas = []; fallo(e); } if (hojaArriba() === hoja) dibujarHoja(); };
+  D.cargar = async () => {
+    D.filas = null; D.fotos = null; dibujarHoja();
+    try {
+      if (D.metric === 'fotos') {
+        const top = await api.topFotos(D.grupo);
+        const cards = guarda(await api.cardsByIds(top.map((t) => t.find_id)));
+        D.fotos = top.map((t) => ({ c: cards.find((x) => x.id === t.find_id), puntos: t.puntos })).filter((x) => x.c);
+      } else D.filas = await api.leaderboard(D.metric, D.grupo);
+    } catch (e) { D.filas = []; D.fotos = []; fallo(e); }
+    if (hojaArriba() === hoja) dibujarHoja();
+  };
   D.cargar();
+}
+// Top de los 7 días: las 5 fotos públicas con más reacciones y comentarios (cada uno vale 1)
+function topFotosHTML(D) {
+  if (!D.fotos) return `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  return `<p class="tiny top-nota">${ic('sparkles')} ${esc(C.TOP_TEXTO)}</p>
+    ${D.fotos.length ? `<div class="list">${D.fotos.map(({ c, puntos }, i) => `
+      <button class="li top-foto" data-act="ficha" data-id="${c.id}" style="text-align:left">
+        <span class="rank">${i < 3 ? ic(['crown', 'medal', 'medal'][i]) : i + 1}</span>
+        <img class="thumb" src="${foto(c, true)}" alt="" loading="lazy">
+        <div class="grow" style="min-width:0"><b>${esc(c.name)}</b><div class="tiny">${esc(c.user_name)}${c.colonia ? ` · ${esc(c.colonia)}` : ''}</div></div>
+        <b class="row" style="gap:3px">${ic('heart')}${puntos}</b></button>`).join('')}</div>`
+    : `<div class="empty">${ic('sparkles')}<p>${esc(C.TOP_VACIO)}</p></div>`}`;
 }
 
 /* Categorías */
@@ -1940,6 +2149,7 @@ function abrirGrupo(gid) {
         ${soyMiembro ? ib('invitar', 'brand-whatsapp', 'invitar', `data-id="${g.id}"`, 'on') : ''}
         ${ib('ver_grupo_mapa', 'map-2', 'ver_mapa', `data-id="${g.id}"`)}
         ${ib('tabla_grupo', 'trophy', 'tabla', `data-id="${g.id}"`)}
+        ${soyMiembro ? ib('descargar_fichas', 'download', C.PDF_TITULO, `data-tipo="grupo" data-id="${g.id}"`) : ''}
         ${soyDuena ? ib('editar_grupo', 'pencil', 'editar', `data-id="${g.id}"`) : ''}
         ${g.is_public && !soyMiembro ? (() => { const m = S.mutes.find((x) => x.target_group === g.id);
           return m ? ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${m.id}"`, 'on') : ib('silenciar', 'volume-off', 'silenciar', `data-group="${g.id}"`); })() : ''}
@@ -2123,7 +2333,7 @@ function encArribaHTML(D) {
       <span class="catb" style="background:${okColor(g.color)}">${ic('lifebuoy')}${esc(uso ? uso.nombre : 'Grupo de encuentro')}</span>
       <span class="muted row">${ic('users')} ${e.miembros.length}</span>
       ${D.error ? `<span class="tiny row">${ic('cloud-off')} ${esc(C.SIN_CONEXION)}</span>` : ''}
-      <span class="grow"></span>${ib('encuentro_refrescar', 'refresh', 'refrescar', '', 'sm')}</div>
+      <span class="grow"></span>${ib('descargar_fichas', 'download', C.PDF_TITULO, `data-tipo="encuentro" data-id="${g.id}"`, 'sm')}${ib('encuentro_refrescar', 'refresh', 'refrescar', '', 'sm')}</div>
     ${g.tema ? linea('tema', 'sparkles', 'Tema', g.tema) : ''}
     ${g.acuerdo ? linea('acuerdo', 'info-circle', 'Acuerdo', g.acuerdo) : ''}`;
 }
@@ -3310,7 +3520,9 @@ const RECURSOS = { fotos: 'fotos', base: 'base de datos' };
 function textoAviso(a) {
   const k = a.kind;
   if (k === 'comentario') return `${a.actor_name} comentó en ${a.find_name}: «${a.texto}»`;
-  if (k === 'reencuentro') return `${a.actor_name} volvió a ver ${a.find_name}`;
+  if (k === 'reencuentro') return a.reaccion === 'visto' ? `${a.actor_name} sumó una foto a tu ${a.find_name}${a.texto ? `: «${a.texto}»` : ''}` : `${a.actor_name} volvió a ver ${a.find_name}`;
+  if (k === 'traspaso') return C.TRASPASO_AVISO.replace('{h}', a.find_name || '').replace('{d}', a.texto || '');
+  if (k === 'reporte_col') return `${a.actor_name} reportó una foto de la comunidad: «${a.texto}»`;
   if (k === 'seguidor') return `${a.actor_name} empezó a seguirte`;
   if (k === 'etiqueta') return `${a.actor_name} te etiquetó en ${a.find_name}`;
   if (k === 'mensaje') return `${a.actor_name} te escribió: «${a.texto}»`;
@@ -3328,7 +3540,8 @@ function textoAviso(a) {
 }
 function iconoAviso(a) {
   const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages',
-    ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy', ausencia: 'map-pin-off', anuncio: 'speakerphone' };
+    ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy', ausencia: 'map-pin-off', anuncio: 'speakerphone', traspaso: 'heart-handshake', reporte_col: 'flag' };
+  if (a.kind === 'reencuentro' && a.reaccion === 'visto') return 'users';
   if (fijo[a.kind]) return fijo[a.kind];
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
 }
@@ -3338,7 +3551,8 @@ function destinoAviso(a) {
   if (['seguidor', 'nuevo_miembro'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
   if (a.kind === 'mensaje') return `data-kind="chat" data-id="${a.actor_id}"`;
   if (a.kind === 'buzon') return 'data-kind="admin" data-id="buzon"';
-  if (a.kind === 'reporte') return 'data-kind="admin" data-id="avisos"';
+  if (a.kind === 'reporte' || a.kind === 'reporte_col') return 'data-kind="admin" data-id="avisos"';
+  if (a.kind === 'reencuentro' && a.reaccion === 'visto') return `data-kind="colaboracion" data-id="${a.find_id}" data-foto="${esc(a.thumb || '')}" data-n="${esc(a.actor_name || '')}" data-h="${esc(a.find_name || '')}"`;
   if (a.kind === 'uso') return 'data-kind="admin" data-id="uso"';
   if (a.kind === 'ayuda' || a.kind === 'votacion') return `data-kind="encuentro" data-id="${a.grupo_id}" data-foco="${a.kind === 'ayuda' ? a.actor_id : ''}"`;
   if (a.kind === 'grupo_borrado') return 'data-kind="nada" data-id=""';
@@ -3347,6 +3561,7 @@ function destinoAviso(a) {
 }
 function caraAviso(a) {
   if (a.kind === 'grupo_borrado') return `<span class="avatar" style="background:var(--tinta)">${ic('lifebuoy')}</span>`;
+  if (a.kind === 'traspaso') return `<span class="avatar" style="background:var(--terracota)">${ic('heart-handshake')}</span>`;
   return a.actor_id ? avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })
     : `<span class="avatar ${nivelAviso(a)}" style="background:var(--tinta)">${ic('shield')}</span>`;
 }
@@ -3372,7 +3587,7 @@ function cerrarNotif() { const el = $('#notif'); if (el) el.classList.remove('sh
 const adminDatos = () => { const a = adminAbierto(); return a ? a.datos : null; };
 function recordarAnuncio(D) { const t = $('#anuncio-in'); if (t) D.nuevo.texto = t.value; }
 async function revisarAvisos() {
-  if (!S.user || !S.me || document.hidden || !api.avisos) return;
+  if (!S.user || !S.me || S.me.blocked || document.hidden || !api.avisos) return;
   let lista;
   try { lista = await api.avisos(); } catch (e) { return; } // sin avisos si falla: no interrumpe
   S.avisos = lista || [];
@@ -3570,12 +3785,12 @@ function anunciosHTML(D) {
         : `<p class="muted">${esc(C.ANUNCIO_NINGUNO)}</p>`}</div>`;
 }
 function hojaAdmin(vista) {
-  const D = { vista: vista || 'avisos', avisos: null, bloqueados: [], peticiones: null, uso: null, anuncios: null,
+  const D = { vista: vista || 'avisos', avisos: null, cols: [], bloqueados: [], peticiones: null, uso: null, anuncios: null,
     nuevo: { texto: null, destino: 'encuentro_nuevo', dias: null } };
   const pendientes = () => (D.peticiones || []).filter((r) => r.status === 'recibido').length;
   const hoja = { render: () => `${cabeza(ic('shield'))}
     <div class="toggle" style="margin-bottom:14px">
-      <button type="button" data-act="admin_vista" data-v="avisos" class="${D.vista === 'avisos' ? 'on' : ''}" aria-label="Avisos">${ic('flag')}<span style="font-size:15px">${D.avisos ? D.avisos.length : ''}</span></button>
+      <button type="button" data-act="admin_vista" data-v="avisos" class="${D.vista === 'avisos' ? 'on' : ''}" aria-label="Avisos">${ic('flag')}<span style="font-size:15px">${D.avisos ? D.avisos.length + D.cols.length : ''}</span></button>
       <button type="button" data-act="admin_vista" data-v="buzon" class="${D.vista === 'buzon' ? 'on' : ''}" aria-label="${esc(C.AYUDA.buzon)}">${ic('mail')}<span style="font-size:15px">${pendientes() || ''}</span></button>
       <button type="button" data-act="admin_vista" data-v="uso" class="${D.vista === 'uso' ? 'on' : ''}" aria-label="${esc(C.AYUDA.uso)}" data-tip="${esc(C.AYUDA.uso)}">${ic('gauge')}</button>
       <button type="button" data-act="admin_vista" data-v="anuncios" class="${D.vista === 'anuncios' ? 'on' : ''}" aria-label="${esc(C.AYUDA.anuncios)}" data-tip="${esc(C.AYUDA.anuncios)}">${ic('speakerphone')}</button></div>
@@ -3586,7 +3801,14 @@ function hojaAdmin(vista) {
       <div class="li">${a.card.thumb ? `<img class="thumb" src="${foto(a.card, true)}" alt="">` : `<span class="thumb">${ic(a.card.cat_icon)}</span>`}
         <div class="grow"><b>${esc(a.card.name)}</b><div class="tiny">${esc(a.card.user_name)} · ${ic('flag')} ${a.n}</div></div>
         ${ib('ficha', 'eye', 'ver', `data-id="${a.card.id}"`, 'sm')}${ib('descartar', 'check', 'descartar', `data-id="${a.card.id}"`, 'sm')}${ib('borrar_hallazgo', 'trash', 'borrar', `data-id="${a.card.id}"`, 'sm')}${ib('bloquear', 'ban', 'bloquear', `data-id="${a.card.user_id}"`, 'sm')}
-      </div>` : `<div class="li"><div class="grow tiny">—</div>${ib('descartar', 'check', 'descartar', `data-id="${a.find_id}"`, 'sm')}</div>`).join('')}</div>` : `<div class="empty">${ic('check')}<p>Sin avisos</p></div>`}</div>
+      </div>` : `<div class="li"><div class="grow tiny">—</div>${ib('descartar', 'check', 'descartar', `data-id="${a.find_id}"`, 'sm')}</div>`).join('')}</div>` : D.cols.length ? '' : `<div class="empty">${ic('check')}<p>Sin avisos</p></div>`}</div>
+    ${D.cols.length ? `<div class="sec"><h3>${ic('users')} ${esc(C.COL_MODERACION)} · ${D.cols.length}</h3><div class="list">${D.cols.map((r) => `
+      <div class="li reporte-col" style="flex-direction:column;align-items:stretch">
+        <div class="row">${r.thumb || r.photo ? `<img class="thumb" src="${api.photoUrl(r.thumb || r.photo)}" alt="">` : ''}
+          <div class="grow" style="min-width:0"><b>${esc(r.find_name)}</b><div class="tiny">${esc(C.COL_DE.replace('{n}', r.autora_nombre || ''))} · ${ic('flag')} ${esc(r.quien_reporta_nombre || '')}</div>
+          <div class="tiny">«${esc(r.motivo)}»</div></div></div>
+        <div class="row">${ib('ficha', 'eye', 'ver', `data-id="${r.find_id}" data-s="${r.sighting_id}"`, 'sm')}${ib('col_descartar', 'check', 'descartar', `data-id="${r.id}"`, 'sm')}${ib('col_quitar', 'trash', C.COL_QUITAR, `data-id="${r.sighting_id}"`, 'sm')}</div>
+      </div>`).join('')}</div></div>` : ''}
     <div class="sec"><h3>${ic('ban')} ${D.bloqueados.length}</h3><div class="list">${D.bloqueados.map((p) => `
       <div class="li">${avatar(p)}<b class="grow">${esc(p.name)}</b>${ib('desbloquear', 'lock-open', 'desbloquear', `data-id="${p.id}"`, 'sm')}</div>`).join('')}</div></div>`}`,
     after: (r) => { r._admin = D; }, tipo: 'admin' };
@@ -3601,6 +3823,7 @@ function hojaAdmin(vista) {
       D.avisos = ids.map((id) => ({ find_id: id, n: n[id], card: cards.find((c) => c.id === id) }));
       D.bloqueados = await api.blockedList();
     } catch (e) { D.avisos = []; fallo(e); }
+    try { D.cols = await api.reportesColaboracion(); } catch (e) { D.cols = []; }
     try { D.peticiones = await api.allRequests(); } catch (e) { D.peticiones = []; fallo(e); }
     try { D.uso = await api.usoPlan(); } catch (e) { D.uso = { recursos: [] }; fallo(e); }
     try { D.anuncios = await api.anuncios(); } catch (e) { D.anuncios = []; }
@@ -3610,6 +3833,316 @@ function hojaAdmin(vista) {
   return D;
 }
 const adminAbierto = () => pila.find((h) => h.tipo === 'admin');
+
+/* ---------------------------------------------------------------------
+   Fichas en PDF (plantilla C: portada y cuatro hallazgos por página).
+   El archivo se arma en el teléfono, sin librerías ni servidores: fotos en JPEG y
+   letras estándar del PDF (Helvetica y Times), con acentos en codificación WinAnsi.
+   --------------------------------------------------------------------- */
+const PDF_W = 612, PDF_H = 792, PDF_M = 24;
+const WIN_ANSI = { 0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85, 0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89,
+  0x0160: 0x8A, 0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92, 0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96,
+  0x2014: 0x97, 0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C, 0x017E: 0x9E, 0x0178: 0x9F, 0x2212: 0x2D };
+// Texto para un string del PDF: un byte por letra (lo que no existe en WinAnsi se vuelve "?")
+function pdfTexto(t) {
+  let out = '';
+  for (const ch of String(t == null ? '' : t)) {
+    const cp = ch.codePointAt(0);
+    let b = cp < 0x80 || (cp >= 0xA0 && cp <= 0xFF) ? cp : WIN_ANSI[cp];
+    if (b == null) b = 0x3F;
+    const c = String.fromCharCode(b);
+    out += c === '(' || c === ')' || c === '\\' ? '\\' + c : c;
+  }
+  return out;
+}
+const pdfNum = (n) => (Math.round(n * 100) / 100).toString();
+// Medida aproximada del texto (Arial tiene las mismas medidas que Helvetica)
+let lienzoMedida = null;
+function anchoTexto(t, tam, fuente) {
+  if (!lienzoMedida) lienzoMedida = document.createElement('canvas').getContext('2d');
+  lienzoMedida.font = fuente === 'serif' ? `bold ${tam}px "Times New Roman", Times, serif` : `${fuente === 'bold' ? 'bold ' : fuente === 'italic' ? 'italic ' : ''}${tam}px Helvetica, Arial, sans-serif`;
+  return lienzoMedida.measureText(String(t)).width;
+}
+function recortarTexto(t, ancho, tam, fuente) {
+  t = String(t || '');
+  if (anchoTexto(t, tam, fuente) <= ancho) return t;
+  while (t.length > 1 && anchoTexto(t + '…', tam, fuente) > ancho) t = t.slice(0, -1);
+  return t.trimEnd() + '…';
+}
+// Reparte un texto en renglones; el último lleva "…" si no cabe
+function renglones(t, ancho, tam, fuente, max) {
+  const palabras = String(t || '').split(/\s+/).filter(Boolean), out = [];
+  let linea = '';
+  for (let i = 0; i < palabras.length; i++) {
+    const prueba = linea ? linea + ' ' + palabras[i] : palabras[i];
+    if (anchoTexto(prueba, tam, fuente) <= ancho) { linea = prueba; continue; }
+    if (linea) out.push(linea);
+    linea = palabras[i];
+    if (out.length === max) break;
+  }
+  if (linea && out.length < max) out.push(linea);
+  if (out.length === max && palabras.join(' ') !== out.join(' ')) out[max - 1] = recortarTexto(out[max - 1] + '…', ancho, tam, fuente);
+  return out.map((l) => recortarTexto(l, ancho, tam, fuente));
+}
+
+function nuevoPDF() {
+  const objs = [];   // cada objeto: lista de partes (texto o bytes)
+  const nuevoObj = (partes) => { objs.push(partes); return objs.length; };
+  const catalogo = nuevoObj(null), paginas = nuevoObj(null), xobjs = nuevoObj(null);
+  const fuentes = { F1: 'Helvetica', F2: 'Helvetica-Bold', F3: 'Times-Bold', F4: 'Helvetica-Oblique' };
+  const idFuente = {};
+  Object.keys(fuentes).forEach((k) => { idFuente[k] = nuevoObj([`<< /Type /Font /Subtype /Type1 /BaseFont /${fuentes[k]} /Encoding /WinAnsiEncoding >>`]); });
+  const imagenes = [], hojas = [];
+  return {
+    imagen(bytes, w, h) {
+      const id = nuevoObj([`<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.length} >>\nstream\n`, bytes, '\nendstream']);
+      imagenes.push(id); return 'Im' + id;
+    },
+    pagina(contenido, enlaces) {
+      const cont = nuevoObj([`<< /Length ${contenido.length} >>\nstream\n`, contenido, '\nendstream']);
+      const annots = (enlaces || []).map((e) => nuevoObj([`<< /Type /Annot /Subtype /Link /Rect [${e.r.map(pdfNum).join(' ')}] /Border [0 0 0] /A << /S /URI /URI (${pdfTexto(e.url)}) >> >>`]));
+      hojas.push(nuevoObj([`<< /Type /Page /Parent ${paginas} 0 R /MediaBox [0 0 ${PDF_W} ${PDF_H}] /Contents ${cont} 0 R /Resources << /Font << ${Object.keys(idFuente).map((k) => `/${k} ${idFuente[k]} 0 R`).join(' ')} >> /XObject ${xobjs} 0 R >>${annots.length ? ` /Annots [${annots.map((a) => a + ' 0 R').join(' ')}]` : ''} >>`]));
+    },
+    terminar(titulo) {
+      objs[catalogo - 1] = [`<< /Type /Catalog /Pages ${paginas} 0 R >>`];
+      objs[paginas - 1] = [`<< /Type /Pages /Kids [${hojas.map((h) => h + ' 0 R').join(' ')}] /Count ${hojas.length} >>`];
+      objs[xobjs - 1] = [`<< ${imagenes.map((i) => `/Im${i} ${i} 0 R`).join(' ')} >>`];
+      const info = nuevoObj([`<< /Title (${pdfTexto(titulo)}) /Producer (Collector Go) /CreationDate (D:${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}) >>`]);
+      const bytesDe = (p) => (typeof p === 'string' ? Uint8Array.from(p, (c) => c.charCodeAt(0) & 0xFF) : p);
+      const trozos = [bytesDe('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n')];
+      let pos = trozos[0].length;
+      const offs = [];
+      objs.forEach((partes, i) => {
+        offs.push(pos);
+        [`${i + 1} 0 obj\n`].concat(partes, ['\nendobj\n']).forEach((p) => { const b = bytesDe(p); trozos.push(b); pos += b.length; });
+      });
+      const xref = `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => String(o).padStart(10, '0') + ' 00000 n \n').join('')}`
+        + `trailer\n<< /Size ${objs.length + 1} /Root ${catalogo} 0 R /Info ${info} 0 R >>\nstartxref\n${pos}\n%%EOF\n`;
+      trozos.push(bytesDe(xref));
+      return new Blob(trozos, { type: 'application/pdf' });
+    }
+  };
+}
+// Lápiz para el contenido de una página: coordenadas desde arriba a la izquierda, como en pantalla
+function lapizPDF() {
+  const ops = [], enlaces = [];
+  const Y = (y) => PDF_H - y;
+  const color = (hex) => { const n = parseInt(String(hex || '#2E2A26').slice(1), 16); return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255].map(pdfNum).join(' '); };
+  return {
+    ops, enlaces,
+    texto(x, y, t, tam, fuente, hex) {
+      const f = { serif: 'F3', bold: 'F2', italic: 'F4' }[fuente] || 'F1';
+      ops.push(`BT /${f} ${tam} Tf ${color(hex)} rg ${pdfNum(x)} ${pdfNum(Y(y))} Td (${pdfTexto(t)}) Tj ET`);
+    },
+    imagen(nombre, x, y, w, h) { ops.push(`q ${pdfNum(w)} 0 0 ${pdfNum(h)} ${pdfNum(x)} ${pdfNum(Y(y + h))} cm /${nombre} Do Q`); },
+    marco(x, y, w, h, hex, grueso) { ops.push(`${color(hex)} RG ${grueso || 0.8} w ${pdfNum(x)} ${pdfNum(Y(y + h))} ${pdfNum(w)} ${pdfNum(h)} re S`); },
+    caja(x, y, w, h, hex) { ops.push(`${color(hex)} rg ${pdfNum(x)} ${pdfNum(Y(y + h))} ${pdfNum(w)} ${pdfNum(h)} re f`); },
+    linea(x1, y1, x2, y2, hex, grueso) { ops.push(`${color(hex)} RG ${grueso || 0.8} w ${pdfNum(x1)} ${pdfNum(Y(y1))} m ${pdfNum(x2)} ${pdfNum(Y(y2))} l S`); },
+    // Candado pequeño (lo secreto)
+    candado(x, y, hex) {
+      ops.push(`${color(hex)} rg ${pdfNum(x)} ${pdfNum(Y(y + 7))} 7 4.6 re f`);
+      ops.push(`${color(hex)} RG 1 w ${pdfNum(x + 1.6)} ${pdfNum(Y(y + 2.6))} m ${pdfNum(x + 1.6)} ${pdfNum(Y(y - 0.4))} ${pdfNum(x + 5.4)} ${pdfNum(Y(y - 0.4))} ${pdfNum(x + 5.4)} ${pdfNum(Y(y + 2.6))} c S`);
+    },
+    enlace(x, y, w, h, url) { enlaces.push({ r: [x, Y(y + h), x + w, Y(y)], url }); },
+    contenido() { return ops.join('\n'); }
+  };
+}
+// Foto a JPEG para el PDF: cuadrada, con el fondo beige de la app detrás de lo transparente
+async function jpegPDF(url, lado) {
+  const img = await new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+  const cv = document.createElement('canvas'); cv.width = cv.height = lado;
+  const x = cv.getContext('2d'); x.fillStyle = C.FONDO_FOTO; x.fillRect(0, 0, lado, lado);
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height, k = Math.min(lado / w, lado / h);
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(img, (lado - w * k) / 2, (lado - h * k) / 2, w * k, h * k);
+  const b = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.8));
+  soltarLienzo(cv);
+  return { bytes: new Uint8Array(await b.arrayBuffer()), lado };
+}
+const fechaHora = (iso) => { try { return new Date(iso).toLocaleString('es-MX', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: C.ZONA_HORARIA }); } catch (e) { return fecha(iso); } };
+const coordTexto = (f) => `${Number(f.lat).toFixed(5)}, ${Number(f.lng).toFixed(5)}`;
+const urlMapa = (f) => `https://www.openstreetmap.org/?mlat=${Number(f.lat).toFixed(6)}&mlon=${Number(f.lng).toFixed(6)}#map=18/${Number(f.lat).toFixed(6)}/${Number(f.lng).toFixed(6)}`;
+// Orden: la fecha (de lo más antiguo a lo más reciente) es la base de todos
+function ordenarFichas(items, orden) {
+  const porFecha = (a, b) => String(a.fecha).localeCompare(String(b.fecha));
+  const texto = (v) => (v == null || v === '' ? '￿' : String(v));
+  const l = items.slice();
+  if (orden === 'recientes') return l.sort((a, b) => porFecha(b, a));
+  if (orden === 'colonia') return l.sort((a, b) => texto(a.colonia).localeCompare(texto(b.colonia), 'es') || porFecha(a, b));
+  if (orden === 'persona') return l.sort((a, b) => texto(a.persona).localeCompare(texto(b.persona), 'es') || porFecha(a, b));
+  return l.sort(porFecha);
+}
+async function crearPDF(P, alAvanzar) {
+  const pdf = nuevoPDF(), items = ordenarFichas(P.items, P.orden);
+  const total = items.length;
+  const tinta = '#2E2A26', gris = '#6B635A', terracota = C.COLORES.terracota;
+  // 1) Fotos (una por ficha y miniaturas de sus avistamientos)
+  for (let i = 0; i < total; i++) {
+    const it = items[i];
+    alAvanzar(i, total);
+    if (it.foto) { try { const j = await jpegPDF(it.foto, 512); it.img = pdf.imagen(j.bytes, j.lado, j.lado); } catch (e) { it.img = null; } }
+    it.mini = [];
+    for (const u of (it.tira || []).slice(0, 8)) { try { const j = await jpegPDF(u, 64); it.mini.push(pdf.imagen(j.bytes, j.lado, j.lado)); } catch (e) { /* sin miniatura */ } }
+  }
+  alAvanzar(total, total);
+  const paginasFichas = Math.max(1, Math.ceil(total / 4)), totalPaginas = paginasFichas + 1;
+  const fechas = items.map((x) => x.fecha).filter(Boolean).sort();
+  // 2) Portada
+  {
+    const L = lapizPDF(), x = 54;
+    L.caja(0, 0, PDF_W, 6, terracota);
+    L.texto(x, 120, P.etiqueta.toUpperCase(), 10, 'bold', terracota);
+    L.texto(x, 160, recortarTexto(P.titulo, PDF_W - 2 * x, 34, 'serif'), 34, 'serif', tinta);
+    const sub = [P.subtitulo, `${total} ${total === 1 ? 'hallazgo' : 'hallazgos'}`,
+      fechas.length ? `${fecha(fechas[0])} – ${fecha(fechas[fechas.length - 1])}` : ''].filter(Boolean).join(' · ');
+    L.texto(x, 186, recortarTexto(sub, PDF_W - 2 * x, 12, ''), 12, '', gris);
+    const lado = 120, gap = 6, cols = 4;
+    items.filter((it) => it.img).slice(0, 12).forEach((it, i) => {
+      const cx = x + (i % cols) * (lado + gap), cy = 220 + Math.floor(i / cols) * (lado + gap);
+      L.imagen(it.img, cx, cy, lado, lado); L.marco(cx, cy, lado, lado, tinta, 0.6);
+    });
+    L.texto(x, PDF_H - 54, C.PDF_PIE.replace('{f}', fecha(new Date().toISOString())), 9, '', gris);
+    L.texto(PDF_W - x - anchoTexto('Collector Go', 12, 'serif'), PDF_H - 54, 'Collector Go', 12, 'serif', terracota);
+    pdf.pagina(L.contenido(), L.enlaces);
+  }
+  // 3) Fichas: cuatro por página
+  const cw = (PDF_W - 2 * PDF_M - 16) / 2, top = 60, ch = (PDF_H - top - PDF_M - 16) / 2, foto = 256;
+  for (let p = 0; p < paginasFichas; p++) {
+    const L = lapizPDF(), grupo = items.slice(p * 4, p * 4 + 4);
+    let izq = `${P.titulo}${P.subtitulo ? ' · ' + P.subtitulo : ''}`;
+    if (P.orden === 'colonia' || P.orden === 'persona') {
+      const vals = [...new Set(grupo.map((x) => (P.orden === 'colonia' ? x.colonia || C.PDF_SIN_COLONIA : x.persona || '—')))];
+      izq += ' · ' + vals.join(' · ');
+    }
+    const der = `Página ${p + 2} de ${totalPaginas}`;
+    L.texto(PDF_M, 40, recortarTexto(izq, PDF_W - 2 * PDF_M - anchoTexto(der, 8.5, '') - 16, 8.5, ''), 8.5, '', gris);
+    L.texto(PDF_W - PDF_M - anchoTexto(der, 8.5, ''), 40, der, 8.5, '', gris);
+    L.linea(PDF_M, 47, PDF_W - PDF_M, 47, tinta, 0.8);
+    grupo.forEach((it, i) => {
+      const x = PDF_M + (i % 2) * (cw + 16), y = top + Math.floor(i / 2) * (ch + 16);
+      if (it.img) L.imagen(it.img, x, y, foto, foto); else L.caja(x, y, foto, foto, C.FONDO_FOTO);
+      L.marco(x, y, foto, foto, tinta, 0.8);
+      let yy = y + foto + 16;
+      const nombre = recortarTexto(it.nombre, cw - (it.privado ? 12 : 0), 12, 'serif');
+      L.texto(x, yy, nombre, 12, 'serif', tinta);
+      if (it.privado) L.candado(x + anchoTexto(nombre, 12, 'serif') + 4, yy - 8, tinta);
+      yy += 12;
+      L.texto(x, yy, recortarTexto([fechaHora(it.fecha), it.colonia, it.persona && P.conPersona ? it.persona : ''].filter(Boolean).join(' · '), cw, 8.5, ''), 8.5, '', gris);
+      yy += 11;
+      if (it.lat != null && it.lng != null) {
+        const t = coordTexto(it);
+        L.texto(x, yy, t, 8.5, '', terracota);
+        L.linea(x, yy + 1.5, x + anchoTexto(t, 8.5, ''), yy + 1.5, terracota, 0.4);
+        L.enlace(x, yy - 9, anchoTexto(t, 8.5, ''), 12, urlMapa(it));
+      }
+      yy += 3;
+      renglones(it.nota, cw, 8, 'italic', 2).forEach((l) => { yy += 10; L.texto(x, yy, l, 8, 'italic', tinta); });
+      if (it.mini.length || it.vistas) {
+        yy += 6;
+        it.mini.forEach((m, k) => { L.imagen(m, x + k * 22, yy, 20, 20); L.marco(x + k * 22, yy, 20, 20, tinta, 0.4); });
+        const tx = x + it.mini.length * 22 + (it.mini.length ? 4 : 0);
+        if (it.vistas) L.texto(tx, yy + 13, recortarTexto(`Visto ${it.vistas + 1} veces${it.colaboran ? ' · ' + it.colaboran : ''}`, cw - (tx - x), 8, ''), 8, '', gris);
+      }
+    });
+    pdf.pagina(L.contenido(), L.enlaces);
+  }
+  return pdf.terminar(P.titulo);
+}
+
+// Qué se descarga: una colección tuya (o todas), un grupo o un grupo de encuentro
+async function datosPDF(fuente) {
+  if (fuente.tipo === 'coleccion') {
+    const mias = S.colMias || guarda(await api.userCards(S.user.id));
+    const cat = S.cats.find((c) => c.id === fuente.cat);
+    const lista = cat ? mias.filter((c) => c.category_id === cat.id) : mias;
+    return { etiqueta: 'Colección', titulo: cat ? cat.name : C.COL_TODAS, subtitulo: S.me.name, conPersona: false, cards: lista };
+  }
+  const g = miGrupo(fuente.gid);
+  if (fuente.tipo === 'grupo') {
+    const lista = guarda(await api.groupCards(fuente.gid));
+    return { etiqueta: 'Grupo', titulo: g ? g.name : 'Grupo', subtitulo: '', conPersona: true, cards: lista };
+  }
+  const e = await api.estadoEncuentro(fuente.gid);
+  const nombre = (uid) => { const m = (e.miembros || []).find((x) => x.user_id === uid); return m ? m.name : ''; };
+  const items = (e.puntos || []).map((x) => ({ nombre: x.name, nota: x.note, fecha: x.created_at, lat: x.lat, lng: x.lng, persona: nombre(x.user_id),
+      foto: x.photo || x.thumb ? api.photoUrl(x.photo || x.thumb) : null, colonia: null }))
+    .concat((e.miras || []).map((k) => ({ nombre: C.ENCUENTRO_MIRA, nota: k.note, fecha: k.created_at, lat: k.lat, lng: k.lng, persona: nombre(k.user_id),
+      foto: k.photo || k.thumb ? api.photoUrl(k.photo || k.thumb) : null, colonia: null })));
+  return { etiqueta: 'Grupo de encuentro', titulo: e.grupo.name, subtitulo: '', conPersona: true, items };
+}
+async function fichasDeCards(cards) {
+  const ids = cards.map((c) => c.id), hist = [];
+  for (let i = 0; i < ids.length; i += 100) hist.push(...(await api.sightingsDe(ids.slice(i, i + 100)).catch(() => [])));
+  return cards.map((c) => {
+    const suyas = hist.filter((h) => h.find_id === c.id && h.tipo !== 'no_esta');
+    const otras = [...new Set(suyas.filter((h) => h.user_id && h.user_id !== c.user_id).map((h) => h.user_name).filter(Boolean))];
+    return { nombre: c.name, nota: c.note, fecha: c.created_at, lat: c.lat, lng: c.lng, colonia: c.colonia, persona: c.user_name, privado: c.is_private,
+      foto: c.photo || c.thumb ? foto(c, false) : null, vistas: c.sightings_count || 0, colaboran: otras.join(', '),
+      tira: suyas.filter((h) => h.thumb || h.photo).slice(-8).map((h) => api.photoUrl(h.thumb || h.photo)) };
+  });
+}
+const P_PDF = {};
+function hojaPDF(fuente) {
+  let orden = 'antiguos'; try { orden = localStorage.getItem('cg_pdf_orden') || 'antiguos'; } catch (e) { /* sin almacenamiento */ }
+  if (orden === 'persona' && fuente.tipo === 'coleccion') orden = 'antiguos';
+  Object.assign(P_PDF, { fuente, orden, estado: 'cargando', datos: null, items: null, i: 0, n: 0, file: null });
+  abrirHoja(pdfHTML, null, 'pdf');
+  (async () => {
+    try {
+      const d = await datosPDF(fuente);
+      P_PDF.datos = d;
+      P_PDF.items = d.items || await fichasDeCards(d.cards);
+      P_PDF.estado = 'listo';
+    } catch (e) { P_PDF.estado = 'error'; fallo(e); }
+    const top = hojaArriba(); if (top && top.tipo === 'pdf') dibujarHoja();
+  })();
+}
+function pdfHTML() {
+  const P = P_PDF, d = P.datos, n = P.items ? P.items.length : 0;
+  if (P.estado === 'cargando') return cabeza(`${ic('download')} ${esc(C.PDF_TITULO)}`) + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!d) return cabeza(`${ic('download')} ${esc(C.PDF_TITULO)}`) + `<div class="empty">${ic('alert-triangle')}<p>${esc(C.PDF_VACIO)}</p></div>`;
+  const ordenes = C.PDF_ORDENES.filter((o) => o.id !== 'persona' || P.fuente.tipo !== 'coleccion');
+  const mb = Math.max(0.1, Math.round((0.15 + n * 0.06) * 10) / 10);
+  return `${cabeza(`${ic('download')} ${esc(C.PDF_TITULO)}`)}
+    <div class="resumen-pdf list" style="margin-bottom:10px">
+      <div class="row between"><span class="muted">${esc(d.etiqueta)}</span><b>${esc(d.titulo)}</b></div>
+      <div class="row between"><span class="muted">Hallazgos</span><b>${n}</b></div>
+      <div class="row between"><span class="muted">Páginas</span><b>${n ? 1 + Math.ceil(n / 4) : 0}</b></div>
+      <div class="row between"><span class="muted">Peso</span><b>${esc(C.PDF_PESO.replace('{m}', String(mb).replace('.', ',')))}</b></div></div>
+    <p class="tiny">${esc(C.PDF_TEXTO)}</p>
+    ${n ? `<div class="field"><label>${ic('arrows-sort')} ${esc(C.PDF_ORDEN)}</label><div class="chips pdf-orden">${ordenes.map((o) =>
+      `<button type="button" class="chip ${P.orden === o.id ? 'on' : ''}" data-act="pdf_orden" data-v="${o.id}" ${P.estado === 'creando' ? 'disabled' : ''}>${esc(o.nombre)}</button>`).join('')}</div></div>
+    ${P.estado === 'creando' ? `<div class="pdf-barra"><i style="width:${P.n ? Math.round(P.i / P.n * 100) : 0}%"></i></div><p class="tiny" id="pdf-avance">${esc(C.PDF_PREPARANDO.replace('{i}', P.i).replace('{n}', P.n))}</p>`
+      : P.estado === 'hecho' ? `<button class="btn block" data-act="pdf_compartir">${ic('share')} ${esc(C.PDF_GUARDAR)}</button>
+        <button class="btn alt block" data-act="pdf_crear" style="margin-top:8px">${ic('refresh')} ${esc(C.PDF_CREAR)}</button>`
+      : `<button class="btn block" data-act="pdf_crear">${ic('download')} ${esc(C.PDF_CREAR)}</button>`}`
+    : `<div class="empty">${ic('photo')}<p>${esc(C.PDF_VACIO)}</p></div>`}`;
+}
+async function generarPDF(btn) {
+  const P = P_PDF; if (!P.items || !P.items.length || P.estado === 'creando') return;
+  P.estado = 'creando'; P.i = 0; P.n = P.items.length; P.file = null; dibujarHoja();
+  try {
+    const blob = await crearPDF(Object.assign({}, P.datos, { items: P.items.map((x) => Object.assign({}, x)), orden: P.orden }), (i, n) => {
+      P.i = i; P.n = n;
+      const b = $('.pdf-barra i'), t = $('#pdf-avance');
+      if (b) b.style.width = `${n ? Math.round(i / n * 100) : 0}%`;
+      if (t) t.textContent = C.PDF_PREPARANDO.replace('{i}', i).replace('{n}', n);
+    });
+    const nombre = `collector-go-${sinAcentos(P.datos.titulo).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'fichas'}.pdf`;
+    P.file = new File([blob], nombre, { type: 'application/pdf' });
+    P.estado = 'hecho'; aviso(C.PDF_LISTO, 'file-check');
+  } catch (e) { P.estado = 'listo'; fallo(e); }
+  const top = hojaArriba(); if (top && top.tipo === 'pdf') dibujarHoja();
+}
+async function compartirPDF() {
+  const f = P_PDF.file; if (!f) return;
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f], title: P_PDF.datos.titulo }); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  const u = URL.createObjectURL(f), a = document.createElement('a');
+  a.href = u; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 60000);
+}
 
 /* ---------------------------------------------------------------------
    8. ACCIONES DE BOTONES
@@ -3698,7 +4231,7 @@ const ACCIONES = {
   muro_filtro(b) { S.muro = leerFiltro(b.dataset.v); pintarMuro(); },
   refrescar: () => pintarMuro(),
   mas: () => pintarMuro(true),
-  ficha: (b) => abrirFicha(b.dataset.id),
+  ficha: (b) => abrirFicha(b.dataset.id, b.dataset.s ? { foto: b.dataset.s } : null),
   perfil: (b) => abrirPerfil(b.dataset.id),
   galeria(b) { const top = hojaArriba(); if (!top || top.tipo !== 'ficha' || !fichaH) return; fichaH.i = +b.dataset.i; dibujarHoja(); },
   async reaccion(b) {
@@ -3732,6 +4265,37 @@ const ACCIONES = {
   aviso_rapido: (b) => hojaAvisoRapido(b.dataset.id || null),
   ya_no_esta(b) { const c = S.cache.get(b.dataset.id); if (c) marcarAusencia(b, c); },
   pista_encuadre: () => aviso(C.ENCUADRE_PISTA, 'arrows-move'),
+  col_guardar: (b) => guardarCol(b),
+  persona_sin_col: (b) => hojaSinColeccion(b.dataset.id),
+  descargar_fichas(b) { const t = b.dataset.tipo; hojaPDF(t === 'coleccion' ? { tipo: t, cat: b.dataset.id || null } : { tipo: t, gid: b.dataset.id }); },
+  pdf_orden(b) { if (P_PDF.estado === 'creando') return; P_PDF.orden = b.dataset.v; P_PDF.file = null; if (P_PDF.estado === 'hecho') P_PDF.estado = 'listo';
+    try { localStorage.setItem('cg_pdf_orden', P_PDF.orden); } catch (e) { /* sin almacenamiento */ } dibujarHoja(); },
+  pdf_crear: (b) => generarPDF(b),
+  async salir_bloqueada() { try { await api.logout(); } catch (e) { /* nada */ } location.hash = ''; location.reload(); },
+  pdf_compartir: () => compartirPDF(),
+  encuadrar_col() { if (!K.enc) return; recordarCol(); hojaEncuadre(K.enc, async () => { await cuadroCol(); }); },
+  quitar_foto_col() { recordarCol(); limpiarCol(); dibujarHoja(); },
+  col_borrar: (b) => borrarColaboracion(b, b.dataset.id, b.dataset.f),
+  async col_descartar(b) {
+    const D = adminDatos(); if (!D) return;
+    try { await api.descartarReporteColaboracion(b.dataset.id); await D.cargar(); } catch (e) { fallo(e); }
+  },
+  async col_quitar(b) {
+    const D = adminDatos(); if (!D) return;
+    if (!(await confirmar(C.COL_QUITAR_CONFIRMAR, 'trash'))) return;
+    ocupado(b, true);
+    // La foto queda en la lista de su autora: su app la quita del almacén al abrirse
+    try { await api.delSighting(b.dataset.id); S.feed = []; await D.cargar(); aviso(C.COL_BORRADA.replace('Tu foto', 'La foto'), 'trash'); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  col_reportar: (b) => hojaReportarColaboracion(b.dataset.id),
+  async col_reporte_enviar(b) {
+    const t = $('#col-motivo'), motivo = t ? t.value.trim() : '';
+    if (!motivo) { if (t) t.focus(); return aviso(C.COL_REPORTE_VACIO, 'flag'); }
+    ocupado(b, true);
+    try { await api.reportarColaboracion(b.dataset.id, motivo.slice(0, 200)); api.dispararPush(); cerrarHoja(); aviso(C.COL_REPORTE_LISTO, 'flag'); }
+    catch (e) { ocupado(b, false); if (e && e.code === '23505') { cerrarHoja(); aviso(C.COL_REPORTE_YA, 'flag'); } else fallo(e); }
+  },
   reg_enc_modo(b) { recordarFormulario(); R.encModo = b.dataset.v === 'punto' ? 'punto' : 'mira'; dibujarHoja(); },
   aviso_tipo(b) { recordarRapido(); Q.kind = b.dataset.v === 'bien' ? 'bien' : 'ayuda'; dibujarHoja(); },
   aviso_grupo(b) { recordarRapido(); const id = b.dataset.id; if (Q.sel.has(id)) Q.sel.delete(id); else Q.sel.add(id); dibujarHoja(); },
@@ -3754,18 +4318,27 @@ const ACCIONES = {
   guardar_edicion: (b) => guardarEdicion(b, b.dataset.id),
   async borrar_hallazgo(b) {
     const c = S.cache.get(b.dataset.id); if (!c) return;
-    if (!(await confirmar(`¿Borrar "${c.name}" y toda su historia?`))) return;
+    const propio = c.user_id === S.user.id;
+    let hist = []; try { hist = await api.history(c.id); } catch (e) { hist = []; }
+    // Con fotos de la comunidad, el hallazgo sigue con la siguiente persona que lo retrató
+    const conCol = propio && !c.is_private && hist.some((h) => h.user_id && h.user_id !== S.user.id && (h.photo || h.thumb) && h.tipo !== 'no_esta');
+    if (!(await confirmar((conCol ? C.BORRAR_CONFIRMAR_COL : C.BORRAR_CONFIRMAR).replace('{h}', c.name)))) return;
     ocupado(b, true);
     try {
-      let hist = []; try { hist = await api.history(c.id); } catch (e) { hist = []; }
-      const mias = hist.filter((h) => h.user_id === S.user.id).flatMap((h) => [h.photo, h.thumb]);
-      await api.removeFiles([c.photo, c.thumb].concat(c.user_id === S.user.id ? mias : [])).catch(() => null);
-      await api.delFind(c.id);
+      let traspaso = false;
+      if (propio) {
+        const r = await api.borrarHallazgo(c.id);
+        traspaso = !!(r && r.traspaso);
+        await api.removeFiles((r && r.quitar) || []).catch(() => null);
+      } else {
+        await api.removeFiles([c.photo, c.thumb]).catch(() => null);
+        await api.delFind(c.id);
+      }
       S.cache.delete(c.id); S.feed = S.feed.filter((x) => x.find_id !== c.id); S.stats = null;
       const adm = adminAbierto();
       if (adm) { await api.dismiss(c.id).catch(() => null); while (hojaArriba() !== adm) pila.pop(); dibujarHoja(); $('.sheet')._admin.cargar(); }
       else cerrarTodo();
-      aviso('Borrado', 'trash'); refrescarActual();
+      aviso(traspaso ? C.BORRADO_TRASPASO : 'Borrado', 'trash'); refrescarActual();
     } catch (e) { ocupado(b, false); fallo(e); }
   },
   async avisar(b) {
@@ -4162,6 +4735,12 @@ const ACCIONES = {
     if (!id) return hojaAvisos();
     if (k === 'encuentro') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirEncuentro(id, b.dataset.foco || null); }
     if (k === 'encuentro_nuevo') { cerrarTodo(); return editarGrupo('', 'encuentro'); }
+    // Una foto de la comunidad en lo tuyo se celebra antes de abrir la ficha
+    if (k === 'colaboracion') {
+      S.cache.delete(id);
+      return celebrarHallazgo({ foto: b.dataset.foto ? api.photoUrl(b.dataset.foto) : '', icono: 'users', color: C.COLORES.terracota, titulo: C.COL_CELEBRA,
+        detalle: C.COL_CELEBRA_TEXTO.replace('{n}', b.dataset.n || '').replace('{h}', b.dataset.h || '') }, () => abrirFicha(id));
+    }
     if (k === 'perfil') return abrirPerfil(id);
     if (k === 'chat') return hojaChat(id);
     if (k === 'admin') { if (!S.me.is_admin) return; const adm = adminAbierto(); if (adm) { while (hojaArriba() !== adm) pila.pop(); adm.datos.vista = id; dibujarHoja(); return; } return hojaAdmin(id); }
@@ -4333,6 +4912,7 @@ async function arrancar(user) {
   try {
     S.me = await api.getProfile(user.id);
     if (!S.me) return pedirPerfil();
+    if (S.me.blocked) return pantallaBloqueada();
     const [cats, groups, following] = await Promise.all([api.listCats(user.id), api.myGroups(user.id), api.following(user.id)]);
     S.cats = cats; S.groups = groups; S.following = new Set(following);
     { const ids = new Set(gruposEncuentro().map((g) => g.id)); S.capas = new Set([...leerCapas()].filter((id) => ids.has(id))); S.capaDatos = new Map(); }
@@ -4373,6 +4953,11 @@ window.addEventListener('hashchange', () => {
   if (S.me && S.cats.length && $('#scr-map')) rutaHash();
   else if (!S.user && destinoVitrina()) pantallaVitrina(destinoVitrina());
 });
+// Una cuenta bloqueada no tiene ningún acceso: solo puede salir
+function pantallaBloqueada() {
+  $('#app').innerHTML = `<main class="screen bloqueada"><div class="empty">${ic('ban')}<h2 class="serif">${esc(C.BLOQUEADA_TITULO)}</h2><p>${esc(C.BLOQUEADA_TEXTO)}</p>
+    <button class="btn" data-act="salir_bloqueada">${ic('logout')} ${esc(C.AYUDA.salir || 'Salir')}</button></div></main>`;
+}
 // Sin sesión: la vitrina compartida se ve sin cuenta; lo demás pide entrar
 function pantallaSinCuenta() { const v = destinoVitrina(); if (v) pantallaVitrina(v); else pantallaEntrada(); }
 
@@ -4389,7 +4974,7 @@ async function iniciar() {
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
 window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
-  subirPendientes, contarPendientes, BDP, encuentroActual, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos,
+  subirPendientes, contarPendientes, BDP, encuentroActual, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos, arrancar, crearPDF, ordenarFichas,
   versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
 iniciar();
 })();
