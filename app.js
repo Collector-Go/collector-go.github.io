@@ -105,6 +105,13 @@ function mensajeError(e) {
   if (m.includes('MAX_COMENTARIOS')) return `Máximo ${C.COMENTARIOS_POR_PERSONA} comentarios por hallazgo`;
   if (m.includes('comments_body_check')) return `Máximo ${C.COMENTARIO_MAX} caracteres`;
   if (m.includes('INVITACION_INVALIDA')) return 'Esa invitación ya no es válida';
+  if (m.includes('YA_ES_MIEMBRO')) return 'Ya es parte del grupo';
+  if (m.includes('SIGUE_PRIMERO')) return C.AMISTAD_SIGUE_PRIMERO;
+  if (m.includes('SOLICITUD_INVALIDA')) return 'Esa solicitud ya no está disponible';
+  if (m.includes('VETADA')) return C.INVITAR_VETADA;
+  if (m.includes('DEMASIADAS_BUSQUEDAS')) return C.BUSCAR_ESPERA;
+  // La app es más nueva que la base de datos (falta correr la migración o refrescar la lista de funciones)
+  if ((e && e.code === 'PGRST202') || m.includes('Could not find the function')) return C.FALTA_MIGRACION;
   if ((e && e.code === '23503') || m.includes('foreign key')) return 'Primero borra o mueve sus hallazgos';
   if (e && e.code === '23505') return 'Ya estaba registrado';
   if (m.includes('"mutes"')) return 'No se puede silenciar a quien comparte un grupo contigo';
@@ -215,7 +222,11 @@ function supabaseApi() {
         .order('created_at', { ascending: false }).limit(100));
       return (r || []).reverse();
     },
-    enviarMensaje: (uid, body) => sb.from('messages').insert({ recipient: uid, body }).then(ok),
+    enviarMensaje: (uid, body, findId) => sb.from('messages').insert(Object.assign({ recipient: uid, body: body || '' }, findId ? { find_id: findId } : {})).then(ok),
+    estadoAmistad: (uid) => sb.rpc('estado_amistad', { persona: uid }).then(ok),
+    pedirAmistad: (uid, mensaje) => sb.rpc('pedir_amistad', { persona: uid, p_mensaje: mensaje || null }).then(ok),
+    responderAmistad: (uid, acepta) => sb.rpc('responder_amistad', { persona: uid, acepta }).then(ok),
+    amigasParaFicha: (fid) => sb.rpc('amigas_para_ficha', { fid }).then(ok),
     marcarLeidos: (uid) => sb.rpc('marcar_leidos', { con: uid }).then(ok),
     puedoEscribir: (uid) => sb.rpc('puedo_escribir', { destino: uid }).then(ok),
     puedoEtiquetar: () => sb.rpc('puedo_etiquetar').then(ok),
@@ -233,6 +244,12 @@ function supabaseApi() {
     marcarAusencia: (findId, p) => sb.rpc('marcar_ausencia', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
     historiaAusencias: (findId) => sb.rpc('historia_ausencias', { fid: findId }).then(ok),
     puedoColaborar: (findId) => sb.rpc('puedo_colaborar', { hallazgo: findId }).then(ok),
+    buscarPersonas: (q) => sb.rpc('buscar_personas', { q }).then(ok),
+    amigasParaInvitar: (gid) => sb.rpc('amigas_para_invitar', { gid }).then(ok),
+    invitarAGrupo: (gid, persona) => sb.rpc('invitar_a_grupo', { gid, persona }).then(ok),
+    responderInvitacion: (gid, acepta) => sb.rpc('responder_invitacion', { gid, acepta }).then(ok),
+    vetadosDeGrupo: (gid) => sb.rpc('vetados_de_grupo', { gid }).then(ok),
+    readmitir: (gid, persona) => sb.rpc('readmitir', { gid, persona }).then(ok),
     colaborar: (findId, tipo, p, photo, thumb, nota) => sb.rpc('colaborar', { hallazgo: findId, p_tipo: tipo, lat: p.lat, lng: p.lng,
       precision_m: p.acc == null ? 999 : p.acc, p_photo: photo, p_thumb: thumb, p_nota: nota || null }).then(ok),
     delSighting: (id) => sb.from('sightings').delete().eq('id', id).select('id').then(ok),
@@ -271,8 +288,8 @@ function supabaseApi() {
     myGroups: (uid) => sb.from('group_members').select('group_id, groups(*)').eq('user_id', uid).then(ok)
       .then((r) => r.map((x) => x.groups).filter(Boolean).sort((a, b) => a.created_at.localeCompare(b.created_at))),
     getGroup: (gid) => sb.from('groups').select('*').eq('id', gid).maybeSingle().then(ok),
-    groupMembers: (gid) => sb.from('group_members').select('user_id, joined_at, profiles(name, avatar, avatar_color)').eq('group_id', gid).then(ok)
-      .then((r) => r.map((m) => Object.assign({ user_id: m.user_id }, m.profiles || {}))),
+    groupMembers: (gid) => sb.from('group_members').select('user_id, joined_at, coadmin, profiles(name, avatar, avatar_color)').eq('group_id', gid).then(ok)
+      .then((r) => r.map((m) => Object.assign({ user_id: m.user_id, coadmin: !!m.coadmin }, m.profiles || {}))),
     createGroup: (g) => sb.from('groups').insert(g).select().single().then(ok),
     updateGroup: (gid, g) => sb.from('groups').update(g).eq('id', gid).select().single().then(ok),
     leaveGroup: (gid, uid) => sb.from('group_members').delete().match({ group_id: gid, user_id: uid }).then(ok),
@@ -460,11 +477,12 @@ function abrirHoja(render, after, tipo, fija) { pila.push({ render, after, tipo,
 function dibujarHoja() {
   if (S.mini) { S.mini.remove(); S.mini = null; }
   const root = $('#sheet-root');
-  if (!pila.length) { root.innerHTML = ''; return; }
+  if (!pila.length) { soltarFoco(root); root.innerHTML = ''; return; }
   const top = pila[pila.length - 1];
   const antes = $('.sheet', root), arriba = antes && dibujarHoja.ultima === top ? antes.scrollTop : 0;
   // La animación de entrada solo al abrir una hoja nueva; al volver a dibujar la misma, nada se mueve (evita el parpadeo)
   const nueva = dibujarHoja.ultima !== top || !antes;
+  soltarFoco(root);
   root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet${nueva ? ' entra' : ''}${top.tipo === 'registro' ? ' alta' : ''}" role="dialog" aria-modal="true">${top.render()}</div></div>`;
   dibujarHoja.ultima = top;
   liberarTexto();
@@ -473,6 +491,17 @@ function dibujarHoja() {
   if (arriba) hoja.scrollTop = arriba;
   if (top.after) top.after(hoja);
 }
+// En el iPhone (app instalada), si un campo con el teclado abierto se borra de la pantalla al redibujar,
+// el teclado puede quedarse trabado y ya no abrir en ningún campo. Antes de redibujar se suelta el campo.
+function soltarFoco(raiz) {
+  const a = document.activeElement;
+  if (a && a !== document.body && raiz && raiz.contains(a) && typeof a.blur === 'function') { try { a.blur(); } catch (e) { /* nada */ } }
+}
+// Ningún bloqueo de selección (del mapa u otro) debe llegar a los campos de texto
+window.addEventListener('selectstart', (ev) => {
+  const t = ev.target && ev.target.nodeType === 1 ? ev.target : ev.target && ev.target.parentElement;
+  if (t && t.closest && t.closest('input, textarea, [contenteditable]')) ev.stopImmediatePropagation();
+}, true);
 // El mapa bloquea la selección de texto mientras se arrastra y en iPhone a veces no la libera,
 // lo que impide escribir en los campos. Se libera siempre que aparece una hoja.
 function liberarTexto() {
@@ -480,6 +509,8 @@ function liberarTexto() {
   const h = document.documentElement.style; if (h.userSelect === 'none' || h.webkitUserSelect === 'none') { h.userSelect = ''; h.webkitUserSelect = ''; }
 }
 document.addEventListener('focusin', (ev) => { if (ev.target.matches && ev.target.matches('input, textarea')) liberarTexto(); });
+// Se libera también al tocar el campo, antes de que el iPhone decida si abre el teclado
+document.addEventListener('touchstart', (ev) => { if (ev.target.closest && ev.target.closest('input, textarea')) liberarTexto(); }, { capture: true, passive: true });
 // Las notas empiezan en un renglón y crecen con el texto
 function crecer(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 220) + 'px'; }
 function crecerTextos(raiz) { if (raiz) $$('textarea.crece', raiz).forEach((t) => { if (t.value) crecer(t); }); }
@@ -821,11 +852,32 @@ const atenuado = (c) => (c.ausencias || 0) >= C.AUSENCIAS_ATENUAR;
 const K = {};
 async function ofrecerFotoCol(c, tipo, textoOk) {
   let puede = false;
-  if (!c.is_private && navigator.onLine) { try { puede = await api.puedoColaborar(c.id); } catch (e) { puede = false; } }
+  if (!c.is_private && navigator.onLine) {
+    // Si la pregunta falla se dice por qué (antes se ocultaba y solo quedaba el mensaje corto)
+    try { puede = await api.puedoColaborar(c.id); } catch (e) { aviso(textoOk, tipo === 'visto' ? 'eye-check' : 'map-pin-off'); return fallo(e); }
+  }
   if (!puede) return aviso(textoOk, tipo === 'visto' ? 'eye-check' : 'map-pin-off');
+  abrirCol(c, tipo);
+}
+function abrirCol(c, tipo) {
   limpiarCol();
   Object.assign(K, { fid: c.id, tipo, foto: null, enc: null, vistaUrl: null, nota: '' });
   abrirHoja(colHTML, montarCol, 'colaborar');
+}
+async function alternarReaccion(c, tipo, mia) {
+  const r = Object.assign({}, c.reactions || {});
+  r[tipo] = Math.max(0, (r[tipo] || 0) + (mia ? -1 : 1));
+  const nueva = Object.assign({}, c, { reactions: r, my_reactions: mia ? c.my_reactions.filter((x) => x !== tipo) : (c.my_reactions || []).concat(tipo) });
+  guarda([nueva]); refrescarFicha(c.id);
+  try { await api.react(c.id, tipo, !mia, S.user.id); }
+  catch (e) { guarda([c]); refrescarFicha(c.id); fallo(e); }
+}
+// "Lo vi" ya marcado: sumar la foto de hoy o quitar la marca
+function hojaVistoMarcado(c, conFoto) {
+  abrirHoja(() => `${cabeza(`${ic('eye-check')} ${esc(C.AYUDA.visto)}`)}
+    ${conFoto ? `<p class="tiny" style="margin:0 0 12px">${esc(C.VISTO_MARCADO_TEXTO)}</p>
+    <button class="btn block" data-act="visto_sumar_foto" data-id="${c.id}">${ic('camera')} ${esc(C.VISTO_SUMAR_FOTO)}</button>` : ''}
+    <button class="btn alt block" data-act="visto_quitar" data-id="${c.id}" style="margin-top:8px">${ic('eye-off')} ${esc(C.VISTO_QUITAR)}</button>`, null, 'visto_marcado');
 }
 function limpiarCol() {
   if (K.vistaUrl) URL.revokeObjectURL(K.vistaUrl);
@@ -1056,6 +1108,7 @@ function pintarApp() {
   pintarInstalar();
 }
 function irA(tab) {
+  soltarFoco($('#app'));
   if (tab !== 'map') terminarGuia();
   S.tab = tab;
   $$('.nav [data-act="tab"]').forEach((b) => b.classList.toggle('on', b.dataset.v === tab));
@@ -1070,11 +1123,12 @@ function refrescarActual() { if (S.tab === 'map') cargarPines(); else if ($('#sc
 /* Muro */
 function reaccionesHTML(c) {
   const propio = c.user_id === S.user.id;
-  const noEsta = puedoMarcarAusencia(c) ? `<button class="react con-texto ausencia ${atenuado(c) ? 'on' : ''}" data-act="ya_no_esta" data-id="${c.id}" data-tip="${esc(C.AYUDA.ausencia_ayuda)}" aria-label="${esc(C.AYUDA.ausencia_ayuda)}">${ic('map-pin-off')}<span class="react-lbl">${esc(C.AYUDA.ausencia)}</span>${c.ausencias ? `<span class="n">${c.ausencias}</span>` : ''}</button>` : '';
+  // En lo tuyo "No está" es solo un ícono, del tamaño de las reacciones
+  const noEsta = puedoMarcarAusencia(c) ? `<button class="react ${propio ? '' : 'con-texto'} ausencia ${atenuado(c) ? 'on' : ''}" data-act="ya_no_esta" data-id="${c.id}" data-tip="${esc(C.AYUDA.ausencia_ayuda)}" aria-label="${esc(C.AYUDA.ausencia_ayuda)}">${ic('map-pin-off')}${propio ? '' : `<span class="react-lbl">${esc(C.AYUDA.ausencia)}</span>`}${c.ausencias ? `<span class="n">${c.ausencias}</span>` : ''}</button>` : '';
   return `<div class="reacts">${C.REACCIONES.map((r) => {
     const n = (c.reactions || {})[r.tipo] || 0, mia = (c.my_reactions || []).includes(r.tipo);
     const cara = `${ic(r.icono)}${r.etiqueta ? `<span class="react-lbl">${esc(r.etiqueta)}</span>` : ''}${n ? `<span class="n">${n}</span>` : ''}`;
-    if (propio || c.is_private) return n ? `<span class="react ${r.etiqueta ? 'con-texto' : ''}" data-tip="${esc(r.ayuda)}">${cara}</span>` : '';
+    if (propio || c.is_private) return n ? `<span class="react ${r.etiqueta ? 'con-texto fija' : ''}" data-tip="${esc(r.ayuda)}">${cara}</span>` : '';
     return `<button class="react ${r.etiqueta ? 'con-texto' : ''} ${mia ? 'on' : ''}" data-act="reaccion" data-id="${c.id}" data-v="${r.tipo}" data-tip="${esc(r.ayuda)}" aria-label="${esc(r.ayuda)}">${cara}</button>`;
   }).join('')}${noEsta}</div>`;
 }
@@ -1105,6 +1159,9 @@ function cartaDeNovedad(it) {
     created_at: it.at, reactions: it.reactions, my_reactions: it.my_reactions, sightings_count: it.sightings_count,
     comments_count: it.comments_count, parcial: true };
 }
+// El Muro carga de 20 en 20: al llegar a la tarjeta 19 del último lote se pide el siguiente (sin botón)
+let vigiaMuro = null;
+const MURO_LOTE = 20;
 async function pintarMuro(masViejo) {
   const scr = $('#scr');
   if (!masViejo) {
@@ -1114,23 +1171,50 @@ async function pintarMuro(masViejo) {
       <div class="feed" id="feed"><div class="empty"><span class="spin">${ic('loader-2')}</span></div></div>`;
     S.feed = []; S.feedFin = false;
     pintarCampana();
-  }
+  } else if (S.feedCargando || S.feedFin) return;
+  if (vigiaMuro) { vigiaMuro.disconnect(); vigiaMuro = null; }
+  const filtro = S.muro, pedido = (S.muroPedido || 0) + 1; S.muroPedido = pedido;
+  S.feedCargando = true;
+  const html = (l) => l.map((it) => (it.kind === 'find' ? tarjeta(S.cache.get(it.find_id)) : tarjetaReencuentro(it))).join('');
   try {
     const antes = S.feed.length ? S.feed[S.feed.length - 1].at : null;
-    const lote = await api.feed(antes, opcionesFiltro(S.muro));
+    const lote = await api.feed(antes, opcionesFiltro(filtro));
+    if (pedido !== S.muroPedido) return; // se cambió el filtro mientras cargaba
     lote.forEach(sinColeccion);
     lote.forEach((it) => { if (it.kind === 'find') { const ya = S.cache.get(it.find_id); S.cache.set(it.find_id, ya && !ya.parcial ? Object.assign({}, ya, { reactions: it.reactions, my_reactions: it.my_reactions }) : cartaDeNovedad(it)); } });
     S.feed = S.feed.concat(lote);
-    if (lote.length < 20) S.feedFin = true;
+    if (lote.length < MURO_LOTE) S.feedFin = true;
+    S.feedCargando = false;
     const f = $('#feed'); if (!f) return;
-    const vacio = S.muro.modo === 'siguiendo'
-      ? `<div class="empty">${ic('user-plus')}<p>Aún no sigues a nadie. Abre un perfil y toca ${ic('user-plus')}</p></div>`
+    const vacio = filtro.modo === 'siguiendo'
+      ? `<div class="empty">${ic('user-plus')}<p>${esc(C.MURO_SIN_SEGUIR)}</p><button class="btn" data-act="buscar_personas">${ic('search')} ${esc(C.BUSCAR_TITULO)}</button></div>`
       : `<div class="empty">${ic('camera')}<p>Aún no hay hallazgos aquí</p><button class="btn" data-act="nuevo">${ic('camera')}</button></div>`;
-    f.innerHTML = S.feed.length
-      ? S.feed.map((it) => (it.kind === 'find' ? tarjeta(S.cache.get(it.find_id)) : tarjetaReencuentro(it))).join('')
-        + (S.feedFin ? '' : `<div class="row" style="justify-content:center">${ib('mas', 'plus', 'mas')}</div>`)
-      : vacio;
-  } catch (e) { fallo(e); }
+    const marca = $('.feed-mas', f);
+    if (masViejo && marca) marca.insertAdjacentHTML('beforebegin', html(lote));
+    else f.innerHTML = S.feed.length ? html(S.feed) + '<div class="feed-mas"></div>' : vacio;
+    vigilarMuro();
+  } catch (e) {
+    if (pedido !== S.muroPedido) return;
+    S.feedCargando = false; fallo(e);
+    const m = $('#feed .feed-mas'); if (m) m.innerHTML = ib('mas', 'refresh', 'mas'); // si falla, se puede reintentar a mano
+    else if (!S.feed.length && $('#feed')) $('#feed').innerHTML = `<div class="empty">${ic('cloud-off')}<p>${esc(C.MURO_FALLO)}</p>${ib('refrescar', 'refresh', 'refrescar', '', 'on')}</div>`;
+  }
+}
+function vigilarMuro() {
+  const f = $('#feed'), marca = f && $('.feed-mas', f);
+  if (!marca) return;
+  if (S.feedFin) { marca.remove(); return; }
+  if (!('IntersectionObserver' in window)) { marca.innerHTML = ib('mas', 'plus', 'mas'); return; }
+  marca.innerHTML = `<span class="spin">${ic('loader-2')}</span>`;
+  const tarjetas = $$(':scope > article.card', f);
+  const objetivo = tarjetas[Math.max(0, tarjetas.length - 2)] || marca;
+  vigiaMuro = new IntersectionObserver((es, obs) => {
+    if (!es.some((x) => x.isIntersecting)) return;
+    obs.disconnect(); if (vigiaMuro === obs) vigiaMuro = null;
+    pintarMuro(true);
+  }, { root: null, threshold: 0 });
+  vigiaMuro.observe(objetivo);
+  if (objetivo !== marca) vigiaMuro.observe(marca); // por si la tarjeta vigilada se vuelve a dibujar
 }
 function actualizarTarjeta(c) {
   $$(`[data-card="${c.id}"]`).forEach((el) => { el.outerHTML = tarjeta(c); });
@@ -1184,6 +1268,33 @@ function rejilla(lista, mostrarPrivado) {
 }
 
 /* Perfil (propio en pestaña, ajeno en hoja) */
+// Amistad con otra persona: pedirla (si ya la sigues), ver que está enviada, o aceptarla
+function botonAmistad(uid, estado) {
+  if (estado === 'puede') return `<button class="btn sm" data-act="pedir_amistad" data-id="${uid}">${ic('heart-handshake')} ${esc(C.AMISTAD_PEDIR)}</button>`;
+  if (estado === 'enviada') return `<span class="estado-amistad tiny">${ic('clock')} ${esc(C.AMISTAD_ENVIADA)}</span>`;
+  if (estado === 'recibida') return `<button class="btn sm" data-act="amistad_aceptar" data-id="${uid}">${ic('user-check')} ${esc(C.AMISTAD_ACEPTAR_SUYA)}</button>`;
+  return '';
+}
+function hojaPedirAmistad(uid) {
+  const D = { texto: '' };
+  const hoja = { render: () => `${cabeza(`${ic('heart-handshake')} ${esc(C.AMISTAD_PEDIR)}`)}
+      <p class="tiny" style="margin:0 0 10px">${esc(C.AMISTAD_TEXTO)}</p>
+      <label class="tiny" for="amistad-in">${esc(C.AMISTAD_MENSAJE)}</label>
+      <textarea id="amistad-in" class="in" maxlength="${C.AMISTAD_MAX}" rows="3">${esc(D.texto)}</textarea>
+      <div class="tiny" style="text-align:right"><span id="amistad-n">${D.texto.length}</span>/${C.AMISTAD_MAX}</div>
+      <button class="btn block" data-act="enviar_amistad" data-id="${uid}" style="margin-top:8px">${ic('send')} ${esc(C.AMISTAD_ENVIAR)}</button>`,
+    after: (r) => { const t = $('#amistad-in', r); if (t) t.addEventListener('input', () => { D.texto = t.value; const n = $('#amistad-n'); if (n) n.textContent = t.value.length; }); },
+    tipo: 'pedir_amistad' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+}
+// Al cambiar una amistad se refresca lo que esté abierto (perfil o chat)
+function refrescarAmistad() {
+  const top = hojaArriba(); if (!top) return;
+  if (top.tipo === 'perfil') { const D = $('.sheet')._perfil; if (D) D.cargar(); }
+  if (top.tipo === 'chat' && top.datos) top.datos.cargar();
+  if (top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+}
 function perfilHTML(p, st, propio, tarjetas, o = {}) {
   const ls = logros(st);
   const porCat = (st.categorias || []).map((c) => `<div class="li" style="flex-direction:column;align-items:stretch">
@@ -1202,9 +1313,11 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
     <div class="row wrap" style="margin:14px 0">
       ${propio ? ib('editar_perfil', 'pencil', 'editar') : ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? '' : 'on')}
       ${propio ? ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`) : ''}
+      ${propio ? ib('buscar_personas', 'search', 'buscar_personas') : ''}
       ${ib('tabla', 'trophy', 'tabla')}
       ${!propio && o.comparte === false ? (silencio ? ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${silencio.id}"`, 'on') : ib('silenciar', 'volume-off', 'silenciar', `data-user="${p.id}"`)) : ''}
       ${!propio && o.puedeChat ? ib('chat', 'messages', 'mensaje', `data-id="${p.id}"`, 'on') : ''}
+      ${!propio && !p.blocked ? botonAmistad(p.id, o.amistad) : ''}
       ${propio ? ib('silenciados', 'volume-off', 'silenciados') + ib('buzon', 'mail', 'buzon') + (tipoInstalacion() ? ib('instalar', 'device-mobile', 'instalar') : '') : ''}
       ${propio && S.me.is_admin ? ib('admin', 'shield', 'admin') : ''}
       ${!propio && S.me.is_admin && !p.is_admin ? ib(p.blocked ? 'desbloquear' : 'bloquear', p.blocked ? 'lock-open' : 'ban', p.blocked ? 'desbloquear' : 'bloquear', `data-id="${p.id}"`) : ''}
@@ -1281,14 +1394,14 @@ async function avisoUsoPerfil() {
 async function abrirPerfil(uid) {
   if (uid === S.user.id) { cerrarTodo(); irA('perfil'); return; }
   const datos = { p: null, st: null, cards: null };
-  abrirHoja(() => datos.p ? cabeza('') + perfilHTML(datos.p, datos.st, false, datos.cards, { comparte: datos.comparte, puedeChat: datos.puedeChat }) : cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`,
+  abrirHoja(() => datos.p ? cabeza('') + perfilHTML(datos.p, datos.st, false, datos.cards, { comparte: datos.comparte, puedeChat: datos.puedeChat, amistad: datos.amistad }) : cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`,
     (r) => { r._perfil = datos; }, 'perfil');
   datos.cargar = async () => {
     try {
-      const [p, st, cards, comparte, puedeChat] = await Promise.all([api.getProfile(uid), api.stats(uid), api.userCards(uid),
-        api.comparteGrupo(uid).catch(() => null), api.puedoEscribir(uid).catch(() => false)]);
+      const [p, st, cards, comparte, puedeChat, amistad] = await Promise.all([api.getProfile(uid), api.stats(uid), api.userCards(uid),
+        api.comparteGrupo(uid).catch(() => null), api.puedoEscribir(uid).catch(() => false), api.estadoAmistad(uid).catch(() => null)]);
       if (!p) { cerrarHoja(); return aviso('Perfil no disponible', 'alert-triangle'); }
-      Object.assign(datos, { p, st, cards: guarda(cards), comparte, puedeChat }); if (hojaArriba() && hojaArriba().tipo === 'perfil') dibujarHoja();
+      Object.assign(datos, { p, st, cards: guarda(cards), comparte, puedeChat, amistad }); if (hojaArriba() && hojaArriba().tipo === 'perfil') dibujarHoja();
     } catch (e) { fallo(e); }
   };
   datos.cargar();
@@ -1382,7 +1495,8 @@ function pieFoto(c, h) {
   const quien = h.tipo === 'no_esta' ? `${ic('map-pin-off')} ${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}`
     : h.tipo === 'visto' ? `${ic('users')} ${esc(C.COL_DE.replace('{n}', h.user_name || ''))}`
     : `${ic('repeat')} ${esc(c.group_id && h.user_name ? h.user_name : C.AYUDA.reencuentro)}`;
-  const mia = h.user_id === S.user.id && c.user_id !== S.user.id;
+  // tu foto de la comunidad (y en lo tuyo, tu propia foto de "No está") se puede borrar
+  const mia = h.user_id === S.user.id && (c.user_id !== S.user.id || h.tipo === 'no_esta');
   const ajenaEnLoMio = c.user_id === S.user.id && h.user_id && h.user_id !== S.user.id;
   return `<div class="foto-pie"><span class="grow">${quien} · ${esc(fecha(h.created_at))}${h.note ? ` · «${esc(h.note)}»` : ''}</span>
     ${mia ? `<button class="linkbtn" data-act="col_borrar" data-id="${h.id}" data-f="${c.id}">${ic('trash')} ${esc(C.COL_BORRAR)}</button>` : ''}
@@ -1415,6 +1529,7 @@ function fichaHTML(c, H) {
       ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'on')}
       ${propio && !c.is_private ? ib('whatsapp', 'brand-whatsapp', 'whatsapp', `data-id="${c.id}"`) : ''}
       ${puedoReencontrar(c) ? ib('reencuentro', 'repeat', 'reencuentro', `data-id="${c.id}"`) : ''}
+      ${!c.is_private ? ib('enviar_ficha', 'send', 'enviar_ficha', `data-id="${c.id}"`) : ''}
       ${!c.is_private ? ib('etiquetar', 'tag', 'etiquetar', `data-id="${c.id}"`) : ''}
       ${propio ? ib('editar_hallazgo', 'pencil', 'editar', `data-id="${c.id}"`) : ''}
       <span class="grow"></span>
@@ -1648,6 +1763,9 @@ function montarEncuadre(cv, E, alSoltar) {
   cv.addEventListener('pointerdown', (ev) => {
     ev.preventDefault();
     if (E.ocupado) return;
+    // Un dedo nuevo que empieza el gesto: se olvidan dedos viejos cuyo "soltar" se perdió
+    // (en iPhone pasa; si no, al arrastrar con un dedo el encuadre se acercaba de golpe)
+    if (ev.isPrimary) dedos.clear();
     try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* nada */ }
     dedos.set(ev.pointerId, { x: ev.clientX, y: ev.clientY }); base = estado();
     toque = dedos.size === 1 ? { x: ev.clientX, y: ev.clientY, t: Date.now() } : null;
@@ -1656,10 +1774,12 @@ function montarEncuadre(cv, E, alSoltar) {
     if (!dedos.has(ev.pointerId) || !base) return;
     dedos.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     const ahora = estado();
-    if (dedos.size > 1 && base.d > 0) E.z = base.z * (ahora.d / base.d);
+    // Pellizco solo con dos dedos reales y separados; se mide paso a paso, así un salto raro no dispara el acercamiento
+    if (dedos.size === 2 && base.d >= C.ENCUADRE_PELLIZCO_MIN) E.z = base.z * Math.min(1.6, Math.max(0.6, ahora.d / base.d));
     const k = ladoVisible(E) / ancho();
     E.cx = base.cx - (ahora.mx - base.mx) * k; E.cy = base.cy - (ahora.my - base.my) * k;
     limitarEncuadre(E); repintar();
+    if (dedos.size === 2) base = estado();
   });
   const fin = (ev) => {
     if (!dedos.has(ev.pointerId)) return;
@@ -1674,6 +1794,7 @@ function montarEncuadre(cv, E, alSoltar) {
     if (!dedos.size) soltar();
   };
   cv.addEventListener('pointerup', fin); cv.addEventListener('pointercancel', fin);
+  cv.addEventListener('lostpointercapture', (ev) => { if (dedos.has(ev.pointerId)) fin(ev); });
   cv.addEventListener('wheel', (ev) => {
     ev.preventDefault();
     if (E.ocupado) return;
@@ -1743,7 +1864,9 @@ async function prepararFotos() {
   const alfa = R.usarRecorte && R.recorte;
   const fuente = alfa ? R.recorte : R.original;
   const img = await cargarImagen(fuente);
-  const grande = await lienzoABlob(escalar(img, alfa ? Math.min(C.FOTO_LADO, 900) : C.FOTO_LADO), C.FOTO_CALIDAD, alfa);
+  let grande = await lienzoABlob(escalar(img, alfa ? Math.min(C.FOTO_LADO, C.FOTO_LADO_RECORTE) : C.FOTO_LADO), C.FOTO_CALIDAD, alfa);
+  // Sin WebP (algunos iPhone) lo recortado va en PNG, que pesa mucho: si pasa del límite del almacén se hace más chico
+  if (alfa && grande && grande.type === 'image/png' && grande.size > C.FOTO_PNG_MAX) grande = await lienzoABlob(escalar(img, 900), C.FOTO_CALIDAD, alfa);
   const mini = await lienzoABlob(escalar(img, C.MINIATURA_LADO), C.MINIATURA_CALIDAD, alfa);
   return { grande, mini };
 }
@@ -2049,45 +2172,152 @@ function cercaDeMi() {
     .finally(() => { if (pila.includes(hoja) && hojaArriba() === hoja) dibujarHoja(); });
 }
 
-/* Tabla general (de toda la comunidad o de un grupo) */
+/* Campeones (de toda la comunidad o de un grupo): arriba el top de fotos de 7 días, abajo la tabla con podio */
 function tablaGeneral(grupo) {
   const g = grupo ? miGrupo(grupo) : null;
-  const D = { metric: 'total', filas: null, grupo };
-  const hoja = { render: () => `${cabeza(`${ic('trophy')} ${g ? esc(g.name) : ''}`)}
-    <div class="toggle" style="margin-bottom:12px">
-      <button type="button" data-act="tabla_metrica" data-v="total" class="${D.metric === 'total' ? 'on' : ''}" data-tip="Hallazgos" aria-label="Hallazgos">${ic('photo')}</button>
-      <button type="button" data-act="tabla_metrica" data-v="colonias" class="${D.metric === 'colonias' ? 'on' : ''}" data-tip="Colonias" aria-label="Colonias">${ic('map-pin')}</button>
-      <button type="button" data-act="tabla_metrica" data-v="fotos" class="${D.metric === 'fotos' ? 'on' : ''}" data-tip="${esc(C.TOP_FOTOS)}" aria-label="${esc(C.TOP_FOTOS)}">${ic('sparkles')}</button></div>
-    ${D.metric === 'fotos' ? topFotosHTML(D) : !D.filas ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.filas.length ? `<div class="list">${D.filas.map((f, i) => `
-      <button class="li" data-act="perfil" data-id="${f.user_id}" style="${f.user_id === S.user.id ? 'background:var(--mostaza)' : ''}">
-        <span class="rank">${i < 3 ? ic(['crown', 'medal', 'medal'][i]) : i + 1}</span>${avatar(f)}<b class="grow" style="text-align:left">${esc(f.name)}</b>
-        <b>${D.metric === 'colonias' ? f.colonias : f.total}</b></button>`).join('')}</div>` : `<div class="empty">${ic('trophy')}<p>Todavía no hay nadie en la tabla</p></div>`}`,
+  const D = { metric: 'total', filas: {}, fotos: null, grupo };
+  const hoja = { render: () => `${cabeza(`${ic('trophy')} ${esc(g ? g.name : C.CAMPEONES_TITULO)}`)}
+    <div class="sec campeones-fotos"><h3>${ic('sparkles')} ${esc(C.TOP_FOTOS)}</h3>
+      <p class="tiny top-nota">${esc(C.TOP_TEXTO)}</p>${topFotosHTML(D)}</div>
+    <div class="sec"><div class="row between campeones-tabla-cab"><h3>${ic('trophy')} ${esc(C.CAMPEONES_TABLA)}</h3>
+      <div class="toggle mini campeones-metrica">
+        <button type="button" data-act="tabla_metrica" data-v="total" class="${D.metric === 'total' ? 'on' : ''}" aria-pressed="${D.metric === 'total'}">${ic('photo')} ${esc(C.CAMPEONES_HALLAZGOS)}</button>
+        <button type="button" data-act="tabla_metrica" data-v="colonias" class="${D.metric === 'colonias' ? 'on' : ''}" aria-pressed="${D.metric === 'colonias'}">${ic('map-pin')} ${esc(C.CAMPEONES_COLONIAS)}</button></div></div>
+      ${podioHTML(D)}</div>`,
     after: (r) => { r._tabla = D; }, tipo: 'tabla' };
   pila.push(hoja); dibujarHoja();
+  const pintar = () => { if (hojaArriba() === hoja) dibujarHoja(); };
+  // La tabla de cada métrica se pide una vez (colonias solo al tocarla)
   D.cargar = async () => {
-    D.filas = null; D.fotos = null; dibujarHoja();
-    try {
-      if (D.metric === 'fotos') {
-        const top = await api.topFotos(D.grupo);
-        const cards = guarda(await api.cardsByIds(top.map((t) => t.find_id)));
-        D.fotos = top.map((t) => ({ c: cards.find((x) => x.id === t.find_id), puntos: t.puntos })).filter((x) => x.c);
-      } else D.filas = await api.leaderboard(D.metric, D.grupo);
-    } catch (e) { D.filas = []; D.fotos = []; fallo(e); }
-    if (hojaArriba() === hoja) dibujarHoja();
+    const m = D.metric;
+    if (D.filas[m]) return pintar();
+    pintar();
+    try { D.filas[m] = await api.leaderboard(m, D.grupo); } catch (e) { D.filas[m] = []; fallo(e); }
+    pintar();
   };
+  (async () => {
+    try {
+      const top = await api.topFotos(D.grupo);
+      const cards = top.length ? guarda(await api.cardsByIds(top.map((t) => t.find_id))) : [];
+      D.fotos = top.map((t) => ({ c: cards.find((x) => x.id === t.find_id), puntos: t.puntos })).filter((x) => x.c);
+    } catch (e) { D.fotos = []; fallo(e); }
+    pintar();
+  })();
   D.cargar();
 }
-// Top de los 7 días: las 5 fotos públicas con más reacciones y comentarios (cada uno vale 1)
+// Top de los 7 días: las 5 fotos públicas con más reacciones y comentarios (cada uno vale 1); se desliza de lado
 function topFotosHTML(D) {
-  if (!D.fotos) return `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
-  return `<p class="tiny top-nota">${ic('sparkles')} ${esc(C.TOP_TEXTO)}</p>
-    ${D.fotos.length ? `<div class="list">${D.fotos.map(({ c, puntos }, i) => `
-      <button class="li top-foto" data-act="ficha" data-id="${c.id}" style="text-align:left">
-        <span class="rank">${i < 3 ? ic(['crown', 'medal', 'medal'][i]) : i + 1}</span>
-        <img class="thumb" src="${foto(c, true)}" alt="" loading="lazy">
-        <div class="grow" style="min-width:0"><b>${esc(c.name)}</b><div class="tiny">${esc(c.user_name)}${c.colonia ? ` · ${esc(c.colonia)}` : ''}</div></div>
-        <b class="row" style="gap:3px">${ic('heart')}${puntos}</b></button>`).join('')}</div>`
-    : `<div class="empty">${ic('sparkles')}<p>${esc(C.TOP_VACIO)}</p></div>`}`;
+  if (!D.fotos) return `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!D.fotos.length) return `<div class="empty" style="padding:10px">${ic('sparkles')}<p>${esc(C.TOP_VACIO)}</p></div>`;
+  return `<div class="top-carrusel">${D.fotos.map(({ c, puntos }, i) => `
+    <button type="button" class="top-ft ${i === 0 ? 'primera' : ''}" data-act="ficha" data-id="${c.id}" aria-label="${esc(c.name)}">
+      <span class="top-img"><img src="${foto(c, true)}" alt="" loading="lazy">
+        <span class="top-pos">${i === 0 ? ic('crown') : i + 1}</span><span class="top-pts">${ic('heart')}${puntos}</span></span>
+      <b>${esc(c.name)}</b><span class="tiny">${esc(c.user_name)}</span></button>`).join('')}</div>`;
+}
+// Podio de las tres primeras (la primera al centro) y la lista desde el 4.º lugar
+function podioHTML(D) {
+  const filas = D.filas[D.metric];
+  if (!filas) return `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!filas.length) return `<div class="empty">${ic('trophy')}<p>Todavía no hay nadie en la tabla</p></div>`;
+  const valor = (f) => (D.metric === 'colonias' ? f.colonias : f.total);
+  const unidad = (n) => (D.metric === 'colonias' ? (n === 1 ? 'colonia' : 'colonias') : (n === 1 ? 'hallazgo' : 'hallazgos'));
+  const escalon = (f, k) => (f ? `<button type="button" class="podio-p p${k} ${f.user_id === S.user.id ? 'yo' : ''}" data-act="perfil" data-id="${f.user_id}" aria-label="${k}. ${esc(f.name)}">
+      ${avatar(f, k === 1 ? 'lg' : '')}<span class="podio-nom">${esc(f.name)}</span>
+      <span class="podio-esc">${ic(k === 1 ? 'crown' : 'medal')}<b>${valor(f)}</b><span>${unidad(valor(f))}</span></span></button>` : '<span></span>');
+  return `<div class="podio">${escalon(filas[1], 2)}${escalon(filas[0], 1)}${escalon(filas[2], 3)}</div><div class="podio-base"></div>
+    ${filas.length > 3 ? `<div class="list">${filas.slice(3).map((f, i) => `
+      <button class="li ${f.user_id === S.user.id ? 'yo' : ''}" data-act="perfil" data-id="${f.user_id}">
+        <span class="rank">${i + 4}</span>${avatar(f)}<b class="grow" style="text-align:left">${esc(f.name)}</b><b>${valor(f)}</b></button>`).join('')}</div>` : ''}`;
+}
+
+/* Invitar a un grupo: amigas dentro de la app, WhatsApp o enlace, y readmitir (esto último solo administradoras).
+   En un grupo normal invita cualquier miembro; en uno de encuentro, quien lo creó y sus coadministradoras. */
+function datosGrupo(gid) {
+  const h = pila.slice().reverse().find((x) => x.tipo === 'grupo' && x.datos && x.datos.g && x.datos.g.id === gid);
+  const E = encuentroActual(), ge = E && E.e && E.e.grupo && E.e.grupo.id === gid ? E.e.grupo : null;
+  const g = ge || (h && h.datos.g) || miGrupo(gid);
+  return { g, recargar: () => { if (h) h.datos.cargar(); if (ge) E.cargar(); } };
+}
+function enlaceGrupo(g) { return g && g.invite_code ? `${location.origin + location.pathname}#g=${g.invite_code}` : ''; }
+function hojaInvitar(gid) {
+  const { g } = datosGrupo(gid); if (!g) return;
+  const D = { gid, amigas: null, vetados: [] };
+  const fila = (a) => {
+    const estado = a.estado === 'pendiente' ? `<span class="tiny invit-estado">${ic('clock')} ${esc(C.INVITAR_ENVIADA)}</span>`
+      : a.estado === 'rechazada' ? `<span class="tiny invit-estado">${esc(C.INVITAR_RECHAZADA)}</span>` : '';
+    return `<div class="li"><button class="row grow" data-act="perfil" data-id="${a.user_id}" style="text-align:left;min-width:0">${avatar(a)}
+        <div class="grow" style="min-width:0"><b>${esc(a.name)}</b>${estado ? `<div>${estado}</div>` : ''}</div></button>
+      ${a.estado === 'pendiente' ? '' : `<button class="btn sm" data-act="invitar_amiga" data-g="${gid}" data-id="${a.user_id}">${ic(a.estado === 'rechazada' ? 'refresh' : 'user-plus')} ${esc(a.estado === 'rechazada' ? C.INVITAR_DE_NUEVO : C.INVITAR_BOTON)}</button>`}</div>`;
+  };
+  const hoja = { render: () => {
+      const enlace = enlaceGrupo(datosGrupo(gid).g);
+      return `${cabeza(`${ic('user-plus')} ${esc(C.INVITAR_A.replace('{g}', g.name))}`)}
+      <div class="sec"><h3>${ic('users')} ${esc(C.INVITAR_AMIGAS)}</h3>
+        ${D.amigas === null ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>`
+          : D.amigas.length ? `<div class="list">${D.amigas.map(fila).join('')}</div>` : `<p class="tiny">${esc(C.INVITAR_SIN_AMIGAS)}</p>`}</div>
+      ${enlace ? `<div class="sec"><h3>${ic('link')} ${esc(C.INVITAR_FUERA)}</h3><div class="row wrap">
+        <button class="btn alt sm" data-act="invitar_whatsapp" data-g="${gid}">${ic('brand-whatsapp')} WhatsApp</button>
+        <button class="btn alt sm" data-act="copiar_invitacion" data-g="${gid}">${ic('copy')} ${esc(C.INVITAR_COPIAR)}</button></div></div>` : ''}
+      ${D.vetados.length ? `<div class="sec"><h3>${ic('user-minus')} ${esc(C.VETADOS_TITULO)}</h3><p class="tiny">${esc(C.VETADOS_TEXTO)}</p>
+        <div class="list">${D.vetados.map((v) => `<div class="li">${avatar(v)}<b class="grow">${esc(v.name)}</b>
+          <button class="btn alt sm" data-act="readmitir_persona" data-g="${gid}" data-id="${v.user_id}">${ic('user-check')} ${esc(C.READMITIR)}</button></div>`).join('')}</div></div>` : ''}`;
+    }, tipo: 'invitar' };
+  hoja.datos = D;
+  D.cargar = async () => {
+    try { [D.amigas, D.vetados] = await Promise.all([api.amigasParaInvitar(gid), api.vetadosDeGrupo(gid)]); }
+    catch (e) { D.amigas = D.amigas || []; D.vetados = D.vetados || []; fallo(e); }
+    if (pila.includes(hoja) && hojaArriba() === hoja) dibujarHoja();
+  };
+  pila.push(hoja); dibujarHoja();
+  D.cargar();
+}
+// Menú de una persona en un grupo normal (en los de encuentro está hojaMiembroEncuentro)
+function hojaMiembroGrupo(gid, uid) {
+  const h = pila.slice().reverse().find((x) => x.tipo === 'grupo' && x.datos && x.datos.g && x.datos.g.id === gid);
+  const m = h && (h.datos.miembros || []).find((x) => x.user_id === uid); if (!m) return;
+  const soyDuena = h.datos.g.owner === S.user.id;
+  abrirHoja(() => `${cabeza(`<span class="row">${avatar(m)} ${esc(m.name)}</span>`)}
+    <div class="list">
+      ${soyDuena ? `<button class="li" data-act="coadmin_grupo" data-g="${gid}" data-id="${uid}" data-v="${m.coadmin ? '0' : '1'}">${ic('shield')}<b class="grow" style="text-align:left">${m.coadmin ? 'Quitar cargo de coadministradora' : 'Nombrar coadministradora'}</b></button>` : ''}
+      <button class="li" data-act="sacar_grupo" data-g="${gid}" data-id="${uid}">${ic('user-minus')}<b class="grow" style="text-align:left">Sacar del grupo</b></button>
+    </div>`, null, 'miembro_grupo');
+}
+
+/* Buscar personas por nombre: 1 o 2 letras = nombre exacto; desde 3, nombres que lo contienen (máx. 10) */
+function hojaBuscarPersonas() {
+  const D = { q: '', res: null, pedido: 0, espera: null };
+  const resHTML = () => {
+    const t = D.q.trim();
+    if (!t) return `<p class="tiny buscar-pista">${esc(C.BUSCAR_PISTA)}</p>`;
+    if (D.res === null) return `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>`;
+    if (!D.res.length) return `<div class="empty" style="padding:10px">${ic('user-search')}<p>${esc(t.length < 3 ? C.BUSCAR_NADA_CORTO : C.BUSCAR_NADA)}</p></div>`;
+    return `<div class="list">${D.res.map((p) => { const sigo = S.following.has(p.id);
+      return `<div class="li persona-res">
+        <button class="row grow" data-act="perfil" data-id="${p.id}" style="text-align:left;min-width:0">${avatar(p)}
+          <div class="grow" style="min-width:0"><b>${esc(p.name)}</b><div class="tiny">${p.bio ? esc(p.bio) + ' · ' : ''}${p.hallazgos} ${p.hallazgos === 1 ? 'hallazgo' : 'hallazgos'}</div></div></button>
+        ${ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? 'sm' : 'sm on')}</div>`; }).join('')}</div>`;
+  };
+  D.pintarRes = () => { const el = $('#buscar-res'); if (el) el.innerHTML = resHTML(); };
+  const buscar = async () => {
+    const t = D.q.trim(), n = ++D.pedido;
+    if (!t) { D.res = null; return D.pintarRes(); }
+    D.res = null; D.pintarRes();
+    try { const r = await api.buscarPersonas(t); if (n === D.pedido) { D.res = r || []; D.pintarRes(); } }
+    catch (e) { if (n === D.pedido) { D.res = []; D.pintarRes(); fallo(e); } }
+  };
+  const hoja = { render: () => `${cabeza(`${ic('search')} ${esc(C.BUSCAR_TITULO)}`)}
+      <label class="campo-ic">${ic('search')}<input id="buscar-q" class="in" type="search" maxlength="40" autocomplete="off" enterkeyhint="search"
+        placeholder="${esc(C.BUSCAR_CAMPO)}" aria-label="${esc(C.BUSCAR_CAMPO)}" value="${esc(D.q)}"></label>
+      <div id="buscar-res" style="margin-top:12px">${resHTML()}</div>`,
+    after: (raiz) => {
+      const inp = $('#buscar-q', raiz); if (!inp) return;
+      inp.addEventListener('input', () => { D.q = inp.value; clearTimeout(D.espera); D.espera = setTimeout(buscar, 400); });
+      inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); clearTimeout(D.espera); buscar(); } });
+      if (!D.q) setTimeout(() => inp.focus(), 60);
+    }, tipo: 'buscar' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
 }
 
 /* Categorías */
@@ -2141,12 +2371,13 @@ function abrirGrupo(gid) {
     const g = D.g;
     if (!g) return cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
     const soyDuena = g.owner === S.user.id, soyMiembro = !!miGrupo(g.id);
+    const yoM = (D.miembros || []).find((m) => m.user_id === S.user.id), soyAdmin = soyDuena || !!(yoM && yoM.coadmin);
     return `${cabeza(`<span class="row">${ic(g.icon)} ${esc(g.name)}</span>`)}
       <div class="row wrap" style="margin-bottom:12px">
         <span class="catb" style="background:${okColor(g.color)}">${ic(g.is_public ? 'world' : 'lock')}${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}</span>
         <span class="muted row">${ic('users')} ${D.miembros ? D.miembros.length : '…'}</span></div>
       <div class="row wrap" style="margin-bottom:14px">
-        ${soyMiembro ? ib('invitar', 'brand-whatsapp', 'invitar', `data-id="${g.id}"`, 'on') : ''}
+        ${soyMiembro ? `<button class="btn sm" data-act="invitar_grupo" data-id="${g.id}">${ic('user-plus')} ${esc(C.INVITAR_BOTON)}</button>` : ''}
         ${ib('ver_grupo_mapa', 'map-2', 'ver_mapa', `data-id="${g.id}"`)}
         ${ib('tabla_grupo', 'trophy', 'tabla', `data-id="${g.id}"`)}
         ${soyMiembro ? ib('descargar_fichas', 'download', C.PDF_TITULO, `data-tipo="grupo" data-id="${g.id}"`) : ''}
@@ -2157,7 +2388,12 @@ function abrirGrupo(gid) {
         ${soyMiembro && !soyDuena ? ib('salir_grupo', 'door-exit', 'salir_grupo', `data-id="${g.id}"`) : ''}
       </div>
       ${soyMiembro && nivelDe('grupo', g.id) >= 100 ? `<div class="field"><label>${ic('crown')} ${esc(C.AYUDA.color_premio)}</label>${selectorColorPremio('grupo', g.id, colorPremioActual('grupo', g.id))}</div>` : ''}
-      ${D.miembros ? `<div class="chips" style="flex-wrap:wrap;margin-bottom:14px">${D.miembros.map((m) => `<button class="chip" data-act="perfil" data-id="${m.user_id}">${avatar(m)}${esc(m.name || '')}</button>`).join('')}</div>` : ''}
+      ${D.miembros ? (soyAdmin ? `<div class="list miembros-grupo" style="margin-bottom:14px">${D.miembros.map((m) => {
+          const duena = m.user_id === g.owner, gestionar = m.user_id !== S.user.id && !duena && (soyDuena || !m.coadmin);
+          return `<div class="li"><button class="row grow" data-act="perfil" data-id="${m.user_id}" style="text-align:left;min-width:0">${avatar(m)}<b class="grow">${esc(m.name || '')}</b>
+            ${duena ? `<span data-tip="${esc(C.AYUDA.duena)}">${ic('crown')}</span>` : m.coadmin ? `<span data-tip="${esc(C.AYUDA.coadmin)}">${ic('shield')}</span>` : ''}</button>
+            ${gestionar ? ib('miembro_grupo', 'dots-vertical', 'miembro', `data-id="${m.user_id}" data-g="${g.id}"`, 'sm') : ''}</div>`; }).join('')}</div>`
+        : `<div class="chips" style="flex-wrap:wrap;margin-bottom:14px">${D.miembros.map((m) => `<button class="chip" data-act="perfil" data-id="${m.user_id}">${avatar(m)}${esc(m.name || '')}${m.user_id === g.owner ? ic('crown') : m.coadmin ? ic('shield') : ''}</button>`).join('')}</div>`) : ''}
       ${D.cards === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.cards.length ? rejilla(D.cards, false)
         : `<div class="empty">${ic('camera')}<p>Aún no hay hallazgos en este grupo</p></div>`}`;
   };
@@ -2360,7 +2596,7 @@ function encAbajoHTML(D) {
       if (ab && !l.includes(ab)) l.unshift(ab); return l.map((k) => filaMira(k, e, D)).join(''); })()}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_MIRA)}</p>`;
   else if (D.tab === 'grupo') cuerpo = `${v.n ? `<p class="banner">${ic('trash')} ${esc(C.ENCUENTRO_VOTOS.replace('{n}', v.n).replace('{t}', v.total))}</p>` : ''}
       <div class="row wrap">
-        ${yo.admin && g.invite_code ? ib('invitar_encuentro', 'brand-whatsapp', 'invitar', '', 'on') : ''}
+        ${yo.admin ? `<button class="btn sm" data-act="invitar_grupo" data-id="${g.id}">${ic('user-plus')} ${esc(C.INVITAR_BOTON)}</button>` : ''}
         ${yo.admin ? ib('ajustes_encuentro', 'adjustments', 'encuentro_ajustes') : ''}
         ${yo.duena ? ib('editar_grupo', 'pencil', 'editar', `data-id="${g.id}"`) : ''}
         ${ib('borrar_lo_mio', 'eraser', 'borrar_lo_mio')}
@@ -3452,7 +3688,7 @@ function resumenDispositivo(ua) {
   const nav = /CriOS|Chrome/.test(ua) && !/Edg|SamsungBrowser/.test(ua) ? 'Chrome' : /FxiOS|Firefox/.test(ua) ? 'Firefox' : /SamsungBrowser/.test(ua) ? 'Samsung' : /Edg/.test(ua) ? 'Edge' : /Safari/.test(ua) ? 'Safari' : 'navegador';
   return `${so} · ${nav}`;
 }
-function peticionHTML(r, admin) {
+function peticionHTML(r, admin, editando) {
   const t = tipoBuzon(r.tipo), e = estadoBuzon(r.status), m = r.meta || {};
   return `<div class="peticion">
     <div class="row between">${admin ? `<button class="row" data-act="perfil" data-id="${r.user_id}">${avatar(r)}<b>${esc(r.user_name || '')}</b></button>` : ''}
@@ -3462,10 +3698,13 @@ function peticionHTML(r, admin) {
     ${admin ? `<div class="tiny">v${esc(m.version || '?')} · ${esc(resumenDispositivo(m.dispositivo))}${m.ultimo_error ? ` · código ${esc(m.ultimo_error.codigo)}` : ''}</div>
       ${m.ultimo_error ? `<details class="tiny"><summary>Último error</summary><pre>${esc(JSON.stringify(m.ultimo_error, null, 1))}</pre></details>` : ''}
       <div class="toggle" style="margin:8px 0">${Object.keys(C.BUZON_ESTADOS).map((k) => `<button type="button" data-act="peticion_estado" data-id="${r.id}" data-v="${k}" class="${r.status === k ? 'on' : ''}" aria-label="${esc(C.BUZON_ESTADOS[k].nombre)}" data-tip="${esc(C.BUZON_ESTADOS[k].nombre)}">${ic(C.BUZON_ESTADOS[k].icono)}</button>`).join('')}</div>
-      <textarea class="in" id="resp-${r.id}" maxlength="${C.BUZON_RESPUESTA_MAX}" placeholder="Respuesta">${esc(r.reply || '')}</textarea>`
-      : r.reply ? `<div class="respuesta">${ic('message-circle')} ${esc(r.reply)}</div>` : ''}
+      ${r.reply && !editando ? `<div class="respuesta enviada">${ic('circle-check')} <span class="grow"><b>${esc(C.RESPUESTA_ENVIADA)}</b> ${esc(r.reply)}
+          ${r.replied_at ? `<span class="tiny"> · ${esc(hace(r.replied_at))}</span>` : ''}</span>${ib('editar_respuesta', 'pencil', 'editar', `data-id="${r.id}"`, 'sm')}</div>`
+        : `<textarea class="in" id="resp-${r.id}" maxlength="${C.BUZON_RESPUESTA_MAX}" placeholder="${esc(C.RESPUESTA_PISTA)}">${esc(r.reply || '')}</textarea>
+          <button class="btn sm" data-act="responder_peticion" data-id="${r.id}" style="margin-top:6px">${ic('send')} ${esc(C.RESPUESTA_ENVIAR)}</button>`}`
+      : r.reply ? `<div class="respuesta">${ic('message-circle')} <b>${esc(C.RESPUESTA_DE_ADMIN)}</b> ${esc(r.reply)}</div>` : ''}
     <div class="row between" style="margin-top:6px"><span class="tiny">${esc(fecha(r.created_at))}</span>
-      <span class="row">${admin ? ib('responder_peticion', 'send', 'responder', `data-id="${r.id}"`, 'sm') : ''}${ib('borrar_peticion', 'trash', 'borrar', `data-id="${r.id}"`, 'sm')}</span></div></div>`;
+      <span class="row">${ib('borrar_peticion', 'trash', 'borrar', `data-id="${r.id}"`, 'sm')}</span></div></div>`;
 }
 function hojaBuzon() {
   const D = { tipo: C.BUZON_TIPOS[0].id, texto: '', foto: null, fotoUrl: null, lista: null };
@@ -3525,7 +3764,7 @@ function textoAviso(a) {
   if (k === 'reporte_col') return `${a.actor_name} reportó una foto de la comunidad: «${a.texto}»`;
   if (k === 'seguidor') return `${a.actor_name} empezó a seguirte`;
   if (k === 'etiqueta') return `${a.actor_name} te etiquetó en ${a.find_name}`;
-  if (k === 'mensaje') return `${a.actor_name} te escribió: «${a.texto}»`;
+  if (k === 'mensaje') return a.texto ? `${a.actor_name} te escribió: «${a.texto}»` : C.FICHA_AVISO.replace('{n}', a.actor_name || '');
   if (k === 'nuevo_miembro') return `Nueva persona en la comunidad: ${a.actor_name}`;
   if (k === 'buzon') return `${a.actor_name} escribió al buzón: «${a.texto}»`;
   if (k === 'reporte') return `Aviso a moderación: ${a.find_name || 'un hallazgo'}`;
@@ -3534,6 +3773,10 @@ function textoAviso(a) {
   if (k === 'votacion') return `${a.actor_name} propone borrar ${a.texto}`;
   if (k === 'ausencia') return `${a.actor_name} dice que ${a.find_name} ya no está`;
   if (k === 'anuncio') return a.texto || '';
+  if (k === 'amistad') return C.AMISTAD_AVISO.replace('{n}', a.actor_name || '') + (a.texto ? `: «${a.texto}»` : '');
+  if (k === 'respuesta') return C.RESPUESTA_AVISO.replace('{t}', a.texto || '');
+  if (k === 'invitacion') return (a.reaccion === 'rechazada' ? C.INVITACION_RECHAZASTE : C.INVITACION_RECIBIDA).replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
+  if (k === 'invitacion_resp') return (a.reaccion === 'aceptada' ? C.INVITACION_ACEPTO : C.INVITACION_RECHAZO).replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
   if (k === 'grupo_borrado') { const t = String(a.texto || ''), i = t.lastIndexOf(':'); return `Se borró ${t.slice(0, i)} ${t.slice(i + 1) === 'votacion' ? 'por votación' : 'por inactividad'}`; }
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
   return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
@@ -3542,13 +3785,17 @@ function iconoAviso(a) {
   const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages',
     ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy', ausencia: 'map-pin-off', anuncio: 'speakerphone', traspaso: 'heart-handshake', reporte_col: 'flag' };
   if (a.kind === 'reencuentro' && a.reaccion === 'visto') return 'users';
+  if (a.kind === 'invitacion') return 'user-plus';
+  if (a.kind === 'respuesta') return 'message-circle';
+  if (a.kind === 'amistad') return 'heart-handshake';
+  if (a.kind === 'invitacion_resp') return a.reaccion === 'aceptada' ? 'user-check' : 'user-x';
   if (fijo[a.kind]) return fijo[a.kind];
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
 }
 const nivelAviso = (a) => (a.kind === 'uso' && /:80:/.test(a.texto || '') ? 'rojo' : a.kind === 'uso' ? 'amarillo' : '');
 // Qué abre cada aviso: la ficha, un perfil o una pestaña del escudo
 function destinoAviso(a) {
-  if (['seguidor', 'nuevo_miembro'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (['seguidor', 'nuevo_miembro', 'amistad'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
   if (a.kind === 'mensaje') return `data-kind="chat" data-id="${a.actor_id}"`;
   if (a.kind === 'buzon') return 'data-kind="admin" data-id="buzon"';
   if (a.kind === 'reporte' || a.kind === 'reporte_col') return 'data-kind="admin" data-id="avisos"';
@@ -3556,6 +3803,9 @@ function destinoAviso(a) {
   if (a.kind === 'uso') return 'data-kind="admin" data-id="uso"';
   if (a.kind === 'ayuda' || a.kind === 'votacion') return `data-kind="encuentro" data-id="${a.grupo_id}" data-foco="${a.kind === 'ayuda' ? a.actor_id : ''}"`;
   if (a.kind === 'grupo_borrado') return 'data-kind="nada" data-id=""';
+  if (a.kind === 'invitacion') return 'data-kind="buzon" data-id=""';
+  if (a.kind === 'respuesta') return 'data-kind="mis_mensajes" data-id="-"';
+  if (a.kind === 'invitacion_resp') return a.reaccion === 'aceptada' ? `data-kind="grupo" data-id="${a.grupo_id}"` : `data-kind="perfil" data-id="${a.actor_id}"`;
   if (a.kind === 'anuncio') return a.reaccion === 'encuentro_nuevo' ? 'data-kind="encuentro_nuevo" data-id="-"' : 'data-kind="nada" data-id=""';
   return `data-kind="ficha" data-id="${a.find_id}"`;
 }
@@ -3616,12 +3866,18 @@ function filaAviso(a) {
     <button class="row grow" data-act="aviso_abrir" ${destinoAviso(a)} style="text-align:left;min-width:0">
       ${caraAviso(a)}<div class="grow" style="min-width:0"><div>${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}</div><div class="tiny">${esc(hace(a.at))}</div></div>
       ${a.thumb && a.find_id ? `<img class="thumb" src="${api.photoUrl(a.thumb)}" alt="">` : ''}</button>
-    ${seguirVuelta ? `<button class="btn sm" data-act="seguir" data-id="${a.actor_id}">${ic('user-plus')} ${esc(C.AYUDA.seguir_vuelta)}</button>` : ''}</div>`;
+    ${seguirVuelta ? `<button class="btn sm" data-act="seguir" data-id="${a.actor_id}">${ic('user-plus')} ${esc(C.AYUDA.seguir_vuelta)}</button>` : ''}
+    ${a.kind === 'amistad' ? `<div class="row invit-botones">
+      <button class="btn sm" data-act="amistad_aceptar" data-id="${a.actor_id}">${ic('user-check')} ${esc(C.AMISTAD_ACEPTAR)}</button>
+      <button class="btn alt sm" data-act="amistad_rechazar" data-id="${a.actor_id}">${ic('x')} ${esc(C.INVITACION_RECHAZAR)}</button></div>` : ''}
+    ${a.kind === 'invitacion' ? `<div class="row invit-botones">
+      <button class="btn sm" data-act="invitacion_unirme" data-g="${a.grupo_id}">${ic('user-plus')} ${esc(C.INVITACION_UNIRME)}</button>
+      ${a.reaccion === 'pendiente' ? `<button class="btn alt sm" data-act="invitacion_rechazar" data-g="${a.grupo_id}">${ic('x')} ${esc(C.INVITACION_RECHAZAR)}</button>` : ''}</div>` : ''}</div>`;
 }
 function filaConversacion(c) {
   return `<button class="li conv ${c.sin_leer ? 'nuevo' : ''}" data-act="chat" data-id="${c.persona}" style="text-align:left">
     ${avatar(c)}<div class="grow" style="min-width:0"><b>${esc(c.name)}</b>
-      <div class="tiny conv-ultimo">${ic('messages')} ${c.ultimo_mio ? 'Tú: ' : ''}${esc(c.ultimo || '')}</div></div>
+      <div class="tiny conv-ultimo">${ic(c.ultimo_ficha ? 'cards' : 'messages')} ${c.ultimo_mio ? 'Tú: ' : ''}${esc(c.ultimo || (c.ultimo_ficha ? C.FICHA_EN_CHAT : ''))}</div></div>
     <span class="tiny">${esc(hace(c.ultimo_at))}</span>${c.sin_leer ? `<span class="badge-n fijo">${c.sin_leer > 9 ? '9+' : c.sin_leer}</span>` : ''}</button>`;
 }
 function hojaAvisos() {
@@ -3665,10 +3921,10 @@ function hojaChat(uid) {
       const cab = p ? `<button class="row" data-act="perfil" data-id="${uid}">${avatar(p)}<b>${esc(p.name)}</b></button>` : '';
       return `${cabeza(cab)}
         <div class="chat" id="chat-lista">${D.msgs === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
-          : D.msgs.length ? D.msgs.map((m) => `<div class="burbuja ${m.sender === S.user.id ? 'mia' : ''}"><p>${esc(m.body)}</p><span class="tiny">${esc(hace(m.created_at))}</span></div>`).join('')
+          : D.msgs.length ? D.msgs.map((m) => `<div class="burbuja ${m.sender === S.user.id ? 'mia' : ''}">${m.body ? `<p>${esc(m.body)}</p>` : ''}${m.find_id || m.con_ficha ? fichaChatHTML(m) : ''}<span class="tiny">${esc(hace(m.created_at))}</span></div>`).join('')
           : `<p class="muted" style="text-align:center">${esc(C.CHAT_VACIO)}</p>`}</div>
-        ${D.puede === false ? `<div class="banner" style="margin-top:12px">${ic('lock')}<span class="grow">${esc(C.CHAT_BLOQUEADO)}</span>
-            ${!S.following.has(uid) ? `<button class="btn sm" data-act="seguir" data-id="${uid}">${ic('user-plus')} ${esc(C.AYUDA.seguir)}</button>` : ''}</div>`
+        ${D.puede === false ? `<div class="banner" style="margin-top:12px">${ic('lock')}<span class="grow">${esc(D.amistad === 'enviada' ? C.CHAT_ENVIADA : D.amistad === 'recibida' ? C.CHAT_RECIBIDA : D.amistad === 'puede' ? C.CHAT_PIDE : D.amistad === 'no' ? C.CHAT_SIGUE : C.CHAT_BLOQUEADO)}</span>
+            ${D.amistad === 'no' && !S.following.has(uid) ? `<button class="btn sm" data-act="seguir" data-id="${uid}">${ic('user-plus')} ${esc(C.AYUDA.seguir)}</button>` : botonAmistad(uid, D.amistad === 'enviada' ? null : D.amistad)}</div>`
           : D.puede ? `<div class="chat-escribir"><textarea id="chat-in" class="in" maxlength="${C.MENSAJE_MAX}" rows="2" placeholder="${esc(C.CHAT_PISTA)}">${esc(D.borrador)}</textarea>
             <div class="row between"><span class="tiny"><span id="chat-n">${D.borrador.length}</span>/${C.MENSAJE_MAX}</span>
             <button class="btn" data-act="enviar_mensaje" data-id="${uid}">${ic('send')} ${esc(C.AYUDA.enviar)}</button></div></div>` : ''}`;
@@ -3678,14 +3934,45 @@ function hojaChat(uid) {
   pila.push(hoja); dibujarHoja();
   D.cargar = async () => {
     try {
-      const [p, msgs, puede] = await Promise.all([api.getProfile(uid), api.hilo(uid), api.puedoEscribir(uid)]);
-      Object.assign(D, { p, msgs, puede: !!puede });
+      const [p, msgs, puede, amistad] = await Promise.all([api.getProfile(uid), api.hilo(uid), api.puedoEscribir(uid), api.estadoAmistad(uid).catch(() => null)]);
+      // las fichas del chat: solo se piden las que no están ya guardadas; si no se pueden ver, dicen "ya no está disponible"
+      const faltan = [...new Set(msgs.filter((m) => m.find_id && !S.cache.get(m.find_id)).map((m) => m.find_id))];
+      if (faltan.length) guarda(await api.cardsByIds(faltan).catch(() => []));
+      Object.assign(D, { p, msgs, puede: !!puede, amistad });
       if (msgs.some((m) => m.recipient === S.user.id && !m.read_at)) await api.marcarLeidos(uid).catch(() => null);
       S.avisos = S.avisos.filter((a) => !(a.kind === 'mensaje' && a.actor_id === uid)); pintarCampana();
     } catch (e) { D.msgs = D.msgs || []; fallo(e); }
     if (hojaArriba() === hoja) { const t = $('#chat-in'); if (t) D.borrador = t.value; dibujarHoja(); }
   };
   D.cargar();
+}
+
+// Ficha dentro del chat: foto chica, nombre y colonia; al tocarla se abre la ficha
+function fichaChatHTML(m) {
+  const c = m.find_id ? S.cache.get(m.find_id) : null;
+  if (!c || c.is_private) return `<div class="ficha-chat no-disp"><span class="ft"></span><span class="ficha-chat-tx"><b>${esc(C.FICHA_NO_DISPONIBLE)}</b><span class="tiny">${esc(C.FICHA_NO_DISPONIBLE_TEXTO)}</span></span></div>`;
+  return `<button type="button" class="ficha-chat" data-act="ficha" data-id="${c.id}">${c.thumb || c.photo ? `<img class="ft" src="${foto(c, true)}" alt="" loading="lazy">` : `<span class="ft">${ic(c.cat_icon)}</span>`}
+    <span class="ficha-chat-tx"><b>${esc(c.name)}</b>${c.colonia ? `<span class="tiny">${ic('map-pin')} ${esc(c.colonia)}</span>` : ''}</span></button>`;
+}
+// Enviar una ficha a una amiga (solo a quienes pueden verla)
+function hojaEnviarFicha(fid) {
+  const c = S.cache.get(fid); if (!c || c.is_private) return;
+  const D = { amigas: null, enviadas: new Set(), linea: '' };
+  const hoja = { render: () => `${cabeza(`${ic('send')} ${esc(C.FICHA_ENVIAR)}`)}
+      <div class="ficha-chat" style="margin:0 0 10px">${c.thumb || c.photo ? `<img class="ft" src="${foto(c, true)}" alt="">` : `<span class="ft">${ic(c.cat_icon)}</span>`}
+        <span class="ficha-chat-tx"><b>${esc(c.name)}</b>${c.colonia ? `<span class="tiny">${ic('map-pin')} ${esc(c.colonia)}</span>` : ''}</span></div>
+      <label class="campo-ic">${ic('pencil')}<input id="ficha-linea" class="in compacto" maxlength="${C.MENSAJE_MAX}" placeholder="${esc(C.FICHA_LINEA)}" value="${esc(D.linea)}"></label>
+      ${D.amigas === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+        : D.amigas.length ? `<div class="list" style="margin-top:10px">${D.amigas.map((a) => `<div class="li">${avatar(a)}<b class="grow">${esc(a.name)}</b>
+          ${D.enviadas.has(a.user_id) ? `<span class="tiny estado-amistad">${ic('check')} ${esc(C.FICHA_ENVIADA)}</span>`
+            : `<button class="btn sm" data-act="mandar_ficha" data-id="${a.user_id}" data-f="${fid}">${ic('send')} ${esc(C.AYUDA.enviar)}</button>`}</div>`).join('')}</div>`
+        : `<p class="tiny" style="margin-top:10px">${esc(C.FICHA_SIN_AMIGAS)}</p>`}`,
+    after: (r) => { const t = $('#ficha-linea', r); if (t) t.addEventListener('input', () => { D.linea = t.value; }); },
+    tipo: 'enviar_ficha' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  api.amigasParaFicha(fid).then((l) => { D.amigas = l || []; }).catch((e) => { D.amigas = []; fallo(e); })
+    .finally(() => { if (hojaArriba() === hoja) dibujarHoja(); });
 }
 
 // Etiquetar: elige hasta 5 personas que sigues o te siguen
@@ -3795,7 +4082,7 @@ function hojaAdmin(vista) {
       <button type="button" data-act="admin_vista" data-v="uso" class="${D.vista === 'uso' ? 'on' : ''}" aria-label="${esc(C.AYUDA.uso)}" data-tip="${esc(C.AYUDA.uso)}">${ic('gauge')}</button>
       <button type="button" data-act="admin_vista" data-v="anuncios" class="${D.vista === 'anuncios' ? 'on' : ''}" aria-label="${esc(C.AYUDA.anuncios)}" data-tip="${esc(C.AYUDA.anuncios)}">${ic('speakerphone')}</button></div>
     ${D.vista === 'anuncios' ? anunciosHTML(D) : D.vista === 'uso' ? usoHTML(D.uso) : D.vista === 'buzon' ? (D.peticiones === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
-      : D.peticiones.length ? `<div class="list">${D.peticiones.map((r) => peticionHTML(r, true)).join('')}</div>` : `<div class="empty">${ic('mail')}<p>Sin mensajes</p></div>`) : `
+      : D.peticiones.length ? `<div class="list">${D.peticiones.map((r) => peticionHTML(r, true, D.editandoResp === r.id)).join('')}</div>` : `<div class="empty">${ic('mail')}<p>Sin mensajes</p></div>`) : `
     <div class="sec" style="margin-top:0"><h3>${ic('flag')} ${D.avisos ? D.avisos.length : ''}</h3>
     ${!D.avisos ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.avisos.length ? `<div class="list">${D.avisos.map((a) => a.card ? `
       <div class="li">${a.card.thumb ? `<img class="thumb" src="${foto(a.card, true)}" alt="">` : `<span class="thumb">${ic(a.card.cat_icon)}</span>`}
@@ -4238,13 +4525,30 @@ const ACCIONES = {
     const c = S.cache.get(b.dataset.id), tipo = b.dataset.v; if (!c) return;
     const mia = (c.my_reactions || []).includes(tipo);
     if (tipo === 'eye' && !mia) return marcarVisto(b, c);
-    const r = Object.assign({}, c.reactions || {});
-    r[tipo] = Math.max(0, (r[tipo] || 0) + (mia ? -1 : 1));
-    const nueva = Object.assign({}, c, { reactions: r, my_reactions: mia ? c.my_reactions.filter((x) => x !== tipo) : (c.my_reactions || []).concat(tipo) });
-    guarda([nueva]); refrescarFicha(c.id);
-    try { await api.react(c.id, tipo, !mia, S.user.id); }
-    catch (e) { guarda([c]); refrescarFicha(c.id); fallo(e); }
+    // "Lo vi" ya marcado: si todavía puedes sumar foto esta semana, se pregunta qué hacer en vez de quitarlo
+    if (tipo === 'eye' && mia && !c.is_private && navigator.onLine) {
+      if (b.disabled) return;
+      let puede = false;
+      ocupado(b, true);
+      try { puede = await api.puedoColaborar(c.id); } catch (e) { ocupado(b, false); fallo(e); return hojaVistoMarcado(c, false); }
+      ocupado(b, false);
+      if (puede) return hojaVistoMarcado(c, true);
+    }
+    return alternarReaccion(c, tipo, mia);
   },
+  // Antes de tomar la foto se revisa que estés en el lugar (igual que al marcar "Lo vi")
+  async visto_sumar_foto(b) {
+    const c = S.cache.get(b.dataset.id); if (!c) return;
+    ocupado(b, true);
+    let p;
+    try { p = await getPos(); } catch (e) { ocupado(b, false); return aviso(C.VISTO_SIN_GPS, 'current-location'); }
+    ocupado(b, false);
+    if (p.acc == null || p.acc > 100) return aviso(C.VISTO_APROXIMADA, 'current-location');
+    const d = distancia(p, c), radio = Math.min(Math.max(50, c.accuracy || 0), 300);
+    if (d > radio) return aviso(C.VISTO_LEJOS.replace('{d}', metros(d)), 'navigation');
+    cerrarHoja(); abrirCol(c, 'visto');
+  },
+  visto_quitar(b) { const c = S.cache.get(b.dataset.id); cerrarHoja(); if (c && (c.my_reactions || []).includes('eye')) alternarReaccion(c, 'eye', true); },
   ir_al_punto(b) { const c = S.cache.get(b.dataset.id); if (!c) return; cerrarTodo(); irAlPunto(c); },
   cerrar_guia: () => terminarGuia(),
   // Solo se comparte lo propio: tus hallazgos y tu vitrina
@@ -4402,10 +4706,6 @@ const ACCIONES = {
   grupo_nuevo: () => editarGrupo(''),
   editar_grupo: (b) => editarGrupo(b.dataset.id),
   guardar_grupo: (b) => guardarGrupo(b, b.dataset.id),
-  invitar(b) {
-    const g = miGrupo(b.dataset.id); if (!g) return;
-    abrirWhatsApp(`${C.WHATSAPP_INVITACION} "${g.name}"\n${location.origin + location.pathname}#g=${g.invite_code}`);
-  },
   ver_grupo_mapa(b) {
     if (!miGrupo(b.dataset.id)) return aviso('Únete al grupo para verlo en tu mapa', 'users');
     S.filtro = { modo: 'grupo', id: b.dataset.id }; cerrarTodo(); irA('map');
@@ -4509,11 +4809,57 @@ const ACCIONES = {
     if (!(await confirmar('¿Sacar a esta persona del grupo? Se borra todo lo suyo aquí.', 'user-minus'))) return;
     try { await api.sacarMiembro(D.gid, b.dataset.id); cerrarHoja(); aviso('Ya no es parte del grupo', 'user-minus'); D.cargar(); } catch (e) { fallo(e); }
   },
-  invitar_encuentro() {
-    const D = encuentroActual(), g = D && D.e && D.e.grupo; if (!g || !g.invite_code) return;
-    abrirWhatsApp(`${C.WHATSAPP_INVITACION} "${g.name}"\n${location.origin + location.pathname}#g=${g.invite_code}`);
-  },
   ajustes_encuentro: () => hojaAjustesEncuentro(),
+  invitar_grupo: (b) => hojaInvitar(b.dataset.id),
+  async invitacion_unirme(b) {
+    const gid = b.dataset.g; ocupado(b, true);
+    try { await api.responderInvitacion(gid, true); await recargarGrupos(); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    S.avisos = S.avisos.filter((a) => !(a.kind === 'invitacion' && a.grupo_id === gid)); pintarCampana();
+    const top = hojaArriba(); if (top && top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+    aviso(C.INVITACION_DENTRO, 'users');
+    abrirGrupo(gid);
+  },
+  async invitacion_rechazar(b) {
+    const gid = b.dataset.g; ocupado(b, true);
+    try { await api.responderInvitacion(gid, false); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    S.avisos = S.avisos.map((a) => (a.kind === 'invitacion' && a.grupo_id === gid ? Object.assign({}, a, { reaccion: 'rechazada', nuevo: false }) : a)); pintarCampana();
+    const top = hojaArriba(); if (top && top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+    aviso(C.INVITACION_RECHAZADA_OK, 'x');
+  },
+  async invitar_amiga(b) {
+    ocupado(b, true);
+    try { await api.invitarAGrupo(b.dataset.g, b.dataset.id); aviso(C.INVITAR_LISTO, 'user-plus'); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    const top = hojaArriba(); if (top && top.tipo === 'invitar' && top.datos) top.datos.cargar();
+  },
+  invitar_whatsapp(b) {
+    const g = datosGrupo(b.dataset.g).g, enlace = enlaceGrupo(g); if (!enlace) return;
+    abrirWhatsApp(`${C.WHATSAPP_INVITACION} "${g.name}"\n${enlace}`);
+  },
+  async copiar_invitacion(b) {
+    const enlace = enlaceGrupo(datosGrupo(b.dataset.g).g); if (!enlace) return;
+    try { await navigator.clipboard.writeText(enlace); aviso(C.INVITAR_COPIADO, 'copy'); }
+    catch (e) { aviso(enlace, 'copy'); }
+  },
+  async readmitir_persona(b) {
+    ocupado(b, true);
+    try { await api.readmitir(b.dataset.g, b.dataset.id); aviso(C.READMITIDA, 'user-check'); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    const top = hojaArriba(); if (top && top.tipo === 'invitar' && top.datos) top.datos.cargar();
+  },
+  miembro_grupo: (b) => hojaMiembroGrupo(b.dataset.g, b.dataset.id),
+  async coadmin_grupo(b) {
+    ocupado(b, true);
+    try { await api.nombrarCoadmin(b.dataset.g, b.dataset.id, b.dataset.v === '1'); cerrarHoja(); aviso(b.dataset.v === '1' ? 'Ahora es coadministradora' : 'Ya no es coadministradora', 'shield'); datosGrupo(b.dataset.g).recargar(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async sacar_grupo(b) {
+    if (b.disabled) return; b.disabled = true;
+    if (!(await confirmar(C.SACAR_GRUPO_CONFIRMAR, 'user-minus'))) { b.disabled = false; return; }
+    try { await api.sacarMiembro(b.dataset.g, b.dataset.id); cerrarHoja(); aviso('Ya no es parte del grupo', 'user-minus'); datosGrupo(b.dataset.g).recargar(); } catch (e) { b.disabled = false; fallo(e); }
+  },
   async guardar_ajustes_encuentro(b) {
     const D = encuentroActual(); if (!D) return;
     const raiz = $('.sheet');
@@ -4663,9 +5009,12 @@ const ACCIONES = {
       aviso(sigo ? 'Dejaste de seguir' : 'Siguiendo', sigo ? 'user-x' : 'user-check');
       const top = hojaArriba(); if (top && top.tipo === 'perfil') { const D = $('.sheet')._perfil; if (D) D.cargar(); }
       if (top && (top.tipo === 'buzon_amigos' || top.tipo === 'chat') && top.datos) { dibujarHoja(); top.datos.cargar(); }
+      if (top && top.tipo === 'buscar' && top.datos) top.datos.pintarRes();
+      if (top && top.tipo === 'invitar' && top.datos) top.datos.cargar();
     } catch (e) { ocupado(b, false); fallo(e); }
   },
   tabla: () => tablaGeneral(),
+  buscar_personas: () => hojaBuscarPersonas(),
 
   /* silenciar */
   async silenciar(b) {
@@ -4718,13 +5067,20 @@ const ACCIONES = {
     catch (e) { fallo(e); }
   },
   async responder_peticion(b) {
-    const D = $('.sheet')._admin; if (!D) return;
+    const D = adminDatos(); if (!D) return;
     const t = $('#resp-' + b.dataset.id), texto = (t ? t.value : '').trim();
+    if (!texto) return aviso(C.RESPUESTA_VACIA, 'message-circle');
     if (texto.length > C.BUZON_RESPUESTA_MAX) return aviso(`Máximo ${C.BUZON_RESPUESTA_MAX} caracteres`, 'message-circle');
+    if (t) t.blur();
     ocupado(b, true);
-    try { await api.updateRequest(b.dataset.id, { reply: texto || null }); aviso('Respuesta guardada', 'send'); D.cargar(); }
-    catch (e) { ocupado(b, false); fallo(e); }
+    try {
+      await api.updateRequest(b.dataset.id, { reply: texto });
+      const r = (D.peticiones || []).find((x) => x.id === b.dataset.id); if (r) Object.assign(r, { reply: texto, replied_at: new Date().toISOString() });
+      D.editandoResp = null; dibujarHoja();
+      aviso(C.RESPUESTA_LISTA, 'circle-check'); D.cargar();
+    } catch (e) { ocupado(b, false); fallo(e); }
   },
+  editar_respuesta(b) { const D = adminDatos(); if (!D) return; D.editandoResp = b.dataset.id; dibujarHoja(); const t = $('#resp-' + b.dataset.id); if (t) t.focus(); },
 
   /* avisos */
   avisos: () => hojaAvisos(),
@@ -4732,6 +5088,7 @@ const ACCIONES = {
     cerrarNotif();
     const id = b.dataset.id, k = b.dataset.kind;
     if (k === 'nada') return;
+    if (k === 'buzon') { const t = hojaArriba(); if (t && t.tipo === 'buzon_amigos') return; return hojaAvisos(); }
     if (!id) return hojaAvisos();
     if (k === 'encuentro') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirEncuentro(id, b.dataset.foco || null); }
     if (k === 'encuentro_nuevo') { cerrarTodo(); return editarGrupo('', 'encuentro'); }
@@ -4741,7 +5098,9 @@ const ACCIONES = {
       return celebrarHallazgo({ foto: b.dataset.foto ? api.photoUrl(b.dataset.foto) : '', icono: 'users', color: C.COLORES.terracota, titulo: C.COL_CELEBRA,
         detalle: C.COL_CELEBRA_TEXTO.replace('{n}', b.dataset.n || '').replace('{h}', b.dataset.h || '') }, () => abrirFicha(id));
     }
+    if (k === 'mis_mensajes') return hojaBuzon();
     if (k === 'perfil') return abrirPerfil(id);
+    if (k === 'grupo') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirGrupo(id); }
     if (k === 'chat') return hojaChat(id);
     if (k === 'admin') { if (!S.me.is_admin) return; const adm = adminAbierto(); if (adm) { while (hojaArriba() !== adm) pila.pop(); adm.datos.vista = id; dibujarHoja(); return; } return hojaAdmin(id); }
     S.cache.delete(id); abrirFicha(id);
@@ -4771,6 +5130,41 @@ const ACCIONES = {
     catch (e) { fallo(e); }
   },
   chat: (b) => hojaChat(b.dataset.id),
+  pedir_amistad: (b) => hojaPedirAmistad(b.dataset.id),
+  async enviar_amistad(b) {
+    const t = $('#amistad-in'), texto = (t ? t.value : '').trim().slice(0, C.AMISTAD_MAX);
+    if (t) t.blur();
+    ocupado(b, true);
+    let r;
+    try { r = await api.pedirAmistad(b.dataset.id, texto); } catch (e) { ocupado(b, false); return fallo(e); }
+    cerrarHoja();
+    aviso(r === 'amigas' ? C.AMISTAD_LISTA : C.AMISTAD_ENVIADA_OK, r === 'amigas' ? 'user-check' : 'heart-handshake');
+    if (r === 'amigas') S.following.add(b.dataset.id);
+    refrescarAmistad();
+  },
+  async amistad_aceptar(b) {
+    const uid = b.dataset.id; ocupado(b, true);
+    try { await api.responderAmistad(uid, true); } catch (e) { ocupado(b, false); return fallo(e); }
+    S.following.add(uid);
+    S.avisos = S.avisos.filter((a) => !(a.kind === 'amistad' && a.actor_id === uid)); pintarCampana();
+    aviso(C.AMISTAD_LISTA, 'user-check');
+    refrescarAmistad();
+  },
+  async amistad_rechazar(b) {
+    const uid = b.dataset.id; ocupado(b, true);
+    try { await api.responderAmistad(uid, false); } catch (e) { ocupado(b, false); return fallo(e); }
+    S.avisos = S.avisos.filter((a) => !(a.kind === 'amistad' && a.actor_id === uid)); pintarCampana();
+    refrescarAmistad();
+  },
+  enviar_ficha: (b) => hojaEnviarFicha(b.dataset.id),
+  async mandar_ficha(b) {
+    const top = hojaArriba(), D = top && top.tipo === 'enviar_ficha' ? top.datos : null; if (!D) return;
+    const t = $('#ficha-linea'), linea = (t ? t.value : D.linea || '').trim().slice(0, C.MENSAJE_MAX);
+    if (t) t.blur();
+    ocupado(b, true);
+    try { await api.enviarMensaje(b.dataset.id, linea, b.dataset.f); } catch (e) { ocupado(b, false); return fallo(e); }
+    D.enviadas.add(b.dataset.id); D.linea = linea; dibujarHoja(); aviso(C.FICHA_ENVIADA, 'send');
+  },
   async enviar_mensaje(b) {
     const t = $('#chat-in'), texto = (t ? t.value : '').trim(), top = hojaArriba();
     if (!texto) { if (t) t.focus(); return aviso('Escribe tu mensaje', 'messages'); }
@@ -4827,7 +5221,7 @@ const ACCIONES = {
     catch (e) { aviso(liga, 'copy'); }
   },
   cerrar_notif: () => cerrarNotif(),
-  tabla_metrica(b) { const D = $('.sheet')._tabla; D.metric = b.dataset.v; D.cargar(); },
+  tabla_metrica(b) { const D = $('.sheet')._tabla; if (!D || D.metric === b.dataset.v) return; D.metric = b.dataset.v; D.cargar(); },
   async salir() {
     const n = (S.pendientes || []).length;
     if (!(await confirmar(n ? C.PENDIENTES_SALIR.replace('{n}', n) : '¿Cerrar sesión?', 'logout'))) return;

@@ -571,3 +571,58 @@ textarea.in.crece{min-height:44px;height:44px;resize:none;overflow:hidden;line-h
 .top-nota{display:flex;align-items:center;gap:6px;margin:0 0 10px;color:var(--tinta2)}
 .top-foto .thumb{width:48px;height:48px}
 .bloqueada .empty{padding-top:18vh}
+
+/* 1.9.5 · Muro con carga continua */
+.feed-mas{display:flex;justify-content:center;align-items:center;min-height:44px;color:var(--tinta2)}
+/* 1.9.5 · Campeones: carrusel de fotos y podio */
+.campeones-fotos{margin-top:0}
+.top-nota{margin:-4px 0 8px}
+.top-carrusel{display:flex;gap:10px;overflow-x:auto;padding:2px 2px 10px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
+.top-ft{flex:none;width:140px;scroll-snap-align:start;display:flex;flex-direction:column;gap:4px;text-align:left;background:none;border:0;padding:0;color:inherit;min-width:0}
+.top-ft.primera{width:180px}
+.top-ft b{font:700 15px/1.2 Georgia,serif;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-ft .tiny{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.top-img{position:relative;display:block;aspect-ratio:1/1;border:var(--borde);border-radius:14px;box-shadow:3px 3px 0 var(--tinta);overflow:hidden;background:var(--papel2)}
+.top-img img{width:100%;height:100%;object-fit:cover;display:block}
+.top-pos{position:absolute;top:6px;left:6px;min-width:26px;height:26px;padding:0 6px;border-radius:13px;background:var(--papel3);border:1.5px solid var(--tinta);display:grid;place-items:center;font:700 13px var(--texto,system-ui);color:var(--tinta)}
+.top-ft.primera .top-pos{color:var(--mostaza)}
+.top-pos svg,.top-pos i{width:15px;height:15px;font-size:15px}
+.top-pts{position:absolute;bottom:6px;right:6px;display:inline-flex;align-items:center;gap:3px;background:var(--papel3);border:1px solid var(--tinta);border-radius:10px;padding:1px 7px;font-size:12px;font-weight:600;color:var(--tinta)}
+.top-pts svg,.top-pts i{color:var(--terracota);width:13px;height:13px;font-size:13px}
+.campeones-tabla-cab{flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.campeones-tabla-cab h3{margin:0}
+.toggle.mini.campeones-metrica button{font-size:13px;font-weight:600;gap:4px;height:34px}
+.podio{display:grid;grid-template-columns:1fr 1.15fr 1fr;align-items:end;gap:8px;padding-top:6px}
+.podio-p{display:flex;flex-direction:column;align-items:center;gap:5px;min-width:0;background:none;border:0;padding:0;color:inherit}
+.podio-nom{font-weight:600;font-size:13.5px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.podio-p.yo .podio-nom{text-decoration:underline;text-decoration-color:var(--mostaza);text-decoration-thickness:3px;text-underline-offset:3px}
+.podio-esc{width:100%;border:var(--borde);border-bottom:0;border-radius:10px 10px 0 0;display:flex;flex-direction:column;align-items:center;padding-top:6px;background:var(--papel2);font-variant-numeric:tabular-nums}
+.podio-esc b{font:700 22px/1.1 Georgia,serif}
+.podio-esc span{font-size:11px;color:var(--tinta2)}
+.podio-p.p1 .podio-esc{height:112px;background:var(--mostaza);color:#2E2A26}
+.podio-p.p1 .podio-esc span{color:#2E2A26}
+.podio-p.p2 .podio-esc{height:88px}
+.podio-p.p3 .podio-esc{height:74px}
+.podio-p.p2 .podio-esc>:first-child{color:#A9A39A}
+.podio-p.p3 .podio-esc>:first-child{color:#B07A4A}
+.podio-base{height:6px;border:var(--borde);border-radius:0 0 8px 8px;background:var(--papel2);margin-bottom:12px}
+.li.yo{background:var(--mostaza);color:#2E2A26}
+/* 1.9.5 · Búsqueda, invitaciones y miembros */
+.buscar-pista{margin:4px 0}
+.persona-res .tiny{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.invit-estado{color:var(--tinta2);display:inline-flex;align-items:center;gap:4px}
+.li.aviso{flex-wrap:wrap}
+.invit-botones{gap:8px;width:100%;justify-content:flex-end}
+.miembros-grupo .li{padding:6px 10px}
+.podio-p .avatar{width:52px;height:52px;font-size:26px;box-shadow:2px 2px 0 var(--tinta)}
+.podio-p .avatar.lg{width:68px;height:68px;font-size:34px}
+.react.con-texto.fija{flex:0 0 auto}
+.respuesta.enviada{display:flex;align-items:flex-start;gap:6px;background:var(--papel2);border:var(--borde);border-radius:12px;padding:8px 10px;margin-top:6px}
+/* 1.9.5 · Amistad y fichas en el chat */
+.estado-amistad{display:inline-flex;align-items:center;gap:4px;color:var(--tinta2)}
+.ficha-chat{display:flex;align-items:center;gap:8px;border:var(--borde);border-radius:12px;background:var(--papel);padding:5px;margin:4px 0;width:230px;max-width:100%;text-align:left;color:inherit}
+.ficha-chat .ft{width:48px;height:48px;border-radius:8px;border:1px solid var(--tinta);object-fit:cover;flex:none;background:var(--papel2);display:grid;place-items:center;font-size:22px}
+.ficha-chat-tx{min-width:0;display:flex;flex-direction:column}
+.ficha-chat-tx b{font:700 15px/1.2 Georgia,serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ficha-chat-tx .tiny{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ficha-chat.no-disp{opacity:.75}
