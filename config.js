@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.9.5',
+  VERSION: '1.9.6',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -139,6 +139,12 @@ window.CONFIG = {
   FOTO_CALIDAD: 0.82,
   MINIATURA_LADO: 320,
   MINIATURA_CALIDAD: 0.7,
+  // Foto mediana del muro (solo hallazgos públicos nuevos): nítida en el teléfono y ~4 veces más ligera que la grande.
+  // La ficha sigue mostrando la grande; el mapa y las listas, la miniatura.
+  FOTO_LADO_MEDIA: 900,
+  FOTO_CALIDAD_MEDIA: 0.8,
+  // Qué foto usa el muro: 'mediana' (la mediana; en hallazgos anteriores, la grande) o 'mini' (miniaturas, para ahorrar transferencia)
+  MURO_FOTO: 'mediana',
   // Margen que se deja alrededor del sujeto al recortar el fondo (0.08 = 8 %)
   RECORTE_OCUPA: 0.9,          // con el fondo quitado, el objeto ocupa el 90 % del cuadro, centrado
   ENCUADRE_FUENTE: 2400,       // lado máximo de la foto mientras se encuadra
@@ -153,6 +159,9 @@ window.CONFIG = {
   AVISO_RAPIDO_ESPERA: 'Espera unos segundos y vuelve a intentarlo.',
   AVISO_RAPIDO_SIN_GRUPOS: 'Para avisar rápido, primero crea un grupo de encuentro o únete a uno.',
   CAPA_VACIA: 'Ese grupo aún no tiene nada en el mapa',
+  GRUPO_PANEL_PISTA: 'Sube el panel para ver el tablero, los puntos y "Mira esto".',
+  GRUPO_PANEL_SUBIR: 'Subir el panel del grupo',
+  GRUPO_PANEL_BAJAR: 'Bajar el panel del grupo',
   COL_TODAS: 'Todas',
   COL_HALLAZGOS: 'hallazgos',
   PLEGAR_NOTIF_ACTIVAS: 'activadas, {n} de {t}',
@@ -423,11 +432,11 @@ window.CONFIG = {
     { icono: 'map-2', titulo: '¿Qué es Collector Go?',
       texto: 'Un mapa donde guardas lo que encuentras en la calle para coleccionarlo y volver a encontrarlo. Empiezas con 5 colecciones por categoría (gatos, puertas, letreros, lo que quieras) y puedes llegar a 15 a medida que crecen.' },
     { icono: 'users', titulo: 'Grupos',
-      pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Invita por WhatsApp: quien abra el enlace y entre con Google queda dentro.',
+      pasos: ['En tu colección, abajo, toca + para crear un grupo público o privado.', 'Toca "Invitar" para invitar a tus amigas de la app o mandar el enlace por WhatsApp.',
               'Todos los miembros agregan hallazgos y reencuentros al mismo mapa. Cada grupo tiene su tabla.',
               'Puedes crear hasta 10 grupos y unirte a todos los que quieras.'] },
     { icono: 'lifebuoy', titulo: 'Grupos de encuentro',
-      texto: 'Un grupo privado y oculto para cuidarse en un viaje, un rally, una marcha, un festival o un sismo. Al crear un grupo, elige "Grupo de encuentro". Dentro del grupo, el botón de ayuda explica cómo funciona.' },
+      texto: 'Un grupo privado y oculto para cuidarse en un viaje, un rally, una marcha, un festival o un sismo. Al crear un grupo, elige "Grupo de encuentro". Se maneja desde el mapa: toca su botón arriba y usa el panel de abajo. El botón de ayuda explica cómo funciona.' },
     { icono: 'camera', titulo: 'Registrar un hallazgo',
       pasos: ['Toca la cámara del centro, abajo.', 'Toma la foto o elígela de tu galería. Encuádrala con los dedos; si quieres, toca las tijeras para quitar el fondo.',
               'Elige la categoría (o un grupo) y ponle un nombre.', 'Toca Guardar. Si el punto no quedó bien, corrígelo en el mapa de abajo antes de guardar.'] },
@@ -533,8 +542,18 @@ window.CONFIG = {
   CHAT_PISTA: 'Escribe un mensaje…',
 
   // Medidor de uso del plan gratuito (escudo de la administradora)
-  USO_AMARILLO: 'Más del 60 %. Cierra el registro de cuentas nuevas en Supabase (Authentication → Sign In / Providers → Allow new users to sign up) y prepara el cambio de almacén de fotos.',
-  USO_ROJO: 'Más del 80 %. Es momento de mover las fotos a un almacén gratuito más grande (ver la guía de administración).',
+  USO_AMARILLO: 'Más del 60 %. Nadie tiene que irse: es momento de preparar el segundo almacén de fotos gratuito (ver la guía de administración). Mientras tanto, si hace falta, el muro puede usar miniaturas (MURO_FOTO: \'mini\' en config.js).',
+  USO_ROJO: 'Más del 80 %. Activa el segundo almacén de fotos gratuito (ver la guía de administración). Ninguna foto se borra ni pierde resolución.',
+  VISTO_AVISO: '{n} estuvo ahí y vio {h}',
+  USO_RITMO_TITULO: 'Ritmo del almacén de fotos',
+  USO_RITMO_SEMANA: 'en los últimos 7 días',
+  USO_RITMO: 'A este ritmo, el almacén se llena en ~{n} semanas.',
+  USO_RITMO_MENOS: 'A este ritmo, el almacén se llena en menos de una semana.',
+  USO_RITMO_MUCHO: 'A este ritmo, el almacén tardaría más de 10 años en llenarse.',
+  USO_RITMO_SIN: 'Esta semana no se subieron fotos: todavía no hay ritmo que calcular.',
+  USO_SEMANAS_R2: 8,
+  USO_RITMO_R2: 'Quedan unas 8 semanas o menos: es el momento de activar el segundo almacén gratuito.',
+  USO_PANEL: 'Abrir el uso en Supabase',
   USO_TRANSFERENCIA: 'La transferencia mensual (5 GB) no se puede medir desde la app: revísala en el panel de Supabase, en Usage.',
 
   // Buzón de peticiones a la administradora
@@ -600,12 +619,13 @@ window.CONFIG = {
   // Guía propia de los grupos de encuentro (aparte de la guía general)
   GUIA_ENCUENTRO: [
     { icono: 'lifebuoy', titulo: '¿Qué es?', texto: 'Un grupo privado y oculto con puntos de encuentro. Solo lo ven sus miembros.' },
+    { icono: 'map-2', titulo: 'En el mapa', texto: 'Al tocar el botón del grupo, el mapa muestra solo lo del grupo. Abajo está el panel: súbelo con el dedo para ver el tablero, los puntos, "Mira esto" y las opciones del grupo. La X de arriba regresa al mapa normal.' },
     { icono: 'flag', titulo: 'Puntos de encuentro', texto: 'Cualquier miembro puede proponer uno; ponle foto para reconocerlo. "Ir al punto" te guía aunque no tengas datos.' },
     { icono: 'circle-check', titulo: 'Avisos', texto: '"Todo bien" y "Necesito ayuda" avisan al grupo. Al pedir ayuda puedes compartir tu ubicación exacta. Después puedes enviarlo también por WhatsApp.' },
     { icono: 'lifebuoy', titulo: 'Aviso rápido', texto: 'El botón de ayuda (el salvavidas entre signos de exclamación) del mapa, o el que está junto al grupo en Colección, manda "Todo bien" o "Necesito ayuda" a tus grupos de encuentro de una vez. En Android también aparece al dejar presionado el ícono de la app.' },
     { icono: 'eye', titulo: 'Mira esto', texto: 'Marca algo en el mapa del grupo. Si el juego está encendido, suma premios dentro del grupo.' },
     { icono: 'sparkles', titulo: 'Tema de colección', texto: 'Quien administra puede proponer uno. Es posible cambiarlo sin límites.' },
-    { icono: 'current-location', titulo: 'Mi ubicación', texto: 'El botón del mapa te muestra solo a ti dónde estás. Para que el grupo te vea, compártela por 15 o 30 minutos mientras la app está abierta.' },
+    { icono: 'current-location', titulo: 'Mi ubicación', texto: 'El botón de ubicación del panel te muestra solo a ti dónde estás. Para que el grupo te vea, compártela por 15 o 30 minutos mientras la app está abierta.' },
     { icono: 'trash', titulo: 'Borrar', texto: 'Borra lo tuyo cuando quieras. El grupo se borra si la mayoría lo vota.' },
     { icono: 'bulb', titulo: 'Ideas para aprovecharlo', pasos: [
       'Viaje: el hotel y el punto del día; "Mira esto" para guardar lo que descubren.',
@@ -680,6 +700,6 @@ window.CONFIG = {
     principal: 'Hacer punto principal', borrar_lo_mio: 'Borrar lo mío', votar_borrado: 'Proponer borrar el grupo', quitar_voto: 'Retirar mi voto',
     eliminar_inactivo: 'Eliminar por inactividad', refrescar: 'Actualizar', ver_en_mapa: 'Ver en el mapa', miembro: 'Opciones de esta persona',
     coadmin: 'Coadministradora', duena: 'Creó el grupo', dejar_compartir: 'Dejar de compartir', subir_ahora: 'Subir ahora',
-    mi_ubicacion: 'Mi ubicación (solo la ves tú)', ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', anuncios: 'Anuncios a la comunidad', ausencia: 'No está', ausencia_ayuda: 'Ya no está en el lugar (solo estando ahí)', capa_encuentro: 'Ver u ocultar el grupo en el mapa', col_mosaico: 'Ver todas las colecciones', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
+    ver_todo: 'Ver a todo el grupo', encuadrar: 'Encuadrar la foto', galeria_cat: 'Ver esta colección', anuncios: 'Anuncios a la comunidad', ausencia: 'No está', ausencia_ayuda: 'Ya no está en el lugar (solo estando ahí)', capa_encuentro: 'Ver el grupo en el mapa', salir_grupo_mapa: 'Salir del grupo en el mapa', col_mosaico: 'Ver todas las colecciones', aviso_rapido: 'Avisar a mi grupo', gps_estado: 'Precisión del GPS'
   }
 };

@@ -302,6 +302,9 @@ label.ib{cursor:pointer}
 .banner.uso{background:var(--papel3);font-size:14px}
 .banner.uso.amarillo{background:#F6E3B4}
 .banner.uso.rojo{background:var(--terracota);color:var(--papel)}
+.ritmo{border:var(--borde);border-radius:10px;padding:10px 12px;background:var(--papel2)}
+.ritmo.amarillo{background:#F6E3B4}
+p.ritmo{border:0;padding:0;background:none}
 .marca-admin{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:var(--tinta);color:var(--papel);font-size:12px;margin-right:4px;vertical-align:-.3em}
 .li.aviso.de-admin{border-style:dashed}
 .stat .lbl{font-size:12px;line-height:1.2}
@@ -368,18 +371,14 @@ label.ib{cursor:pointer}
 .enc-linea:first-of-type{background:#FFE7A3}
 .enc-linea>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .enc-linea.abierta>span{white-space:normal}
-.enc-mapa-caja{position:relative;margin:8px 0 10px}
-.enc-mapa{height:min(48vh,400px);min-height:240px}
 .mapa-lado{position:absolute;right:8px;top:8px;z-index:500;display:flex;flex-direction:column;gap:6px}
 .mapa-lado .ib{background:var(--papel);box-shadow:2px 2px 0 var(--tinta)}
 .mapa-lado .ib.on{background:var(--tinta);color:var(--papel)}
-.enc-compartir{position:absolute;left:8px;bottom:8px;right:56px;z-index:500;pointer-events:none}
 .pastilla{pointer-events:auto;display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 5px 4px 10px;border:var(--borde);border-radius:14px;background:var(--papel);font-size:13px;font-weight:600;box-shadow:2px 2px 0 var(--tinta)}
 .pastilla>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pastilla button{min-width:34px;height:28px;padding:0 6px;border:var(--borde);border-radius:9px;background:var(--papel3);font-weight:700;display:inline-grid;place-items:center}
 .pastilla.on{background:var(--tinta);color:var(--papel)}
 .pastilla.on button{background:var(--papel);color:var(--tinta)}
-.mi-punto{display:block;width:20px;height:20px;border-radius:50%;background:#3E6A8A;border:3px solid #FBF6EC;box-shadow:0 0 0 2px var(--tinta),0 0 0 8px rgba(62,106,138,.25)}
 /* 1.9 · avisos compactos en una fila */
 .enc-botones{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 12px}
 .enc-btn{display:flex;align-items:center;justify-content:center;gap:6px;min-height:46px;padding:0 6px;border-radius:12px;
@@ -626,3 +625,25 @@ textarea.in.crece{min-height:44px;height:44px;resize:none;overflow:hidden;line-h
 .ficha-chat-tx b{font:700 15px/1.2 Georgia,serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ficha-chat-tx .tiny{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ficha-chat.no-disp{opacity:.75}
+
+/* 1.9.6 · Modo grupo: el grupo de encuentro se maneja desde el mapa principal */
+.grupo-cab{display:flex;align-items:center;gap:6px;pointer-events:auto}
+.grupo-cab[hidden]{display:none}
+.pastilla-grupo{flex:1;min-width:0;display:flex;align-items:center;gap:7px;height:42px;padding:0 12px;border:var(--borde);border-radius:21px;background:var(--c,#B5577A);color:var(--papel);box-shadow:var(--sombra);font-weight:700}
+.pastilla-grupo>.grow{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pastilla-grupo .n{display:inline-flex;align-items:center;gap:3px;font-weight:400;font-size:14px}
+.modo-grupo #chips-mapa,.modo-grupo .map-fila2,.modo-grupo .map-side{display:none}
+.panel-grupo{position:absolute;left:0;right:0;bottom:calc(var(--nav) + var(--safe-b));z-index:450;background:var(--papel);border-top:var(--borde);border-radius:20px 20px 0 0;
+  box-shadow:0 -3px 0 rgba(46,42,38,.12);padding:0 12px 10px;display:flex;flex-direction:column;gap:8px}
+.panel-grupo[hidden]{display:none}
+.panel-grupo.abierto{max-height:68%}
+.panel-grupo .asa{display:flex;justify-content:center;align-items:center;height:22px;width:100%;background:none;border:0;padding:0;touch-action:none;cursor:grab}
+.panel-grupo .asa span{width:44px;height:5px;border-radius:3px;background:var(--tinta2);opacity:.55}
+.panel-grupo .enc-botones{margin:0}
+.panel-fila{gap:6px;flex-wrap:nowrap}
+.panel-fila .pastilla{box-shadow:none}
+.panel-cuerpo{overflow-y:auto;-webkit-overflow-scrolling:touch;min-height:0;flex:1;padding-bottom:6px}
+.panel-grupo .li.miembro{flex:none}
+.panel-pista{margin:2px 0;text-align:center}
+#scr-map:has(.guia-punto:not([hidden])) .panel-grupo{display:none}
+.modo-grupo .leaflet-bottom{bottom:var(--panel-alto,0px)}
