@@ -162,7 +162,8 @@ function supabaseApi() {
   const filtrar = (q, o) => {
     if (o.uid) q = q.eq('user_id', o.uid);
     if (o.cat) q = q.eq('category_id', o.cat);
-    if (o.uids) q = q.in('user_id', o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']);
+    if (o.uids && o.cats && o.cats.length) q = q.or(`user_id.in.(${(o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']).join(',')}),category_id.in.(${o.cats.join(',')})`);
+    else if (o.uids) q = q.in('user_id', o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']);
     if (o.group) q = q.eq('group_id', o.group);
     if (o.comunidad) q = q.or('group_id.is.null,group_public.eq.true');
     return q;
@@ -187,7 +188,9 @@ function supabaseApi() {
     // Muro: hallazgos y reencuentros con foto, cada uno como novedad
     feed(before, o = {}) {
       let q = sb.from('feed_items').select('*').eq('is_private', false).eq('muted', false);
-      if (o.uids) q = q.in('actor_id', o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']);
+      if (o.uids && o.cats && o.cats.length) q = q.or(`actor_id.in.(${(o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']).join(',')}),category_id.in.(${o.cats.join(',')})`);
+      else if (o.uids) q = q.in('actor_id', o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']);
+      if (o.cat) q = q.eq('category_id', o.cat);
       if (o.group) q = q.eq('group_id', o.group);
       if (o.comunidad) q = q.or('group_id.is.null,group_public.eq.true');
       q = q.order('at', { ascending: false }).limit(20);
@@ -210,6 +213,7 @@ function supabaseApi() {
     updateRequest: (id, r) => sb.from('requests').update(r).eq('id', id).then(ok),
     delRequest: (id) => sb.from('requests').delete().eq('id', id).then(ok),
     avisos: () => sb.rpc('mis_avisos', { lim: 30 }).then(ok).then(firmar),
+    avisosBien: (desde) => sb.rpc('avisos_bien', { desde }).then(ok),
     avisosVistos: () => sb.rpc('avisos_vistos').then(ok),
     usoPlan: () => sb.rpc('uso_plan').then(ok),
     colorPremioGrupo: (gid, color) => sb.rpc('color_premio_grupo', { grupo: gid, color }).then(ok),
@@ -280,6 +284,19 @@ function supabaseApi() {
     stats: (uid) => sb.rpc('profile_stats', { p_uid: uid, tz: C.ZONA_HORARIA }).then(ok),
     leaderboard: (metric, grupo) => sb.rpc('leaderboard', { metric, lim: 30, grupo: grupo || null }).then(ok),
     topFotos: (grupo) => sb.rpc('top_fotos', { grupo: grupo || null }).then(ok),
+    topActual: () => sb.rpc('top_actual').then(ok),
+    // 1.9.8: premios, guardarropa y primeros pasos
+    revisarPremios: () => sb.rpc('revisar_premios').then(ok),
+    premiosVistos: (claves) => sb.rpc('premios_vistos', { claves }).then(ok),
+    misPremios: () => sb.from('premios_ganados').select('premio, ambito, ganado_at').order('ganado_at').then(ok),
+    misEstilos: () => sb.from('pin_estilo').select('ambito, cabeza, cuerpo, espalda, aro').then(ok),
+    guardarEstilo: (amb, e) => sb.rpc('guardar_estilo', { p_amb: amb || null, p_cabeza: e.cabeza || null, p_cuerpo: e.cuerpo || null, p_espalda: e.espalda || null, p_aro: e.aro == null ? null : !!e.aro }).then(ok),
+    misRetos: () => sb.rpc('mis_retos').then(ok),
+    coleccionesQueSigo: () => sb.rpc('colecciones_que_sigo').then(ok),
+    seguirColeccion: (cat, on) => (on ? sb.from('sigue_coleccion').insert({ category_id: cat }).then(ok)
+      : sb.from('sigue_coleccion').delete().eq('category_id', cat).then(ok)),
+    calificar: (findId, estrellas, p) => sb.rpc('calificar', { hallazgo: findId, estrellas, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
+    calificacion: (findId) => sb.rpc('calificacion', { hallazgo: findId }).then(ok),
     following: (uid) => sb.from('follows').select('followee').eq('follower', uid).then(ok).then((r) => r.map((x) => x.followee)),
     follow(uid, on, me) {
       return on ? sb.from('follows').insert({ followee: uid }).then(ok)
@@ -407,7 +424,8 @@ const S = {
   filtro: { modo: 'todos', id: null }, muro: { modo: 'todos', id: null },
   cache: new Map(), feed: [], feedFin: false, coleccionCat: null, grupo: null, colAbierta: false,
   map: null, capa: null, yo: null, mini: null, arrancando: false,
-  mutes: [], avisos: [], avisosVistos: new Set(), avisosListo: false
+  mutes: [], avisos: [], avisosVistos: new Set(), avisosListo: false,
+  colaPremios: [], top: null, sigoCols: [], retos: null
 };
 // Un hallazgo heredado llega sin colección: se ve con "?" hasta que su nueva dueña elija una
 function sinColeccion(c) {
@@ -424,7 +442,8 @@ const puedoReencontrar = (c) => c.user_id === S.user.id || (c.group_id && !!miGr
 function opcionesFiltro(f) {
   if (f.modo === 'mios') return { uid: S.user.id };
   if (f.modo === 'cat') return { uid: S.user.id, cat: f.id };
-  if (f.modo === 'siguiendo') return { uids: [...S.following], comunidad: true, sinSilenciados: true };
+  if (f.modo === 'siguiendo') return { uids: [...S.following], cats: (S.sigoCols || []).map((c) => c.category_id), comunidad: true, sinSilenciados: true };
+  if (f.modo === 'sigcol') return { cat: f.id, comunidad: true, sinSilenciados: true };
   if (f.modo === 'grupo') return { group: f.id };
   return { comunidad: true, sinSilenciados: true };
 }
@@ -457,11 +476,12 @@ function novedades(antes, despues) {
     records.push({ icon: 'calendar', texto: `Récord: ${despues.mejor_dia.n} en un día` });
   return { nuevos, colonias, records, colecciones };
 }
-const premioDe = (l) => ((l.tipo === 'cat' || l.tipo === 'grupo') ? C.PREMIOS[l.m] : null);
+// Premio que da una medalla (si lo da): el regalo se ve en la medalla; qué es, solo al ganarlo
+const premioDe = (l) => { const id = (C.PREMIO_META[l.tipo === 'grupo' ? 'cat' : l.tipo] || {})[l.m]; return id ? Object.assign({ id }, C.PREMIOS_PIN[id]) : null; };
 function textoMedalla(l) {
   const unidad = l.tipo === 'racha' ? ' semanas' : '';
   const pr = premioDe(l);
-  if (pr) return l.on ? `${l.titulo}: meta de ${l.m} lograda · Premio: ${pr.nombre}` : `${l.titulo}: ${l.v} de ${l.m} · Hay un premio`;
+  if (pr) return l.on ? `${l.titulo}: meta de ${l.m}${unidad} lograda · Premio: ${pr.nombre}` : `${l.titulo}: ${l.v} de ${l.m}${unidad} · Hay un premio`;
   return l.on ? `${l.titulo}: meta de ${l.m}${unidad} lograda` : `${l.titulo}: ${l.v} de ${l.m}${unidad}`;
 }
 function medalla(l) {
@@ -520,8 +540,9 @@ function mostrarElegido(raiz) {
   if (!raiz) return;
   $$('.chips.una-fila', raiz).forEach((f) => { const b = $('.on', f); if (b && f.scrollWidth > f.clientWidth) f.scrollLeft = Math.max(0, b.offsetLeft - f.offsetLeft - 12); });
 }
-function cerrarHoja() { pila.pop(); dibujarHoja(); }
-function cerrarTodo() { pila.length = 0; dibujarHoja(); }
+function cerrarHoja() { pila.pop(); dibujarHoja(); premiosDespues(); }
+function cerrarTodo() { pila.length = 0; dibujarHoja(); premiosDespues(); }
+function premiosDespues() { if (!pila.length && S.colaPremios && S.colaPremios.length) setTimeout(siguientePremio, 400); }
 const hojaArriba = () => pila[pila.length - 1];
 function cabeza(titulo, extra = '') {
   const top = hojaArriba();
@@ -734,12 +755,116 @@ function pinHTML(color, icono, nivel, colorK, pinCls) {
     ${arriba ? `<span class="premio p-${arriba}">${svgPremio(arriba, colorK)}</span>` : ''}
     ${n >= 250 ? `<span class="destellos"><i>${DESTELLO(14)}</i><i>${DESTELLO(9)}</i></span>` : ''}</div>`;
 }
+/* ---------------------------------------------------------------------
+   Guardarropa (1.9.8): premios del pin dibujados en un mismo lienzo.
+   La cabeza de la gota está en (50,46) con radio 30 y la punta en (50,104).
+   En el mapa se dibujan por encima y por debajo del pin de siempre, sin moverlo.
+   --------------------------------------------------------------------- */
+const ARTE = {
+  patito: `<g transform="translate(31 -2) scale(0.95)"><ellipse cx="23" cy="20" rx="14" ry="8" fill="#FFD23F" stroke="#2E2A26" stroke-width="2"/><path d="M34 16 L39 9 L37 21 Z" fill="#FFD23F" stroke="#2E2A26" stroke-width="2" stroke-linejoin="round"/><circle cx="13" cy="10" r="7" fill="#FFD23F" stroke="#2E2A26" stroke-width="2"/><path d="M6.5 9 L1 11.5 L6.5 14 Z" fill="#FF8A1F" stroke="#2E2A26" stroke-width="1.5"/><circle cx="11" cy="8.5" r="1.4" fill="#2E2A26"/></g>`,
+  brote: `<g transform="translate(32 -4) scale(0.9)"><path d="M20 29 V14" stroke="#4E7D2E" stroke-width="3"/><ellipse cx="11" cy="13" rx="9" ry="5" fill="#7DB83A" stroke="#2E2A26" stroke-width="2" transform="rotate(-15 11 13)"/><ellipse cx="29" cy="9" rx="10" ry="5.5" fill="#7DB83A" stroke="#2E2A26" stroke-width="2" transform="rotate(-10 29 9)"/><ellipse cx="20" cy="29" rx="8" ry="2.6" fill="#8A5A44" stroke="#2E2A26" stroke-width="1.5"/></g>`,
+  aro: `<circle cx="50" cy="46" r="34" fill="none" stroke="#2E2A26" stroke-width="10"/><circle cx="50" cy="46" r="34" fill="none" stroke="#FFC21A" stroke-width="6"/>`,
+  corona: `<g transform="translate(33 -4) scale(0.85)"><path d="M5 26 V10 L13 18 L20 5 L27 18 L35 10 V26 Z" fill="§C§" stroke="§O§" stroke-width="2.5" stroke-linejoin="round"/><circle cx="5" cy="8" r="3" fill="§C§" stroke="§O§" stroke-width="2"/><circle cx="20" cy="4" r="3" fill="§C§" stroke="§O§" stroke-width="2"/><circle cx="35" cy="8" r="3" fill="§C§" stroke="§O§" stroke-width="2"/></g>`,
+  corona2: `<g transform="translate(30 -10) scale(0.72)"><path d="M5 30 V9 L14 21 L21 5 L28 19 L35 5 L42 21 L51 9 V30 Z" fill="§C§" stroke="§O§" stroke-width="2.5" stroke-linejoin="round"/><rect x="5" y="28" width="46" height="9" fill="§C§" stroke="§O§" stroke-width="2.5"/><circle cx="17" cy="32.5" r="2.6" fill="§J§" stroke="§O§" stroke-width="1.5"/><circle cx="28" cy="32.5" r="3.6" fill="§J§" stroke="§O§" stroke-width="1.5"/><circle cx="39" cy="32.5" r="2.6" fill="§J§" stroke="§O§" stroke-width="1.5"/></g>`,
+  copa: `<g transform="translate(50 18)"><path d="M-17 4 L-15 -30 Q0 -33 15 -30 L17 4Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-16 -4 L16 -4 L17 4 L-17 4Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-32 4 Q0 0 32 4 Q30 11 0 11 Q-30 11 -32 4Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+     <g transform="translate(14 -2)"><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(0)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(72)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(144)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(216)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(288)"/><circle r="2.6" fill="#C4532F" stroke="#2E2A26" stroke-width="1.4"/></g></g>`,
+  gato: `<g transform="translate(50 18)">
+  <path d="M-24 8 Q-27 -10 -18 -16 L-20 -32 L-6 -20 Q0 -22 6 -20 L20 -32 L18 -16 Q27 -10 24 8 Q0 14 -24 8Z" fill="#D9A21B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M-17 -18 L-18 -27 L-10 -20Z M17 -18 L18 -27 L10 -20Z" fill="#B5577A"/>
+  <path d="M0 -20 V-12 M-8 -18 L-6 -11 M8 -18 L6 -11" stroke="#C4532F" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="-7" cy="-3" r="2.2" fill="#2E2A26"/><circle cx="7" cy="-3" r="2.2" fill="#2E2A26"/>
+  <path d="M-2.5 1.5 L2.5 1.5 L0 4Z" fill="#B5577A" stroke="#2E2A26" stroke-width="1"/><path d="M0 4 q-3 3 -5 1 M0 4 q3 3 5 1" fill="none" stroke="#2E2A26" stroke-width="1.4"/>
+  <path d="M-12 2 H-22 M-12 5 L-21 8 M12 2 H22 M12 5 L21 8" stroke="#2E2A26" stroke-width="1.4" stroke-linecap="round"/></g>`,
+  gato_manchas: `<g transform="translate(50 18)">
+  <path d="M-24 8 Q-27 -10 -18 -16 L-20 -32 L-6 -20 Q0 -22 6 -20 L20 -32 L18 -16 Q27 -10 24 8 Q0 14 -24 8Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M-17 -18 L-18 -27 L-10 -20Z M17 -18 L18 -27 L10 -20Z" fill="#B5577A"/>
+  <path d="M-22 -2 Q-24 -12 -14 -12 Q-12 -4 -22 -2Z" fill="#2E2A26"/><path d="M6 -18 Q14 -20 16 -12 Q8 -10 6 -18Z" fill="#C4532F"/>
+  <circle cx="-7" cy="-3" r="2.2" fill="#2E2A26"/><circle cx="7" cy="-3" r="2.2" fill="#2E2A26"/>
+  <path d="M-2.5 1.5 L2.5 1.5 L0 4Z" fill="#B5577A" stroke="#2E2A26" stroke-width="1"/><path d="M0 4 q-3 3 -5 1 M0 4 q3 3 5 1" fill="none" stroke="#2E2A26" stroke-width="1.4"/>
+  <path d="M-12 2 H-22 M-12 5 L-21 8 M12 2 H22 M12 5 L21 8" stroke="#2E2A26" stroke-width="1.4" stroke-linecap="round"/></g>`,
+  aureola: `<g transform="translate(50 4)"><ellipse rx="24" ry="7" fill="none" stroke="#2E2A26" stroke-width="7"/><ellipse rx="24" ry="7" fill="none" stroke="#FFC21A" stroke-width="3.5"/></g>
+     <g fill="#FFC21A" stroke="#2E2A26" stroke-width="1.4"><path d="M22 -9 L23.6 -5.6 L27 -4 L23.6 -2.4 L22 1 L20.4 -2.4 L17 -4 L20.4 -5.6Z"/><path d="M80 -5 L81.6 -1.6 L85 0 L81.6 1.6 L80 5 L78.4 1.6 L75 0 L78.4 -1.6Z"/></g>`,
+  mariposa: `
+    <path d="M46 46 C36 18 18 4 6 8 C-4 12 -2 30 8 40 C18 50 32 52 46 54Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M45 57 C32 58 18 64 16 76 C14 88 26 92 34 84 C42 76 45 66 46 60Z" fill="#7A4E7E" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <g fill="#FBF6EC" stroke="#2E2A26" stroke-width="1.4"><circle cx="16" cy="20" r="4"/><circle cx="28" cy="34" r="3"/><circle cx="12" cy="34" r="2.4"/><circle cx="28" cy="76" r="3.4"/></g>
+    <path d="M10 12 Q28 22 42 46" fill="none" stroke="#2E2A26" stroke-width="1.4" opacity=".5"/>
+    <path d="M44 20 Q40 4 30 -6" fill="none" stroke="#2E2A26" stroke-width="2.5" stroke-linecap="round"/><circle cx="29" cy="-7" r="3.6" fill="#D9A21B" stroke="#2E2A26" stroke-width="1.8"/><g transform="translate(100 0) scale(-1 1)">
+    <path d="M46 46 C36 18 18 4 6 8 C-4 12 -2 30 8 40 C18 50 32 52 46 54Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M45 57 C32 58 18 64 16 76 C14 88 26 92 34 84 C42 76 45 66 46 60Z" fill="#7A4E7E" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <g fill="#FBF6EC" stroke="#2E2A26" stroke-width="1.4"><circle cx="16" cy="20" r="4"/><circle cx="28" cy="34" r="3"/><circle cx="12" cy="34" r="2.4"/><circle cx="28" cy="76" r="3.4"/></g>
+    <path d="M10 12 Q28 22 42 46" fill="none" stroke="#2E2A26" stroke-width="1.4" opacity=".5"/>
+    <path d="M44 20 Q40 4 30 -6" fill="none" stroke="#2E2A26" stroke-width="2.5" stroke-linecap="round"/><circle cx="29" cy="-7" r="3.6" fill="#D9A21B" stroke="#2E2A26" stroke-width="1.8"/></g>`,
+  conejo: `<path d="M22 30 Q22 9 50 9 Q78 9 78 30 Q64 25 50 25 Q36 25 22 30Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M36 14 Q24 -16 33 -24 Q44 -18 44 12Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M38 6 Q32 -12 35 -17 Q40 -12 40 6Z" fill="#E3A9BE"/>
+     <path d="M64 14 Q76 -16 67 -24 Q56 -18 56 12Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M62 6 Q68 -12 65 -17 Q60 -12 60 6Z" fill="#E3A9BE"/>`,
+  angel: `<path d="M42 42 Q24 18 2 14 Q-6 22 0 30 Q-8 34 -2 42 Q-8 48 2 54 Q0 62 12 62 Q26 62 42 58Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M6 30 Q22 30 36 44 M4 42 Q20 42 36 50 M10 54 Q24 54 38 56" fill="none" stroke="#2E2A26" stroke-width="1.8"/><g transform="translate(100 0) scale(-1 1)"><path d="M42 42 Q24 18 2 14 Q-6 22 0 30 Q-8 34 -2 42 Q-8 48 2 54 Q0 62 12 62 Q26 62 42 58Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M6 30 Q22 30 36 44 M4 42 Q20 42 36 50 M10 54 Q24 54 38 56" fill="none" stroke="#2E2A26" stroke-width="1.8"/></g>`,
+  murcielago: `<defs><linearGradient id="mB" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3A2650"/><stop offset=".6" stop-color="#16121A"/></linearGradient></defs><path d="M40 44 Q28 14 22 18 L10 -8 Q8 6.3999999999999995 -12 10 Q-4 27.4 -14 34 Q1 49.4 -2 54 Q15 64.4 14 64 Q36 64.8 40 62 Z" fill="url(#mB)" stroke="#120F14" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M22 18 L-12 10 M22 18 L-14 34 M22 18 L-2 54 M22 18 L14 64" stroke="#6A4E8A" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+    <path d="M22 18 l-3 -5" stroke="#120F14" stroke-width="2" stroke-linecap="round"/><g transform="translate(100 0) scale(-1 1)"><path d="M40 44 Q28 14 22 18 L10 -8 Q8 6.3999999999999995 -12 10 Q-4 27.4 -14 34 Q1 49.4 -2 54 Q15 64.4 14 64 Q36 64.8 40 62 Z" fill="url(#mB)" stroke="#120F14" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M22 18 L-12 10 M22 18 L-14 34 M22 18 L-2 54 M22 18 L14 64" stroke="#6A4E8A" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+    <path d="M22 18 l-3 -5" stroke="#120F14" stroke-width="2" stroke-linecap="round"/></g>`,
+  bolsa: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#9A3E22" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(58 70)"><rect width="36" height="30" rx="7" fill="#9A3E22" stroke="#2E2A26" stroke-width="3"/><path d="M0 7 Q18 22 36 7 V5 Q36 0 30 0 H6 Q0 0 0 5Z" fill="#C4532F" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><rect x="15" y="11" width="6" height="6" rx="1.5" fill="#FFC21A" stroke="#2E2A26" stroke-width="2"/></g>`,
+  brujula: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#6E7B3A" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(76 86)"><circle r="17" fill="#D9A21B" stroke="#2E2A26" stroke-width="3"/><circle r="12" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2"/><path d="M0 -10 L4 0 L0 10 L-4 0Z" fill="#C4532F" stroke="#2E2A26" stroke-width="1.5"/><path d="M0 0 L4 0 L0 10 L-4 0Z" fill="#6B635A"/><rect x="-3" y="-21" width="6" height="5" rx="1.5" fill="#D9A21B" stroke="#2E2A26" stroke-width="2"/></g>`,
+  binoculares: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#3F6E73" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(57 72)"><rect y="4" width="15" height="24" rx="5" fill="#2E2A26" stroke="#2E2A26" stroke-width="3"/><rect x="21" y="4" width="15" height="24" rx="5" fill="#2E2A26" stroke="#2E2A26" stroke-width="3"/><rect x="12" y="8" width="12" height="8" fill="#6B635A" stroke="#2E2A26" stroke-width="2.5"/><circle cx="7.5" cy="25" r="4.5" fill="#9DBDBF" stroke="#2E2A26" stroke-width="1.5"/><circle cx="28.5" cy="25" r="4.5" fill="#9DBDBF" stroke="#2E2A26" stroke-width="1.5"/></g>`,
+  pirata: `<g transform="translate(50 22)"><path d="M-26 4 Q-26 -16 0 -18 Q26 -16 26 4Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-44 -20 Q-40 2 -20 6 Q0 10 20 6 Q40 2 44 -20 Q34 -6 20 -4 Q0 0 -20 -4 Q-34 -6 -44 -20Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-40 -14 Q-32 -2 -18 0 Q0 4 18 0 Q32 -2 40 -14" fill="none" stroke="#FFC21A" stroke-width="2.5"/>
+     <circle cy="-8" r="5.5" fill="#FBF6EC" stroke="#2E2A26" stroke-width="1.5"/><circle cx="-2" cy="-9" r="1.3" fill="#2E2A26"/><circle cx="2" cy="-9" r="1.3" fill="#2E2A26"/><path d="M-7 1 L7 -4 M7 1 L-7 -4" stroke="#FBF6EC" stroke-width="2.2"/></g>`,
+  fueguito: `<g transform="translate(50 17)"><path d="M-22 8 Q-26 -6 -16 -14 Q-16 -6 -10 -4 Q-14 -18 -2 -30 Q0 -18 8 -14 Q8 -22 14 -24 Q12 -14 20 -8 Q26 0 22 8 Q0 14 -22 8Z" fill="#C4532F" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M-12 7 Q-14 -2 -6 -8 Q-4 -2 0 -2 Q2 -10 8 -12 Q8 -4 13 0 Q15 4 12 7 Q0 10 -12 7Z" fill="#D9A21B"/><circle cx="-5" cy="2" r="1.8" fill="#2E2A26"/><circle cx="5" cy="2" r="1.8" fill="#2E2A26"/><path d="M-3 5 Q0 7.5 3 5" fill="none" stroke="#2E2A26" stroke-width="1.5"/></g>`,
+  barco: `<g transform="translate(50 18)"><path d="M-30 6 L-22 -6 L22 -6 L30 6Z" fill="#F3EBDD" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M-18 -6 L0 -30 L18 -6Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-10 -14 H8 M-6 -19 H5" stroke="#6B635A" stroke-width="1.6"/><path d="M-24 0 H-8 M6 0 H24" stroke="#6B635A" stroke-width="1.6"/><path d="M0 -30 V-6" stroke="#2E2A26" stroke-width="1.5" opacity=".4"/></g>`,
+  canotier: `<g transform="translate(50 18)"><path d="M-18 4 L-17 -14 Q0 -17 17 -14 L18 4Z" fill="#D9A21B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-17.5 -6 H17.5 V0 H-17.5Z" fill="#3F6E73" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-36 4 Q0 0 36 4 Q34 11 0 11 Q-34 11 -36 4Z" fill="#D9A21B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-26 7 H26 M-12 -11 V-6 M0 -12 V-6 M12 -11 V-6" stroke="#A97C10" stroke-width="1.6"/></g>`,
+  corazon: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#C4532F" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(75 84)"><path d="M0 18 L-17 1 Q-24 -8 -16 -15 Q-8 -20 0 -10 Q8 -20 16 -15 Q24 -8 17 1Z" fill="#B5577A" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M-9 -9 Q-13 -7 -12 -2" fill="none" stroke="#FBF6EC" stroke-width="2.5" stroke-linecap="round"/><rect x="-3" y="-3" width="6" height="5" rx="1.5" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.8"/></g>`,
+  libelula: `<path d="M44 40 Q20 22 -6 26 Q-12 34 -2 38 Q22 44 44 46Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M44 50 Q22 56 0 70 Q-4 78 6 78 Q28 68 44 56Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M40 43 Q16 32 -2 32 M40 53 Q18 64 4 74" fill="none" stroke="#3F6E73" stroke-width="1.6"/><path d="M28 34 l-4 6 M16 30 l-3 7 M28 60 l-2 -6 M16 66 l-2 -6" stroke="#3F6E73" stroke-width="1.2"/><g transform="translate(100 0) scale(-1 1)"><path d="M44 40 Q20 22 -6 26 Q-12 34 -2 38 Q22 44 44 46Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M44 50 Q22 56 0 70 Q-4 78 6 78 Q28 68 44 56Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M40 43 Q16 32 -2 32 M40 53 Q18 64 4 74" fill="none" stroke="#3F6E73" stroke-width="1.6"/><path d="M28 34 l-4 6 M16 30 l-3 7 M28 60 l-2 -6 M16 66 l-2 -6" stroke="#3F6E73" stroke-width="1.2"/></g>`,
+  mono: `<g transform="translate(64 16) rotate(18)"><path d="M0 0 L-22 -12 Q-26 0 -22 12Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M0 0 L22 -12 Q26 0 22 12Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-3 2 L-10 20 L-4 17 L0 22 L2 4 M3 2 L10 20 L4 17 L0 22" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><rect x="-5" y="-5" width="10" height="10" rx="3" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-16 -6 Q-18 0 -16 6 M16 -6 Q18 0 16 6" fill="none" stroke="#2E2A26" stroke-width="1.6"/></g>`,
+  camara: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(56 72)"><rect width="40" height="24" rx="4" fill="#2E2A26" stroke="#2E2A26" stroke-width="3"/><rect width="40" height="8" rx="3" fill="#F3EBDD" stroke="#2E2A26" stroke-width="3"/><rect x="5" y="-5" width="8" height="5" rx="1.5" fill="#F3EBDD" stroke="#2E2A26" stroke-width="2.5"/><circle cx="20" cy="15" r="9" fill="#6B635A" stroke="#2E2A26" stroke-width="3"/><circle cx="20" cy="15" r="4.5" fill="#9DBDBF" stroke="#2E2A26" stroke-width="1.5"/><circle cx="33" cy="4" r="2" fill="#C4532F"/></g>`,
+  bruja: `<g transform="translate(50 20)"><path d="M-18 2 Q-12 -14 -6 -24 Q2 -38 18 -40 Q8 -34 8 -22 Q10 -10 18 2Z" fill="#4E3354" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-16 -4 Q0 0 16 -4 L17 2 Q0 6 -17 2Z" fill="#C4532F" stroke="#2E2A26" stroke-width="2"/><rect x="-4" y="-5" width="8" height="7" rx="1" fill="none" stroke="#FFC21A" stroke-width="2.2"/>
+     <path d="M-38 4 Q0 -4 38 4 Q34 12 0 12 Q-34 12 -38 4Z" fill="#4E3354" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M10 -28 l2 -3 l1 3 l3 1 l-3 1 l-1 3 l-1 -3 l-3 -1Z" fill="#FFC21A"/></g>`
+};
+const ARTE_ATRAS = new Set(['aro', 'mariposa', 'angel', 'murcielago', 'libelula']);
+const VB_PIN = '-16 -42 132 152';
+function arte(id, k) {
+  let s = ARTE[id] || '';
+  if (id === 'corona' || id === 'corona2') s = s.replace(/§C§/g, colorPremio(k)).replace(/§O§/g, trazoPremio(k)).replace(/§J§/g, k === 'negro' ? '#FFC21A' : k === 'oro' ? '#FF5A3C' : '#FFF3B0');
+  return s;
+}
+// Medalla del top: el lugar adentro, sin texto
+function medallaTop(n, x, y) {
+  return `<g transform="translate(${x} ${y})"><path d="M-7 8 L-12 28 L-5 24 L-1 31 L1 12 M7 8 L12 28 L5 24 L1 31 L-1 12" fill="#C4532F" stroke="${TINTA}" stroke-width="2.5" stroke-linejoin="round"/><circle r="12" fill="#FFC21A" stroke="${TINTA}" stroke-width="3"/><text y="5" text-anchor="middle" font-size="14" font-weight="800" font-family="system-ui,sans-serif" fill="${TINTA}">${Number(n) || ''}</text></g>`;
+}
+function medallaNombre(uid) {
+  const n = S.top && S.top.personas.get(uid); if (!n) return '';
+  const t = esc(C.TOP_NOMBRE.replace('{n}', n));
+  return `<span class="medalla-nombre" data-tip="${t}" aria-label="${t}"><svg viewBox="-14 -14 28 48" width="14" height="24" aria-hidden="true">${medallaTop(n, 0, 0)}</svg></span>`;
+}
+// Capas del adorno: lo de atrás (alas, aro) y lo de adelante (sombrero, lo que cuelga, medalla)
+function capasAdorno(ad, k, top) {
+  const ids = ad ? [ad.e, ad.a ? 'aro' : null, ad.c, ad.b].filter((x) => x && ARTE[x]) : [];
+  const atras = ids.filter((x) => ARTE_ATRAS.has(x)).map((x) => arte(x, k)).join('');
+  let frente = ids.filter((x) => !ARTE_ATRAS.has(x)).map((x) => arte(x, k)).join('');
+  if (top) frente += medallaTop(top, 80, 22);
+  return { atras, frente };
+}
 function pinIcono(c) {
-  const n = c.premio_nivel || 0;
   const tenue = atenuado(c) ? 'tenue' : '';   // varias personas dicen que ya no está: se atenúa, nunca desaparece
-  const base = `<div class="pin ${c.is_private ? 'priv' : ''} ${tenue} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>`;
-  return L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36],
-    html: n >= 10 ? pinHTML(c.cat_color, c.cat_icon, n, c.premio_color, `${c.is_private ? 'priv' : ''} ${tenue} ${c.id === S.nuevoId ? 'cae' : ''}`) : base });
+  const base = `<div class="pin ${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>`;
+  const top = S.top && S.top.pines.get(c.id);
+  const ad = c.adorno && typeof c.adorno === 'object' ? c.adorno : null;
+  if (!ad && !top) return L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36], html: base.replace('class="pin ', `class="pin ${tenue} `) });
+  const { atras, frente } = capasAdorno(ad, c.premio_color, top);
+  const capa = (x, cls) => (x ? `<svg class="adorno ${cls}" viewBox="${VB_PIN}" aria-hidden="true">${x}</svg>` : '');
+  return L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36], html: `<div class="pinw adornado ${tenue}">${capa(atras, 'atras')}${base}${capa(frente, 'frente')}</div>` });
+}
+// El pin grande (celebraciones y guardarropa): todo en un dibujo, con el ícono de la colección encima
+function pinGrande(color, icono, ad, k, ancho) {
+  const w = ancho || 150, h = Math.round(w * 152 / 132), { atras, frente } = capasAdorno(ad, k, null);
+  const cx = (66 / 132) * w, cy = (88 / 152) * h, t = Math.round(w * 0.16);
+  return `<span class="pin-grande" style="width:${w}px;height:${h}px"><svg viewBox="${VB_PIN}" width="${w}" height="${h}" aria-hidden="true">${atras}
+    <path d="M50 104 L28 68 A30 30 0 1 1 72 68 Z" fill="${okColor(color)}" stroke="${TINTA}" stroke-width="4" stroke-linejoin="round"/>${frente}</svg>
+    <span class="pg-ic" style="left:${cx - t / 2}px;top:${cy - t / 2}px;font-size:${t}px;width:${t}px;height:${t}px">${ic(icono)}</span></span>`;
 }
 function crearMapa() {
   document.documentElement.style.setProperty('--map-filter', C.MAPA_FILTRO);
@@ -1065,7 +1190,8 @@ function chipsMapa() {
   return `${gruposEncuentro().map((g) => `<button type="button" class="chip cc capa" style="--c:${okColor(g.color)}" data-act="grupo_mapa" data-id="${g.id}"
       data-tip="${esc(C.AYUDA.capa_encuentro)}">${ic('lifebuoy')}${esc(g.name)}</button>`).join('')}
     ${S.cats.map((c) => chipColor('filtro', 'cat:' + c.id, c.name, c.icon, c.color, on('cat', c.id))).join('')}
-    ${gruposColeccion().map((g) => chipColor('filtro', 'grupo:' + g.id, g.name, g.icon, g.color, on('grupo', g.id), ic('users'))).join('')}`;
+    ${gruposColeccion().map((g) => chipColor('filtro', 'grupo:' + g.id, g.name, g.icon, g.color, on('grupo', g.id), ic('users'))).join('')}
+    ${(S.sigoCols || []).map((c) => chipColor('filtro', 'sigcol:' + c.category_id, c.name, c.icon, c.color, on('sigcol', c.category_id), ic('user-check'), `data-tip="${esc(c.owner_name || '')}"`)).join('')}`;
 }
 function filtrosFijos() {
   const b = (v, icono, k) => `<button class="ib sm ${S.filtro.modo === v ? 'sel' : ''}" data-act="filtro" data-v="${v}" data-tip="${esc(C.AYUDA[k])}" aria-label="${esc(C.AYUDA[k])}" aria-pressed="${S.filtro.modo === v}">${ic(icono)}</button>`;
@@ -1101,6 +1227,7 @@ function pintarApp() {
       <div id="instalar-franja" class="instalar-franja" hidden><button class="row grow" data-act="instalar" style="text-align:left">${ic('device-mobile')}<span class="grow">${esc(C.INSTALAR_FRANJA)}</span></button>${ib('instalar_no', 'x', 'cerrar', '', 'sm ghost')}</div>
     </section>
     <main id="scr" class="screen" hidden></main>
+    <div id="franja-compartir" class="franja-compartir" hidden></div>
     <nav class="nav">
       <button data-act="tab" data-v="map" data-tip="${C.AYUDA.mapa}" aria-label="${C.AYUDA.mapa}">${ic('map-2')}</button>
       <button data-act="tab" data-v="feed" data-tip="${C.AYUDA.muro}" aria-label="${C.AYUDA.muro}">${ic('layout-grid')}</button>
@@ -1117,6 +1244,7 @@ function irA(tab) {
   soltarFoco($('#app'));
   if (tab !== 'map') terminarGuia();
   S.tab = tab;
+  pintarFranjaCompartir();
   $$('.nav [data-act="tab"]').forEach((b) => b.classList.toggle('on', b.dataset.v === tab));
   const esMapa = tab === 'map';
   $('#scr-map').hidden = !esMapa; $('#scr').hidden = esMapa;
@@ -1145,7 +1273,7 @@ function fotoMuro(c) {
 }
 function tarjeta(c) {
   return `<article class="card" data-card="${c.id}">
-    <div class="body row"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left">${avatar(c)}<b class="grow">${esc(c.user_name)}</b></button>${etiquetaDe(c)}</div>
+    <div class="body row"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left">${avatar(c)}<b class="grow">${esc(c.user_name)}${medallaNombre(c.user_id)}</b></button>${etiquetaDe(c)}</div>
     ${c.photo || c.thumb ? `<img class="photo" src="${fotoMuro(c)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
     <div class="body"><div class="row between"><div class="grow"><h3>${esc(c.name)}</h3>
       <div class="row meta-fila"><span class="tiny grow">${c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}${c.comments_count ? ` · ${ic('message-circle')} ${c.comments_count}` : ''}</span>
@@ -1156,7 +1284,7 @@ function tarjeta(c) {
 function tarjetaReencuentro(it) {
   const col = it.tipo === 'visto' && it.actor_id !== it.owner_id;
   return `<article class="card novedad ${col ? 'colaboracion' : ''}" data-item="${it.item_id}">
-    <div class="body row"><button class="row grow" data-act="perfil" data-id="${it.actor_id}" style="text-align:left">${avatar({ avatar: it.actor_avatar, avatar_color: it.actor_color })}<b class="grow">${esc(it.actor_name)}</b></button>${col ? `<span class="catb col-chip">${ic('users')}${esc(C.COL_ETIQUETA)}</span>` : etiquetaDe(it)}</div>
+    <div class="body row"><button class="row grow" data-act="perfil" data-id="${it.actor_id}" style="text-align:left">${avatar({ avatar: it.actor_avatar, avatar_color: it.actor_color })}<b class="grow">${esc(it.actor_name)}${medallaNombre(it.actor_id)}</b></button>${col ? `<span class="catb col-chip">${ic('users')}${esc(C.COL_ETIQUETA)}</span>` : etiquetaDe(it)}</div>
     <img class="photo" src="${api.photoUrl(C.MURO_FOTO === 'mini' ? (it.thumb || it.photo) : (it.photo || it.thumb))}" alt="${esc(it.name)}" loading="lazy" data-act="ficha" data-id="${it.find_id}" data-s="${it.item_id}">
     <div class="body"><h3>${esc(it.name)}</h3>
       <div class="tiny row">${col ? `${ic('eye-check')} ${esc(C.COL_MURO.replace('{n}', it.actor_name).replace('{d}', it.owner_name || ''))}` : `${ic('repeat')} Visto de nuevo · ${it.vez}ª vez`}${it.colonia ? ` · ${esc(it.colonia)}` : ''} · ${hace(it.at)}</div>
@@ -1334,7 +1462,7 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
   const sigo = S.following.has(p.id);
   const colecciones = (st.categorias || []).filter((c) => propio || c.total > 0);
   const silencio = propio ? null : S.mutes.find((m) => m.target_user === p.id);
-  return `<div class="row" style="gap:14px">${avatar(p, 'lg')}<div class="grow"><h2>${esc(p.name)}</h2>${p.bio ? `<div class="muted">${esc(p.bio)}</div>` : ''}
+  return `${propio ? pasosHTML(S.retos) : ''}<div class="row" style="gap:14px">${avatar(p, 'lg')}<div class="grow"><h2>${esc(p.name)}${medallaNombre(p.id)}</h2>${p.bio ? `<div class="muted">${esc(p.bio)}</div>` : ''}
       ${colecciones.length ? `<div class="colicons">${colecciones.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}
       <div class="tiny row" style="margin-top:4px"><span data-tip="Seguidores">${ic('users')} ${st.seguidores || 0}</span> · <span data-tip="Siguiendo">${ic('user-check')} ${st.siguiendo || 0}</span></div>
       ${p.blocked ? `<div class="tiny row">${ic('ban')} bloqueada</div>` : ''}
@@ -1342,7 +1470,7 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
     <div class="row wrap" style="margin:14px 0">
       ${propio ? ib('editar_perfil', 'pencil', 'editar') : ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? '' : 'on')}
       ${propio ? ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`) : ''}
-      ${propio ? ib('buscar_personas', 'search', 'buscar_personas') : ''}
+      ${propio ? ib('buscar_personas', 'search', 'buscar_personas') + ib('guardarropa', 'hanger', 'guardarropa') : ''}
       ${ib('tabla', 'trophy', 'tabla')}
       ${!propio && o.comparte === false ? (silencio ? ib('quitar_silencio', 'volume', 'quitar_silencio', `data-id="${silencio.id}"`, 'on') : ib('silenciar', 'volume-off', 'silenciar', `data-user="${p.id}"`)) : ''}
       ${!propio && o.puedeChat ? ib('chat', 'messages', 'mensaje', `data-id="${p.id}"`, 'on') : ''}
@@ -1404,8 +1532,8 @@ async function pintarPerfil() {
   const scr = $('#scr');
   scr.innerHTML = `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
   try {
-    const [me, st] = await Promise.all([api.getProfile(S.user.id), api.stats(S.user.id)]);
-    S.me = me || S.me; S.stats = st;
+    const [me, st, retos] = await Promise.all([api.getProfile(S.user.id), api.stats(S.user.id), api.misRetos ? api.misRetos().catch(() => null) : null]);
+    S.me = me || S.me; S.stats = st; S.retos = retos;
     if (S.tab === 'perfil') {
       scr.innerHTML = perfilHTML(S.me, st, true, null); cuandoDesocupado(() => prepararMosaico(S.user.id));
       pintarNotificaciones().catch(() => null); pintarSinConexion().catch(() => null);
@@ -1480,15 +1608,26 @@ async function abrirFicha(id, op) {
   H.cargar = async () => {
     const cc = S.cache.get(id) || c;
     try {
-      const [lista, coms, aus] = await Promise.all([api.history(id), cc.is_private ? Promise.resolve([]) : api.comments(id),
-        api.historiaAusencias(id).catch(() => [])]);
-      H.lista = lista; H.coms = coms; H.aus = aus || [];
+      const [lista, coms, aus, calif] = await Promise.all([api.history(id), cc.is_private ? Promise.resolve([]) : api.comments(id),
+        api.historiaAusencias(id).catch(() => []), cc.group_calificacion && !cc.is_private && api.calificacion ? api.calificacion(id).catch(() => null) : null]);
+      H.lista = lista; H.coms = coms; H.aus = aus || []; H.calif = calif;
       if (H.foto) { const i = galeria(S.cache.get(id) || cc, H).filter((h) => h.photo || h.thumb).findIndex((h) => h.id === H.foto); if (i > 0) H.i = i; H.foto = null; }
     } catch (e) { H.lista = H.lista || []; H.coms = H.coms || []; H.aus = H.aus || []; }
     const top = hojaArriba(); if (top && top.tipo === 'ficha' && pila.includes(top)) dibujarHoja();
   };
   H.cargar();
   return H;
+}
+// Calificación con estrellas (grupos que la activan): promedio con 3 o más; se califica solo estando ahí
+const estrellas = (n) => `<span class="estrellas" aria-label="${n} de 3">${[1, 2, 3].map((i) => `<span class="${i <= n ? '' : 'no'}">★</span>`).join('')}</span>`;
+function califHTML(c, H) {
+  const k = H.calif; if (k === undefined) return '';
+  const n = k ? k.n || 0 : 0, prom = k && k.promedio, mia = k && k.mia;
+  return `<div class="calif-caja">
+    <div class="row between">${prom ? estrellas(prom) : `<span class="tiny">${esc(C.CALIF_POCAS)}</span>`}<span class="tiny">${esc(C.CALIF_N.replace('{n}', n))}</span></div>
+    ${puedoMarcarAusencia(c) ? `<div class="tiny" style="margin-top:6px">${esc(C.CALIF_TU)}</div>
+    <div class="calif-botones">${[1, 2, 3].map((e) => `<button type="button" class="${mia === e ? 'on' : ''}" data-act="calificar" data-id="${c.id}" data-v="${e}" aria-pressed="${mia === e}" aria-label="${e} de 3">${'★'.repeat(e)}</button>`).join('')}</div>
+    <div class="tiny">${esc(C.CALIF_SOLO_AHI)}</div>` : ''}</div>`;
 }
 // "¡Ya no está!": en todo lo que puedes ver (en lo secreto, solo quien lo registró)
 const puedoMarcarAusencia = (c) => !S.me.blocked && (!c.is_private || c.user_id === S.user.id) && (!c.group_id || c.group_public || !!miGrupo(c.group_id));
@@ -1503,7 +1642,7 @@ function comentariosHTML(c, H) {
     ${coms === undefined ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>` : `
     <div class="coms">${coms.map((k) => `<div class="com">
       <button data-act="perfil" data-id="${k.user_id}" aria-label="${esc(k.user_name)}">${avatar(k)}</button>
-      <div class="grow"><div><b>${esc(k.user_name)}</b> <span class="tiny">${hace(k.created_at)}</span></div><p>${esc(k.body)}</p></div>
+      <div class="grow"><div><b>${esc(k.user_name)}${medallaNombre(k.user_id)}</b> <span class="tiny">${hace(k.created_at)}</span></div><p>${esc(k.body)}</p></div>
       ${puedoBorrar(k) ? ib('borrar_comentario', 'trash', 'borrar_comentario', `data-id="${k.id}" data-find="${c.id}"`, 'sm ghost') : ''}</div>`).join('')}</div>
     ${puedoComentar(c) ? (mios < C.COMENTARIOS_POR_PERSONA ? `<div class="coment-campo">
       <input id="coment-in" class="in compacto" maxlength="${C.COMENTARIO_MAX}" placeholder="Escribe un comentario" aria-label="Comentario" value="${esc(H.borrador || '')}" autocomplete="off">
@@ -1547,9 +1686,10 @@ function fichaHTML(c, H) {
       <img src="${api.photoUrl(f.thumb || f.photo)}" alt="" loading="lazy">${marcaFoto(f)}</button>`).join('')}</div>` : ''}
     ${c.user_id === S.user.id && !c.category_id && !c.group_id ? `<button class="banner sin-col" data-act="editar_hallazgo" data-id="${c.id}">${ic('question-mark')}<span class="grow">${esc(C.SIN_COLECCION_ELEGIR)}</span>${ic('chevron-right')}</button>` : ''}
     <div class="row between" style="margin:12px 0">
-      <button class="row" data-act="perfil" data-id="${c.user_id}">${avatar(c)}<b>${esc(c.user_name)}</b></button>
+      <button class="row" data-act="perfil" data-id="${c.user_id}">${avatar(c)}<b>${esc(c.user_name)}${medallaNombre(c.user_id)}</b></button>
       ${etiquetaDe(c)}</div>
     ${c.note ? `<p style="margin:6px 0 12px">${esc(c.note)}</p>` : ''}
+    ${c.group_calificacion && !c.is_private ? califHTML(c, H) : ''}
     ${esAproximada({ acc: c.accuracy }) ? `<button class="linkbtn tiny" data-act="info_precision" data-acc="${c.accuracy}" style="padding:0;color:var(--tinta2)">${ic('alert-triangle')} Ubicación aproximada ±${metros(c.accuracy)}</button>` : ''}
     ${!c.is_private || propio ? `<div style="margin:12px 0 8px">${reaccionesHTML(c)}</div>` : ''}
     ${atenuado(c) ? `<p class="tiny ausencia-tenue">${ic('map-pin-off')} ${esc(C.AUSENCIA_TENUE)}</p>` : ''}
@@ -2059,7 +2199,7 @@ function celebrarHallazgo(d, luego) {
   document.body.appendChild(el);
   confeti(90, C.CELEBRACION_MS);
   let hecho = false;
-  const fin = () => { if (hecho) return; hecho = true; el.classList.add('sale'); setTimeout(() => { el.remove(); if (luego) luego(); }, 250); };
+  const fin = () => { if (hecho) return; hecho = true; el.classList.add('sale'); setTimeout(() => { el.remove(); if (luego) luego(); premiosDespues(); }, 250); };
   el.addEventListener('click', fin);
   setTimeout(fin, menosMovimiento() ? 900 : C.CELEBRACION_MS);
 }
@@ -2073,14 +2213,12 @@ function celebrar(n, textoBase) {
   if (!hay) { if (textoBase) aviso(textoBase); return; }
   // Si una serie ganó varias metas a la vez, se muestra la más alta
   const mejores = Object.values(n.nuevos.reduce((a, l) => { const k = l.tipo + (l.cat || l.grupo || ''); if (!a[k] || a[k].m < l.m) a[k] = l; return a; }, {}));
-  const premios = mejores.filter((l) => l.on && nivelPremio(l.m) === l.m && premioDe(l));
   const titulo = n.nuevos.length > 1 ? `¡${n.nuevos.length} nuevas medallas!` : n.nuevos.length ? '¡Nueva medalla!' : '¡Nuevo récord!';
   abrirHoja(() => `${cabeza('')}<div class="unlock">
     <div class="burst" aria-hidden="true"></div>
     <h1 class="serif unlock-t">${titulo}</h1>
     ${n.colonias.map((c) => `<div class="banner" style="margin-bottom:10px;justify-content:center">${ic('map-pin')} Nueva colonia: <b>${esc(c)}</b></div>`).join('')}
     <div class="medals nuevas">${n.nuevos.map(medalla).join('')}</div>
-    ${premios.map((l) => premioNuevoHTML(l)).join('')}
     ${n.colecciones ? `<div class="banner coleccion-nueva">${ic('cards')}<span>${esc(n.colecciones >= C.COLECCIONES_MAX ? C.COLECCION_MAXIMO : C.COLECCION_NUEVA.replace('{n}', n.colecciones))}</span></div>` : ''}
     ${mejores.map((l) => { const sig = siguienteMeta(l); return `<div class="meta-sig"><div class="row between tiny"><span>${esc(l.titulo)}</span>
       <span>${sig ? `${l.v} / ${sig}` : 'meta máxima'}</span></div><div class="progress"><div style="width:${sig ? Math.min(100, Math.round(l.v / sig * 100)) : 100}%"></div></div></div>`; }).join('')}
@@ -2098,11 +2236,167 @@ function selectorColorPremio(tipo, id, actual) {
   return `<div class="swatches premio-colores" role="group" aria-label="${esc(C.AYUDA.color_premio)}">${Object.keys(C.COLORES_PREMIO).map((k) =>
     `<button type="button" data-act="color_premio" data-tipo="${tipo}" data-id="${id}" data-v="${k}" class="${k === actual ? 'on' : ''}" style="background:${C.COLORES_PREMIO[k]}" aria-label="${esc(C.NOMBRES_PREMIO[k])}" data-tip="${esc(C.NOMBRES_PREMIO[k])}"></button>`).join('')}</div>`;
 }
-function premioNuevoHTML(l) {
-  const pr = premioDe(l), tipo = l.tipo, id = l.cat || l.grupo, k = colorPremioActual(tipo, id);
-  return `<div class="premio-nuevo"><div class="pin-muestra">${pinHTML(l.color, l.icon, l.m, k)}</div>
-    <p><b>${esc(C.PREMIO_GANADO.replace('{titulo}', l.titulo).replace('{premio}', pr.nombre))}</b></p>
-    ${l.m >= 100 ? `<p class="tiny">${esc(C.AYUDA.color_premio)}</p>${selectorColorPremio(tipo, id, k)}` : ''}</div>`;
+
+/* ---------------------------------------------------------------------
+   Premios nuevos (1.9.8): la base decide qué se ganó y lo guarda para siempre.
+   Cada premio sale con su celebración y su confeti, uno tras otro.
+   --------------------------------------------------------------------- */
+let revisandoPremios = false, tPremios = null;
+function revisarPremiosPronto(ms) { clearTimeout(tPremios); tPremios = setTimeout(revisarPremios, ms == null ? 2500 : ms); }
+const claveInaugura = () => 'cg_guardarropa_' + (S.user ? S.user.id : '');
+function inauguracionVista() { if (S.inauguroGuardarropa) return true; try { return !!localStorage.getItem(claveInaugura()); } catch (e) { return false; } }
+async function revisarPremios() {
+  if (!S.user || !S.me || S.me.blocked || revisandoPremios || !navigator.onLine || !api.revisarPremios) return;
+  revisandoPremios = true;
+  try {
+    const l = await api.revisarPremios();
+    const ya = new Set(S.colaPremios.map((p) => p.clave));
+    (l || []).forEach((p) => { const clave = `${p.premio}:${p.ambito || ''}`; if (!ya.has(clave) && C.PREMIOS_PIN[p.premio]) S.colaPremios.push(Object.assign({ clave }, p)); });
+    // la primera vez: la inauguración del guardarropa va antes (con el sombrero de bruja, si llegó)
+    if (!inauguracionVista() && !S.colaPremios.some((p) => p.inaugura)) S.colaPremios.unshift({ clave: 'inaugura', inaugura: true });
+  } catch (e) { /* si falla, se revisa la próxima vez */ }
+  revisandoPremios = false;
+  siguientePremio();
+}
+function siguientePremio() {
+  if (!S.colaPremios.length || pila.length || document.hidden || $('.celebra') || !$('#app .nav')) return;
+  const p = S.colaPremios.shift();
+  if (p.inaugura) mostrarInauguracion(); else mostrarPremio(p);
+}
+// Un solo premio puesto en su espacio (para la muestra)
+function adornoSolo(id) { const e = (C.PREMIOS_PIN[id] || {}).espacio; return e === 'cabeza' ? { c: id } : e === 'cuerpo' ? { b: id } : e === 'espalda' ? { e: id } : e === 'aro' ? { a: true } : null; }
+const coleccionDe = (amb) => (amb ? S.cats.find((c) => c.id === amb) || miGrupo(amb) || null : null);
+function muestraPin(amb) { const c = coleccionDe(amb) || S.cats[0] || {}; return { color: c.color || C.COLORES.terracota, icon: c.icon || 'star' }; }
+function mostrarPremio(p) {
+  api.premiosVistos([p.clave]).catch(() => null);
+  const info = C.PREMIOS_PIN[p.premio], amb = p.ambito || null, col = coleccionDe(amb), m = muestraPin(amb);
+  const tipo = amb && S.cats.some((c) => c.id === amb) ? 'cat' : 'grupo';
+  abrirHoja(() => { const k = amb ? colorPremioActual(tipo, amb) : 'oro';
+    return `${cabeza('')}<div class="unlock premio-cel">
+      <div class="burst" aria-hidden="true"></div>
+      <h1 class="serif unlock-t">${esc(C.PREMIO_NUEVO)}</h1>
+      <div class="pin-muestra-grande">${pinGrande(m.color, m.icon, amb ? adornoSolo(p.premio) : adornoSolo(p.premio), k, 150)}</div>
+      <h2>${esc(info.nombre)}</h2>
+      ${col ? `<p>${catBadge(col.name, col.icon, col.color)}</p>` : ''}
+      <p class="muted">${esc(C.PREMIO_GUARDADO)}</p>
+      ${amb && (p.premio === 'corona' || p.premio === 'corona2') ? `<p class="tiny">${esc(C.AYUDA.color_premio)}</p>${selectorColorPremio(tipo, amb, k)}` : ''}
+      ${!amb ? `<button class="btn block" data-act="premio_poner" data-p="${esc(p.premio)}">${ic('hanger')} ${esc(C.PREMIO_PONER)}</button>` : ''}
+      <button class="btn alt block" data-act="premio_seguir" style="margin-top:8px">${ic('check')} ${esc(C.PREMIO_SEGUIR)}</button></div>`; }, null, 'premio');
+  confeti(160, 2200);
+}
+function mostrarInauguracion() {
+  S.inauguroGuardarropa = true;
+  try { localStorage.setItem(claveInaugura(), '1'); } catch (e) { /* sin almacenamiento */ }
+  const bruja = S.colaPremios.find((x) => x.premio === 'bruja');
+  if (bruja) { S.colaPremios = S.colaPremios.filter((x) => x !== bruja); api.premiosVistos([bruja.clave]).catch(() => null); }
+  const m = muestraPin(null);
+  abrirHoja(() => `${cabeza('')}<div class="unlock premio-cel">
+    <div class="burst" aria-hidden="true"></div>
+    <h1 class="serif unlock-t">${esc(bruja ? C.BRUJA_TITULO : C.INAUGURA_TITULO)}</h1>
+    <div class="pin-muestra-grande">${pinGrande(m.color, m.icon, bruja ? { c: 'bruja' } : null, 'oro', 150)}</div>
+    ${bruja ? `<h2>${esc(C.BRUJA_TEXTO)}</h2>` : ''}
+    <p>${esc(C.GUARDARROPA_INAUGURA)}</p>
+    ${bruja ? `<button class="btn block" data-act="premio_poner" data-p="bruja">${ic('hanger')} ${esc(C.PREMIO_PONER)}</button>` : ''}
+    <button class="btn alt block" data-act="guardarropa" style="margin-top:8px">${ic('hanger')} ${esc(C.GUARDARROPA_ABRIR)}</button>
+    <button class="btn alt block" data-act="premio_seguir" style="margin-top:8px">${ic('check')} ${esc(C.PREMIO_SEGUIR)}</button></div>`, null, 'premio');
+  confeti(180, 2400);
+}
+// "Ponérmelo": un premio personal pasa al guardarropa de todas las colecciones
+async function ponerPremio(id, btn) {
+  const esp = (C.PREMIOS_PIN[id] || {}).espacio; if (!esp || esp === 'aro') return;
+  ocupado(btn, true);
+  try {
+    const filas = await api.misEstilos();
+    const t = (filas || []).find((f) => !f.ambito) || {};
+    const e = { cabeza: t.cabeza || null, cuerpo: t.cuerpo || null, espalda: t.espalda || null, aro: null };
+    e[esp] = id;
+    await api.guardarEstilo(null, e);
+    if (btn && btn.isConnected) { btn.innerHTML = `${ic('check')} ${esc(C.PREMIO_PUESTO)}`; btn.disabled = true; }
+    aviso(C.PREMIO_PUESTO, 'hanger');
+    pinesAlDia();
+  } catch (err) { ocupado(btn, false); fallo(err); }
+}
+// Los pines vuelven a pedirse para verse con lo nuevo
+function pinesAlDia() { S.cache.forEach((c, k) => { if (c && c.user_id === S.user.id) S.cache.delete(k); }); if (S.map) cargarPines(); }
+
+/* Top de la semana: la medalla con el lugar va junto al nombre y en el pin, solo mientras siga en el top */
+async function cargarTop() {
+  if (!S.user || !api.topActual) return;
+  try {
+    const l = await api.topActual() || [];
+    const pines = new Map(), personas = new Map();
+    l.forEach((t) => { pines.set(t.find_id, t.puesto); if (!personas.has(t.user_id) || personas.get(t.user_id) > t.puesto) personas.set(t.user_id, t.puesto); });
+    const antes = S.top ? [...S.top.pines.keys()].join() : null;
+    S.top = { pines, personas, at: Date.now() };
+    if (antes !== null && antes !== [...pines.keys()].join() && S.tab === 'map') cargarPines();
+  } catch (e) { /* sin top si falla */ }
+}
+// Colecciones de otras personas que sigo (salen en "a quien sigo" y en la fila del mapa)
+async function cargarSigoCols() {
+  if (!S.user || !api.coleccionesQueSigo) return;
+  try { S.sigoCols = await api.coleccionesQueSigo() || []; } catch (e) { S.sigoCols = S.sigoCols || []; }
+  pintarFiltrosMapa();
+}
+
+/* Guardarropa: qué lleva el pin en cada espacio, para todas las colecciones o para una */
+function hojaGuardarropa(ambInicial) {
+  const D = { amb: ambInicial || null, premios: null, estilos: null, sel: null };
+  const fila = (amb) => (D.estilos || []).find((f) => (f.ambito || null) === (amb || null)) || {};
+  const elegir = () => { const f = fila(D.amb); D.sel = { cabeza: f.cabeza || null, cuerpo: f.cuerpo || null, espalda: f.espalda || null, aro: f.aro == null ? null : !!f.aro }; };
+  const ganados = (esp) => (D.premios || []).filter((p) => C.PREMIOS_PIN[p.premio] && C.PREMIOS_PIN[p.premio].espacio === esp
+    && (esp === 'aro' || ['patito', 'brote', 'corona', 'corona2', 'copa'].includes(p.premio) ? (p.ambito || null) === D.amb && D.amb : !p.ambito));
+  const auto = () => { const mejor = ['copa', 'corona2', 'corona', 'brote', 'patito'].find((x) => (D.premios || []).some((p) => p.premio === x && p.ambito === D.amb)); return D.amb ? mejor || null : null; };
+  const efectivo = (esp) => {
+    const t = D.amb ? fila(null) : {};
+    let v = D.sel[esp];
+    if (esp === 'aro') { const tiene = !!D.amb && (D.premios || []).some((p) => p.premio === 'aro' && p.ambito === D.amb); return tiene && (v == null ? true : v); }
+    if (v == null && D.amb) v = t[esp] || null;
+    if (v == null && esp === 'cabeza') v = auto();
+    return v === 'nada' ? null : v;
+  };
+  const render = () => {
+    if (!D.premios) return `${cabeza(`${ic('hanger')} ${esc(C.GUARDARROPA)}`)}<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+    const cols = S.cats.map((c) => ({ id: c.id, name: c.name, icon: c.icon, color: c.color })).concat(gruposColeccion().map((g) => ({ id: g.id, name: g.name, icon: g.icon, color: g.color })));
+    const m = muestraPin(D.amb), k = D.amb ? colorPremioActual(S.cats.some((c) => c.id === D.amb) ? 'cat' : 'grupo', D.amb) : 'oro';
+    const ad = { c: efectivo('cabeza'), b: efectivo('cuerpo'), e: efectivo('espalda'), a: efectivo('aro') };
+    const espacios = C.ESPACIOS_PIN.filter(([e]) => e !== 'aro' || D.amb).map(([e, nombre]) => {
+      const ops = ganados(e); if (!ops.length) return '';
+      const actual = e === 'aro' ? (ad.a ? 'aro' : null) : ad[{ cabeza: 'c', cuerpo: 'b', espalda: 'e' }[e]];
+      return `<div class="ranura"><h4>${esc(nombre)}</h4><div class="opciones">
+        <button type="button" class="op ninguno ${actual ? '' : 'on'}" data-act="gr_elegir" data-esp="${e}" data-v="nada" aria-pressed="${!actual}">${esc(C.GUARDARROPA_NADA)}</button>
+        ${ops.map((p) => `<button type="button" class="op ${actual === p.premio ? 'on' : ''}" data-act="gr_elegir" data-esp="${e}" data-v="${esc(p.premio)}" aria-pressed="${actual === p.premio}" data-tip="${esc(C.PREMIOS_PIN[p.premio].nombre)}" aria-label="${esc(C.PREMIOS_PIN[p.premio].nombre)}">${pinGrande(m.color, m.icon, adornoSolo(p.premio), k, 40)}</button>`).join('')}
+      </div></div>`; }).join('');
+    return `${cabeza(`${ic('hanger')} ${esc(C.GUARDARROPA)}`)}
+      <div class="chips una-fila gr-cols" data-pick="gr_amb">
+        <button type="button" class="chip ${D.amb ? '' : 'on'}" data-act="gr_amb" data-v="">${ic('cards')}${esc(C.GUARDARROPA_TODAS)}</button>
+        ${cols.map((c) => chipColor('gr_amb', c.id, c.name, c.icon, c.color, D.amb === c.id)).join('')}</div>
+      <div class="pin-muestra-grande gr-muestra">${pinGrande(m.color, m.icon, ad, k, 130)}</div>
+      ${espacios || `<div class="empty">${ic('hanger')}<p>${esc(C.GUARDARROPA_VACIO)}</p></div>`}
+      ${espacios ? `<button class="btn block" data-act="gr_guardar" style="margin-top:14px">${ic('check')} Guardar</button>` : ''}`;
+  };
+  abrirHoja(render, null, 'guardarropa');
+  const hoja = hojaArriba(); hoja.datos = D;
+  D.cargar = async () => {
+    try { const [p, e] = await Promise.all([api.misPremios(), api.misEstilos()]); D.premios = p || []; D.estilos = e || []; elegir(); }
+    catch (err) { D.premios = D.premios || []; D.estilos = D.estilos || []; elegir(); fallo(err); }
+    if (hojaArriba() === hoja) dibujarHoja();
+  };
+  D.elegirAmb = (amb) => { D.amb = amb || null; elegir(); dibujarHoja(); };
+  D.cargar();
+}
+
+/* Primeros pasos: un tutorial corto; se marca solo con lo que cada persona ya hizo */
+function pasosHTML(r) {
+  if (!r) return '';
+  const hechos = C.PASOS.filter((x) => r[x.k]).length;
+  if (hechos >= C.PASOS.length) return '';
+  const actual = C.PASOS.find((x) => !r[x.k]);
+  return `<div class="pasos">
+    <div class="row between"><b>${esc(C.PASOS_TITULO)}</b><span class="tiny">${hechos} de ${C.PASOS.length}</span></div>
+    <div class="progress"><div style="width:${Math.round(hechos / C.PASOS.length * 100)}%"></div></div>
+    ${C.PASOS.map((x, i) => `<div class="reto ${r[x.k] ? 'hecho' : ''} ${x === actual ? 'actual' : ''}">
+      <span class="ck">${r[x.k] ? ic('check') : i + 1}</span><span class="tx">${esc(x.texto)}</span>
+      ${r[x.k] ? '' : `<button class="btn sm alt" data-act="reto_ir" data-v="${x.k}">${esc(C.PASOS_IR)}</button>`}</div>`).join('')}</div>`;
 }
 const limiteCategorias = () => (S.stats && S.stats.limite_categorias) || C.MAX_CATEGORIAS;
 const nivelDe = (tipo, id) => {
@@ -2214,9 +2508,9 @@ function cercaDeMi() {
 }
 
 /* Campeones (de toda la comunidad o de un grupo): arriba el top de fotos de 7 días, abajo la tabla con podio */
-function tablaGeneral(grupo) {
+function tablaGeneral(grupo, metrica) {
   const g = grupo ? miGrupo(grupo) : null;
-  const D = { metric: 'total', filas: {}, fotos: null, grupo };
+  const D = { metric: metrica === 'colonias' ? 'colonias' : 'total', filas: {}, fotos: null, grupo };
   const hoja = { render: () => `${cabeza(`${ic('trophy')} ${esc(g ? g.name : C.CAMPEONES_TITULO)}`)}
     <div class="sec campeones-fotos"><h3>${ic('sparkles')} ${esc(C.TOP_FOTOS)}</h3>
       <p class="tiny top-nota">${esc(C.TOP_TEXTO)}</p>${topFotosHTML(D)}</div>
@@ -2264,12 +2558,12 @@ function podioHTML(D) {
   const valor = (f) => (D.metric === 'colonias' ? f.colonias : f.total);
   const unidad = (n) => (D.metric === 'colonias' ? (n === 1 ? 'colonia' : 'colonias') : (n === 1 ? 'hallazgo' : 'hallazgos'));
   const escalon = (f, k) => (f ? `<button type="button" class="podio-p p${k} ${f.user_id === S.user.id ? 'yo' : ''}" data-act="perfil" data-id="${f.user_id}" aria-label="${k}. ${esc(f.name)}">
-      ${avatar(f, k === 1 ? 'lg' : '')}<span class="podio-nom">${esc(f.name)}</span>
+      ${avatar(f, k === 1 ? 'lg' : '')}<span class="podio-nom">${esc(f.name)}${medallaNombre(f.user_id)}</span>
       <span class="podio-esc">${ic(k === 1 ? 'crown' : 'medal')}<b>${valor(f)}</b><span>${unidad(valor(f))}</span></span></button>` : '<span></span>');
   return `<div class="podio">${escalon(filas[1], 2)}${escalon(filas[0], 1)}${escalon(filas[2], 3)}</div><div class="podio-base"></div>
     ${filas.length > 3 ? `<div class="list">${filas.slice(3).map((f, i) => `
       <button class="li ${f.user_id === S.user.id ? 'yo' : ''}" data-act="perfil" data-id="${f.user_id}">
-        <span class="rank">${i + 4}</span>${avatar(f)}<b class="grow" style="text-align:left">${esc(f.name)}</b><b>${valor(f)}</b></button>`).join('')}</div>` : ''}`;
+        <span class="rank">${i + 4}</span>${avatar(f)}<b class="grow" style="text-align:left">${esc(f.name)}${medallaNombre(f.user_id)}</b><b>${valor(f)}</b></button>`).join('')}</div>` : ''}`;
 }
 
 /* Invitar a un grupo: amigas dentro de la app, WhatsApp o enlace, y readmitir (esto último solo administradoras).
@@ -2403,7 +2697,9 @@ async function guardarCategoria(btn, id) {
 }
 
 /* Grupos */
-async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); pintarAtajoMapa(); revisarGrupoMapa(); }
+async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); pintarAtajoMapa(); revisarGrupoMapa(); revisarCompartir(); }
+// Si el grupo con el que compartes ya no es tuyo (se borró o saliste), ya no hay a quién enviarle la ubicación
+function revisarCompartir() { if (S.comparte && !miGrupo(S.comparte.gid)) pararCompartir(false); }
 const gruposCreados = () => S.groups.filter((g) => g.owner === S.user.id).length;
 function abrirGrupo(gid) {
   if (esEncuentro(miGrupo(gid))) return abrirEncuentro(gid);
@@ -2470,7 +2766,9 @@ function editarGrupo(gid, tipoInicial) {
     ${enc ? '' : `<div class="field"><label>${ic('eye')}</label><div class="toggle" data-pick="publico">
       <button type="button" data-act="elegir" data-v="0" class="${g.is_public ? '' : 'on'}" data-tip="${esc(C.AYUDA.grupo_privado)}" aria-label="${esc(C.AYUDA.grupo_privado)}">${ic('lock')} Privado</button>
       <button type="button" data-act="elegir" data-v="1" class="${g.is_public ? 'on' : ''}" data-tip="${esc(C.AYUDA.grupo_publico)}" aria-label="${esc(C.AYUDA.grupo_publico)}">${ic('world')} Público</button></div>
-      <p class="tiny">Privado: solo lo ven sus miembros. Público: también aparece para toda la comunidad.</p></div>`}
+      <p class="tiny">Privado: solo lo ven sus miembros. Público: también aparece para toda la comunidad.</p></div>
+    <label class="check"><input type="checkbox" id="g-calif" ${g.calificacion ? 'checked' : ''}> <span>${ic('star')} ${esc(C.CALIF_GRUPO)}</span></label>
+    <p class="tiny" style="margin-top:-4px">${esc(C.CALIF_GRUPO_TEXTO)}</p>`}
     <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, E.color || g.color, 'color')}</div>
     <div class="field"><label>${ic('sparkles')}</label>${iconPicker(E.icon || g.icon)}</div>
     ${!g.id ? `<p class="tiny">${gruposCreados()} / ${C.MAX_GRUPOS} grupos creados</p>` : ''}
@@ -2483,7 +2781,7 @@ async function guardarGrupo(btn, gid) {
   const raiz = $('.sheet'), E = (hojaArriba() && hojaArriba().datos) || { tipo: 'coleccion' };
   const enc = E.tipo === 'encuentro';
   const d = { name: $('#g-nombre', raiz).value.trim(), icon: iconoElegido(raiz), color: valor(raiz, 'color') };
-  if (!enc) d.is_public = valor(raiz, 'publico') === '1';
+  if (!enc) { d.is_public = valor(raiz, 'publico') === '1'; const cal = $('#g-calif', raiz); if (cal) d.calificacion = !!cal.checked; }
   if (!gid) { d.tipo = E.tipo; if (enc) { d.uso = valor(raiz, 'uso') || E.uso; d.is_public = false; } }
   if (!d.name) return aviso('Ponle un nombre', 'pencil');
   if (!esIcono(d.icon) || !d.color) return aviso('Elige ícono y color', 'palette');
@@ -2592,8 +2890,7 @@ function abrirEncuentro(gid, foco, op) {
 function salirGrupo(cambiando) {
   if (!S.grupo) return;
   S.grupo = null;
-  // Al salir del modo grupo se deja de compartir la ubicación: no sigue enviándose sin nada en pantalla que lo diga
-  if (S.comparte) { api.dejarDeCompartir(S.comparte.gid).catch(() => null); pararCompartir(false); }
+  // Compartir la ubicación sigue al salir del modo grupo (puede ser una emergencia): la franja lo dice y deja suspenderlo
   if (!cambiando) recordarGrupoMapa(null);
   if (S.capaEnc) S.capaEnc.clearLayers();
   pintarModoGrupo();
@@ -2604,6 +2901,7 @@ function pintarModoGrupo() {
   const scr = $('#scr-map'); if (!scr) return;
   const D = S.grupo;
   scr.classList.toggle('modo-grupo', !!D);
+  pintarFranjaCompartir();
   const cab = $('#grupo-cab'), panel = $('#panel-grupo');
   if (!D) { if (cab) { cab.hidden = true; cab.innerHTML = ''; } if (panel) { soltarFoco(panel); panel.hidden = true; panel.innerHTML = ''; } scr.style.removeProperty('--panel-alto'); pintarFiltrosMapa(); return; }
   if (S.capa) S.capa.clearLayers();
@@ -2618,14 +2916,20 @@ function pintarCabGrupo(D) {
     ${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}${ib('encuentro_guia', 'help', 'encuentro_guia', '', 'sm')}${ib('salir_grupo_mapa', 'x', 'salir_grupo_mapa', '', 'sm')}`;
   pintarCampana();
 }
-// La última alerta (o el último aviso) para tenerla a la vista con el panel recogido
-function alertaGrupoHTML(D) {
-  const e = D.e;
-  const con = e.miembros.filter((m) => m.estado).sort((a, b) => (b.estado.kind === 'ayuda') - (a.estado.kind === 'ayuda') || String(b.estado.created_at).localeCompare(String(a.estado.created_at)));
-  const m = con[0]; if (!m) return `<p class="tiny panel-pista">${esc(C.GRUPO_PANEL_PISTA)}</p>`;
-  const st = m.estado, est = C.ENCUENTRO_ESTADOS[st.kind];
-  return `<button type="button" class="li miembro ${st.kind === 'ayuda' ? 'pide-ayuda' : ''}" data-act="${st.lat != null ? 'ver_en_mapa_enc' : 'grupo_panel'}" data-id="${m.user_id}" style="text-align:left;width:100%">
-    ${avatar(m)}<div class="grow" style="min-width:0"><b>${esc(m.name)}</b> · ${esc(est.nombre)}<div class="tiny">${esc(hace(st.created_at))}${st.colonia ? ` · ${esc(st.colonia)}` : ''}${st.note ? ` · «${esc(st.note)}»` : ''}</div></div></button>`;
+// Panel recogido: "Ver más" deja claro que abajo hay todo el grupo (tablero, puntos, "Mira esto" y ajustes).
+// Si alguien pide ayuda, se dice ahí mismo para no perderlo.
+function verMasGrupoHTML(D) {
+  const orden = (m) => (!m.estado ? 2 : m.estado.kind === 'ayuda' ? 0 : 1);
+  const ms = D.e.miembros.slice().sort((a, b) => orden(a) - orden(b) || String((b.estado || {}).created_at || '').localeCompare(String((a.estado || {}).created_at || '')));
+  const ayudas = ms.filter((m) => orden(m) === 0).length, max = C.GRUPO_CARITAS_MAX;
+  const nombre = (m) => `${m.name}: ${m.estado ? C.ENCUENTRO_ESTADOS[m.estado.kind].nombre : C.ENCUENTRO_SIN_AVISO}`;
+  const caritas = ms.slice(0, max).map((m) => `<span class="carita ${m.estado ? 'est-' + m.estado.kind : 'est-no'}" title="${esc(nombre(m))}">${avatar(m)}<i></i></span>`).join('')
+    + (ms.length > max ? `<span class="carita-mas">+${ms.length - max}</span>` : '');
+  const resumen = ms.map(nombre).join(', ');
+  return `<button type="button" class="panel-mas ${ayudas ? 'con-ayuda' : ''}" data-act="grupo_panel" aria-expanded="false" aria-label="${esc(C.GRUPO_VER_MAS)}. ${esc(resumen)}">
+    <span class="caritas" aria-hidden="true">${caritas}</span>
+    <span class="grow" style="min-width:0"><b>${esc(C.GRUPO_VER_MAS)}</b><span class="tiny">${ayudas ? `<span class="txt-ayuda">${esc((ayudas === 1 ? C.GRUPO_AYUDA_1 : C.GRUPO_AYUDA_N).replace('{n}', ayudas))}</span>` : esc(C.GRUPO_VER_MAS_TEXTO)}</span></span>
+    ${ic('chevron-up')}</button>`;
 }
 function pintarPanelGrupo(D) {
   const p = $('#panel-grupo'); if (!p || S.grupo !== D) return;
@@ -2642,7 +2946,7 @@ function pintarPanelGrupo(D) {
     </div>
     <div class="row panel-fila"><span id="enc-compartir" class="grow" style="min-width:0">${encCompartirHTML(D)}</span>
       ${ib('punto_nuevo', 'flag', 'punto_nuevo', '', 'sm')}${ib('ubicar', 'current-location', 'ubicar', '', 'sm')}${ib('enc_ver_todo', 'arrows-maximize', 'ver_todo', '', 'sm')}</div>
-    ${D.abierto ? `<div class="panel-cuerpo"><div id="enc-arriba">${encArribaHTML(D)}</div><div id="enc-abajo">${encAbajoHTML(D)}</div></div>` : alertaGrupoHTML(D)}`;
+    ${D.abierto ? `<div class="panel-cuerpo"><div id="enc-arriba">${encArribaHTML(D)}</div><div id="enc-abajo">${encAbajoHTML(D)}</div></div>` : verMasGrupoHTML(D)}`;
   const c = $('.panel-cuerpo', p); if (c && arriba) c.scrollTop = arriba;
   // los créditos del mapa (OpenStreetMap) quedan justo arriba del panel
   $('#scr-map').style.setProperty('--panel-alto', p.offsetHeight + 'px');
@@ -3090,9 +3394,11 @@ async function iniciarCompartir(gid, minutos, btn) {
   try { p = await getPos(); } catch (err) { ocupado(btn, false); return aviso(C.GUIA_SIN_GPS, 'current-location'); }
   try {
     const hasta = await api.compartirUbicacion(gid, p, minutos);
+    // compartir con otro grupo reemplaza al anterior: ese grupo deja de verte
+    if (S.comparte && S.comparte.gid !== gid) api.dejarDeCompartir(S.comparte.gid).catch(() => null);
     pararCompartir(true);
     S.comparte = { gid, hasta: new Date(hasta).getTime(), ultimo: { p, t: Date.now() }, pos: p, watch: null, tFin: null, tPulso: null };
-    vigilarCompartir();
+    vigilarCompartir(); pintarFranjaCompartir();
     aviso(`Compartiendo tu ubicación ${minutos} min`, 'current-location');
     const D = encuentroActual(); if (D) D.cargar();
   } catch (err) { ocupado(btn, false); fallo(err); }
@@ -3122,9 +3428,25 @@ function pausarCompartir() {
   if (X.watch != null && navigator.geolocation) navigator.geolocation.clearWatch(X.watch);
   X.watch = null; clearInterval(X.tPulso);
 }
+/* Franja "Compartiendo tu ubicación": en todas las pantallas mientras dure, con Suspender.
+   No sale en el mapa del mismo grupo, donde el panel ya lo muestra. */
+function pintarFranjaCompartir() {
+  const el = $('#franja-compartir'); if (!el) return;
+  const X = S.comparte, g = X && miGrupo(X.gid);
+  const ver = !!(X && g) && !(S.tab === 'map' && S.grupo && S.grupo.gid === X.gid);
+  document.body.classList.toggle('compartiendo', ver);
+  if (!ver) { soltarFoco(el); el.hidden = true; el.innerHTML = ''; return; }
+  const quedan = Math.max(1, Math.ceil((X.hasta - Date.now()) / 60000));
+  el.hidden = false;
+  el.innerHTML = `<button type="button" class="row grow" data-act="grupo_mapa" data-id="${X.gid}" style="text-align:left;min-width:0">${ic('current-location')}
+      <span class="grow" style="min-width:0"><b>${esc(C.COMPARTIENDO_TITULO)}</b><span class="franja-detalle">${esc(C.COMPARTIENDO_DETALLE.replace('{g}', g.name).replace('{m}', quedan))}</span><span class="tiny">${esc(C.COMPARTIENDO_ABIERTA)}</span></span></button>
+    <button type="button" class="btn sm alt" data-act="dejar_compartir">${ic('player-pause')} ${esc(C.COMPARTIR_SUSPENDER)}</button>`;
+  document.body.style.setProperty('--franja-alto', el.offsetHeight + 'px'); // lo de abajo sube lo que mida la franja
+}
+setInterval(() => { if (S.comparte) pintarFranjaCompartir(); }, 30000);
 function pararCompartir(silencio) {
   const X = S.comparte; if (!X) return;
-  pausarCompartir(); clearTimeout(X.tFin); S.comparte = null;
+  pausarCompartir(); clearTimeout(X.tFin); S.comparte = null; pintarFranjaCompartir();
   if (!silencio) aviso('Dejaste de compartir tu ubicación', 'current-location');
 }
 
@@ -3460,6 +3782,9 @@ function registrarTrabajador() {
     const d = e.data || {};
     if (d.tipo === 'abrir') abrirRuta(d.url);
     if (d.tipo === 'push') revisarAvisos();
+    // La red tardó y se mostró la copia guardada: llegó lo nuevo y el perfil se vuelve a pintar con eso
+    // lo nuevo llegó después de mostrar la copia: se vuelve a pintar una vez (con red muy lenta, no más de una vez cada 30 s)
+    if (d.tipo === 'datos_al_dia' && /profile_stats|mis_retos/.test(d.clave || '') && S.user && S.tab === 'perfil' && !pila.length && Date.now() - (S.alDiaAt || 0) > 30000) { S.alDiaAt = Date.now(); pintarPerfil(); }
   });
 }
 function pintarVersionNueva() {
@@ -3522,7 +3847,7 @@ async function compartirHallazgo(c, btn) {
 function hojaPerfil(p, nuevo) {
   const d = p || { name: '', bio: '', avatar: C.ICONOS_AVATAR[0], avatar_color: C.COLORES_CATEGORIA[0] };
   return `${nuevo ? `<h1 class="serif" style="margin:6px 0 4px">Collector Go</h1><p class="muted">${ic('user')} Tu perfil</p>` : cabeza(ic('pencil'))}
-    <div class="field"><label for="p-nombre">${ic('user')} Nombre</label><input id="p-nombre" class="in" maxlength="40" value="${esc(d.name)}" placeholder="Laura"></div>
+    <div class="field"><label for="p-nombre">${ic('user')} Nombre</label><input id="p-nombre" class="in" maxlength="40" value="${esc(d.name)}" placeholder="${esc(C.PERFIL_NOMBRE_PISTA)}"></div>
     <div class="field"><label for="p-bio">${ic('info-circle')} Frase</label><input id="p-bio" class="in" maxlength="120" value="${esc(d.bio || '')}" placeholder="Coleccionista de puertas"></div>
     <div class="field"><label>${ic('sparkles')}</label>${selector('avatar', C.ICONOS_AVATAR, d.avatar)}</div>
     <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, d.avatar_color, 'color')}</div>
@@ -3583,7 +3908,9 @@ function galeriaCatHTML(D, uid, cat) {
   const v = D.v, c = (v.categorias || []).find((x) => x.id === cat);
   const items = c && c.hallazgos ? c.hallazgos : [];
   return `${cabeza(c ? `<span class="row">${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total}</span></span>` : ic('photo'))}
-    <button class="row galeria-persona" data-act="perfil" data-id="${uid}" style="text-align:left">${avatar(v)}<div class="grow"><b>${esc(v.name)}</b>${c ? `<div class="muted tiny">${esc(C.GALERIA_DE.replace('{c}', c.name))}</div>` : ''}</div></button>
+    <button class="row galeria-persona" data-act="perfil" data-id="${uid}" style="text-align:left">${avatar(v)}<div class="grow"><b>${esc(v.name)}${medallaNombre(uid)}</b>${c ? `<div class="muted tiny">${esc(C.GALERIA_DE.replace('{c}', c.name))}</div>` : ''}</div></button>
+    ${c && S.user && uid !== S.user.id ? (() => { const sigo = (S.sigoCols || []).some((x) => x.category_id === cat);
+      return `<button class="btn ${sigo ? 'alt' : ''} block seguir-col" data-act="seguir_coleccion" data-id="${cat}" aria-pressed="${sigo}" style="margin-bottom:12px">${ic(sigo ? 'user-check' : 'user-plus')} ${esc(sigo ? C.SIGUIENDO_COLECCION : C.SEGUIR_COLECCION)}</button>`; })() : ''}
     ${items.length ? `<div class="vgrid">${items.map((h) => `<figure class="vtile" data-act="ficha" data-id="${h.id}" role="button" aria-label="${esc(h.name)}">
       <img src="${api.photoUrl(h.thumb || h.photo)}" alt="" loading="lazy"><figcaption><b>${esc(h.name)}</b>${h.colonia ? `<span>${ic('map-pin')} ${esc(h.colonia)}</span>` : ''}</figcaption></figure>`).join('')}</div>`
       : `<div class="empty">${ic('photo')}<p>${esc(C.GALERIA_VACIA)}</p></div>`}
@@ -3813,6 +4140,9 @@ function textoAviso(a) {
   if (k === 'invitacion') return (a.reaccion === 'rechazada' ? C.INVITACION_RECHAZASTE : C.INVITACION_RECIBIDA).replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
   if (k === 'invitacion_resp') return (a.reaccion === 'aceptada' ? C.INVITACION_ACEPTO : C.INVITACION_RECHAZO).replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
   if (k === 'grupo_borrado') { const t = String(a.texto || ''), i = t.lastIndexOf(':'); return `Se borró ${t.slice(0, i)} ${t.slice(i + 1) === 'votacion' ? 'por votación' : 'por inactividad'}`; }
+  if (k === 'premio_top') return C.TOP_AVISO.replace('{h}', a.find_name || '').replace('{n}', a.texto || '');
+  if (k === 'premio_podio') return C.PODIO_AVISO.replace('{n}', a.texto || '');
+  if (k === 'sigue_col') return C.SIGUE_COL_AVISO.replace('{n}', a.actor_name || '').replace('{c}', a.texto || '');
   if (k === 'reaccion' && a.reaccion === 'eye') return C.VISTO_AVISO.replace('{n}', a.actor_name || '').replace('{h}', a.find_name || '');
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
   return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
@@ -3821,6 +4151,9 @@ function iconoAviso(a) {
   const fijo = { comentario: 'message-circle', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages',
     ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy', ausencia: 'map-pin-off', anuncio: 'speakerphone', traspaso: 'heart-handshake', reporte_col: 'flag' };
   if (a.kind === 'reencuentro' && a.reaccion === 'visto') return 'users';
+  if (a.kind === 'premio_top') return 'trophy';
+  if (a.kind === 'premio_podio') return 'compass';
+  if (a.kind === 'sigue_col') return 'user-check';
   if (a.kind === 'invitacion') return 'user-plus';
   if (a.kind === 'respuesta') return 'message-circle';
   if (a.kind === 'amistad') return 'heart-handshake';
@@ -3831,7 +4164,8 @@ function iconoAviso(a) {
 const nivelAviso = (a) => (a.kind === 'uso' && /:80:/.test(a.texto || '') ? 'rojo' : a.kind === 'uso' ? 'amarillo' : '');
 // Qué abre cada aviso: la ficha, un perfil o una pestaña del escudo
 function destinoAviso(a) {
-  if (['seguidor', 'nuevo_miembro', 'amistad'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (['seguidor', 'nuevo_miembro', 'amistad', 'sigue_col'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (a.kind === 'premio_podio') return 'data-kind="tabla" data-id="colonias"';
   if (a.kind === 'mensaje') return `data-kind="chat" data-id="${a.actor_id}"`;
   if (a.kind === 'buzon') return 'data-kind="admin" data-id="buzon"';
   if (a.kind === 'reporte' || a.kind === 'reporte_col') return 'data-kind="admin" data-id="avisos"';
@@ -3848,6 +4182,7 @@ function destinoAviso(a) {
 function caraAviso(a) {
   if (a.kind === 'grupo_borrado') return `<span class="avatar" style="background:var(--tinta)">${ic('lifebuoy')}</span>`;
   if (a.kind === 'traspaso') return `<span class="avatar" style="background:var(--terracota)">${ic('heart-handshake')}</span>`;
+  if (a.kind === 'premio_top' || a.kind === 'premio_podio') return `<span class="avatar" style="background:var(--mostaza)">${ic(a.kind === 'premio_top' ? 'trophy' : 'compass')}</span>`;
   return a.actor_id ? avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })
     : `<span class="avatar ${nivelAviso(a)}" style="background:var(--tinta)">${ic('shield')}</span>`;
 }
@@ -3881,18 +4216,39 @@ async function revisarAvisos() {
   nuevos.forEach((a) => S.avisosVistos.add(claveAviso(a)));
   const primera = !S.avisosListo; S.avisosListo = true;
   pintarCampana();
-  if (!nuevos.length) return;
+  if (!nuevos.length) return revisarBien();
   // Si la conversación con esa persona está abierta, el mensaje aparece ahí mismo
   const top = hojaArriba();
   if (top && top.tipo === 'chat' && top.datos && nuevos.some((a) => a.kind === 'mensaje' && a.actor_id === top.datos.uid)) top.datos.cargar();
   const aNotificar = nuevos.filter((a) => !(top && top.tipo === 'chat' && top.datos && a.kind === 'mensaje' && a.actor_id === top.datos.uid));
-  if (!aNotificar.length) return;
+  if (!aNotificar.length) return revisarBien();
   if (top && top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
   nuevos = aNotificar;
   if (primera && nuevos.length > 1) return notificar(`${ic('mail-heart')}<span class="grow">${esc(C.AVISOS_NUEVOS.replace('{n}', nuevos.length))}</span>`, 'avisos');
   const a = nuevos[0];
   notificar(`${caraAviso(a)}<span class="grow">${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}${nuevos.length > 1 ? ` <b>+${nuevos.length - 1}</b>` : ''}</span>
     ${a.thumb && a.find_id ? `<img class="notif-img" src="${api.photoUrl(a.thumb)}" alt="">` : ''}`, nuevos.length > 1 ? 'avisos' : 'aviso_abrir', nuevos.length > 1 ? '' : destinoAviso(a));
+}
+/* "Todo bien" de tu grupo de encuentro: burbuja suave con la app abierta (sin sonido y sin ir al buzón).
+   Solo lo que llegó desde la última vez que se revisó en este teléfono. */
+async function revisarBien() {
+  if (!gruposEncuentro().length || !api.avisosBien) return;
+  const k = 'cg_bien_' + S.user.id;
+  let desde = null;
+  try { desde = localStorage.getItem(k); } catch (e) { /* sin almacenamiento */ }
+  if (!desde) desde = S.bienDesde || (S.bienDesde = new Date().toISOString());
+  let l;
+  try { l = await api.avisosBien(desde); } catch (e) { return; }
+  const t0 = Date.parse(desde) || 0;
+  l = (l || []).filter((x) => Date.parse(x.created_at) > t0);
+  if (!l.length) return;
+  const ultimo = new Date(Math.max(...l.map((x) => Date.parse(x.created_at)))).toISOString();
+  S.bienDesde = ultimo;
+  try { localStorage.setItem(k, ultimo); } catch (e) { /* nada */ }
+  if (document.hidden || ($('#notif') && $('#notif').classList.contains('show'))) return; // no tapa otro aviso
+  const x = l[0], n = new Set(l.map((y) => y.user_id)).size;
+  const texto = n > 1 ? C.BIEN_AVISO_N.replace('{n}', n) : C.BIEN_AVISO.replace('{n}', x.name || '').replace('{g}', x.group_name || '');
+  notificar(`${avatar(x)}<span class="grow">${ic(C.ENCUENTRO_ESTADOS.bien.icono)} ${esc(texto)}</span>`, 'grupo_mapa', `data-id="${x.group_id}"`);
 }
 // Buzón: una sola lista con las conversaciones (una fila por amiga) y los avisos, de lo más reciente a lo más antiguo.
 // Los avisos desaparecen 12 h después de verlos; las conversaciones se quedan.
@@ -4060,6 +4416,8 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
   revisarAvisos(); vigilarCompartir(); subirPendientes();
+  if (S.user && (!S.premiosAt || Date.now() - S.premiosAt > 60000)) { S.premiosAt = Date.now(); revisarPremiosPronto(1500); }
+  if (S.user && (!S.top || Date.now() - S.top.at > 600000)) cargarTop();
   if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => null);
   alTrabajador({ tipo: 'insignia' });
 });
@@ -4574,7 +4932,7 @@ const ACCIONES = {
   /* mapa */
   filtro(b) {
     S.filtro = leerFiltro(b.dataset.v);
-    if (S.filtro.modo === 'siguiendo' && !S.following.size) aviso('Aún no sigues a nadie', 'user-plus');
+    if (S.filtro.modo === 'siguiendo' && !S.following.size && !(S.sigoCols || []).length) aviso('Aún no sigues a nadie', 'user-plus');
     pintarFiltrosMapa(); cargarPines();
   },
   grupo_mapa: (b) => abrirEncuentro(b.dataset.id),
@@ -5174,6 +5532,7 @@ const ACCIONES = {
         detalle: C.COL_CELEBRA_TEXTO.replace('{n}', b.dataset.n || '').replace('{h}', b.dataset.h || '') }, () => abrirFicha(id));
     }
     if (k === 'mis_mensajes') return hojaBuzon();
+    if (k === 'tabla') return tablaGeneral(null, id);
     if (k === 'perfil') return abrirPerfil(id);
     if (k === 'grupo') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirGrupo(id); }
     if (k === 'chat') return hojaChat(id);
@@ -5280,6 +5639,53 @@ const ACCIONES = {
       cerrarHoja(); aviso(ids.length ? C.ETIQUETAS_LISTO : 'Etiquetas quitadas', 'tag');
     } catch (e) { ocupado(b, false); fallo(e); }
   },
+  /* premios y guardarropa (1.9.8) */
+  premio_poner: (b) => ponerPremio(b.dataset.p, b),
+  premio_seguir: () => cerrarHoja(),
+  guardarropa: () => hojaGuardarropa(),
+  gr_amb(b) { const D = hojaArriba() && hojaArriba().datos; if (D && D.elegirAmb) D.elegirAmb(b.dataset.v); },
+  gr_elegir(b) {
+    const D = hojaArriba() && hojaArriba().datos; if (!D || !D.sel) return;
+    const esp = b.dataset.esp, v = b.dataset.v;
+    if (esp === 'aro') D.sel.aro = v !== 'nada'; else D.sel[esp] = v;
+    dibujarHoja();
+  },
+  async gr_guardar(b) {
+    const D = hojaArriba() && hojaArriba().datos; if (!D || !D.sel) return;
+    ocupado(b, true);
+    try {
+      await api.guardarEstilo(D.amb, D.sel);
+      const f = (D.estilos || []).find((x) => (x.ambito || null) === D.amb);
+      if (f) Object.assign(f, D.sel); else D.estilos.push(Object.assign({ ambito: D.amb }, D.sel));
+      ocupado(b, false); aviso(C.GUARDARROPA_GUARDADO, 'hanger'); pinesAlDia();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  reto_ir(b) {
+    const x = C.PASOS.find((p) => p.k === b.dataset.v); if (!x) return;
+    if (x.k === 'hallazgo') { cerrarTodo(); return ACCIONES.nuevo(); }
+    if (x.k === 'sigue') { aviso(x.pista, 'user-plus'); return hojaBuscarPersonas(); }
+    cerrarTodo(); irA(x.k === 'reaccion' ? 'feed' : x.k === 'verifica' ? 'map' : 'coleccion');
+    aviso(x.pista, { coleccion: 'cards', reaccion: 'heart', verifica: 'eye-check', vuelve: 'repeat' }[x.k] || 'info-circle');
+  },
+  async seguir_coleccion(b) {
+    const cat = b.dataset.id, sigo = (S.sigoCols || []).some((x) => x.category_id === cat);
+    ocupado(b, true);
+    try { await api.seguirColeccion(cat, !sigo); await cargarSigoCols(); aviso(sigo ? 'Dejaste de seguir la colección' : C.SIGUIENDO_COLECCION, sigo ? 'user-minus' : 'user-check'); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    if (hojaArriba()) dibujarHoja();
+  },
+  async calificar(b) {
+    const id = b.dataset.id, n = +b.dataset.v; if (!id || !(n >= 1 && n <= 3)) return;
+    ocupado(b, true);
+    let p; try { p = await getPos(); } catch (e) { ocupado(b, false); return aviso(C.CALIF_SIN_GPS, 'current-location'); }
+    try {
+      const r = await api.calificar(id, n, p);
+      ocupado(b, false);
+      if (r && r.ok) { aviso(C.CALIF_LISTA, 'star'); if (fichaH && fichaH.id === id) { fichaH.calif = await api.calificacion(id).catch(() => fichaH.calif); refrescarFicha(id); } return; }
+      if (r && r.motivo === 'lejos') return aviso(C.CALIF_LEJOS.replace('{d}', metros(r.distancia)), 'navigation');
+      return aviso(C.CALIF_APROX, 'current-location');
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
   async color_premio(b) {
     const { tipo, id, v } = b.dataset;
     try {
@@ -5382,7 +5788,7 @@ function pantallaConfig() {
     <p class="muted">${ic('alert-triangle')} Falta pegar la URL y la llave pública de Supabase en config.js</p></div>`;
 }
 function pedirPerfil() { $('#app').innerHTML = ''; abrirHoja(() => hojaPerfil(null, true), null, 'perfil_nuevo', true); }
-function pedirCategorias() { $('#app').innerHTML = ''; hojaCategorias(() => { pintarApp(); rutaHash(); }); }
+function pedirCategorias() { $('#app').innerHTML = ''; hojaCategorias(() => { pintarApp(); rutaHash(); cargarSigoCols(); cargarTop(); revisarPremiosPronto(1800); }); }
 async function arrancar(user) {
   if (S.arrancando || (S.user && S.user.id === user.id)) return;
   S.arrancando = true; S.user = user;
@@ -5401,6 +5807,7 @@ async function arrancar(user) {
     cuandoDesocupado(() => { sincronizarPush(); procesarFotosPorBorrar(); });
     if (!S.cats.length) return pedirCategorias();
     pintarApp(); rutaHash();
+    cargarSigoCols(); cargarTop(); revisarPremiosPronto(1800);
   } catch (e) { fallo(e); S.user = null; pantallaEntrada(); }
   finally { S.arrancando = false; }
 }
@@ -5443,6 +5850,10 @@ async function iniciar() {
   registrarTrabajador();
   api = window.__API_PRUEBAS__ || (/^https:\/\//.test(C.SUPABASE_URL) ? supabaseApi() : null);
   if (!api) return pantallaConfig();
+  ['react', 'addComment', 'follow', 'seguirColeccion', 'marcarVisto', 'marcarAusencia', 'addFind', 'addSighting', 'colaborar', 'updateFind', 'merge'].forEach((k) => {
+    const f = api[k]; if (typeof f !== 'function') return;
+    api[k] = function () { return f.apply(this, arguments).then((r) => { revisarPremiosPronto(4000); return r; }); };
+  });
   api.onAuth((ev, u) => {
     if (ev === 'SIGNED_OUT') { S.user = null; S.grupo = null; S.colMias = null; if (S.capaEnc) S.capaEnc.clearLayers(); clearInterval(tAvisos); pararCompartir(true); alTrabajador({ tipo: 'salir' }); pantallaEntrada(); }
     else if (u && (ev === 'SIGNED_IN' || ev === 'INITIAL_SESSION')) arrancar(u);
@@ -5450,7 +5861,7 @@ async function iniciar() {
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
-window.__CG__ = { ACCIONES, S, logros, novedades, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
+window.__CG__ = { ACCIONES, S, logros, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
   subirPendientes, contarPendientes, BDP, encuentroActual, textoAviso, salirGrupo, fotoMuro, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos, arrancar, crearPDF, ordenarFichas,
   versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
 iniciar();

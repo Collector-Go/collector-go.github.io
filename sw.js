@@ -5,7 +5,7 @@
    3. Notificaciones: el texto es genérico y se escribe aquí, en el teléfono.
    Cada parche cambia VERSION: así el teléfono sabe que hay una versión nueva.
    ===================================================================== */
-const VERSION = '1.9.6';
+const VERSION = '1.9.8';
 self.window = self;
 importScripts('config.js');
 const C = self.CONFIG;
@@ -19,7 +19,7 @@ const ARCHIVOS = ['./', 'index.html', 'app.js', 'config.js', 'styles.css', 'mani
 const EXTERNOS = C.OFFLINE_EXTERNOS;
 // Consultas de solo lectura que se guardan para verlas sin conexión
 const LECTURAS = ['profile_stats', 'leaderboard', 'mis_avisos', 'mis_conversaciones', 'estado_encuentro', 'puedo_etiquetar',
-  'puedo_escribir', 'comparte_grupo_conmigo', 'vitrina', 'uso_plan'];
+  'puedo_escribir', 'comparte_grupo_conmigo', 'vitrina', 'uso_plan', 'mis_retos', 'colecciones_que_sigo', 'top_actual', 'calificacion'];
 
 /* ---------- pequeña base de datos del trabajador ---------- */
 function bd() {
@@ -102,6 +102,8 @@ async function redPrimero(req, k, guardar) {
     const r = await Promise.race([red, espera]);
     if (r) return r;
     const g = await c.match(k);
+    // Se respondió con la copia porque la red tardó: cuando llegue lo nuevo, la app se entera y lo vuelve a pintar
+    if (g) red.then(async (x) => { if (!x || !x.ok) return; for (const w of await self.clients.matchAll({ type: 'window' })) w.postMessage({ tipo: 'datos_al_dia', clave: String(k) }); }).catch(() => null);
     return g || await red;
   } catch (err) {
     const g = await c.match(k);

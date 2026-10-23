@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.9.6',
+  VERSION: '1.9.8',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -102,9 +102,31 @@ window.CONFIG = {
   ],
 
   // Metas del juego
-  METAS_CATEGORIA: [1, 5, 10, 25, 50, 100, 250, 500],
-  // Premios en el pin (por categoría y, en los grupos, por persona). Las medallas solo muestran un regalo:
-  // el premio se descubre al llegar.
+  METAS_CATEGORIA: [1, 5, 10, 25, 50, 100, 150, 200],
+  // Premios del guardarropa (1.9.8): se ganan al usar la app y se guardan para siempre. Son sorpresa:
+  // las medallas solo muestran un regalo y el premio se descubre al llegar.
+  // El catálogo de metas vive en la base (premios_catalogo); aquí van los nombres y el espacio del pin.
+  PREMIOS_PIN: {
+    patito: { nombre: 'Patito', espacio: 'cabeza' }, brote: { nombre: 'Brote', espacio: 'cabeza' }, aro: { nombre: 'Aro de oro', espacio: 'aro' },
+    corona: { nombre: 'Corona', espacio: 'cabeza' }, corona2: { nombre: 'Corona mayor', espacio: 'cabeza' }, copa: { nombre: 'Sombrero de copa con flor', espacio: 'cabeza' },
+    gato: { nombre: 'Sombrero de gato', espacio: 'cabeza' }, gato_manchas: { nombre: 'Gato con manchas', espacio: 'cabeza' },
+    aureola: { nombre: 'Aureola', espacio: 'cabeza' }, mariposa: { nombre: 'Alas de mariposa', espacio: 'espalda' },
+    conejo: { nombre: 'Sombrero de conejo', espacio: 'cabeza' }, angel: { nombre: 'Alas de ángel', espacio: 'espalda' }, murcielago: { nombre: 'Alas de murciélago', espacio: 'espalda' },
+    bolsa: { nombre: 'Bolsa de viajero', espacio: 'cuerpo' }, brujula: { nombre: 'Brújula', espacio: 'cuerpo' }, binoculares: { nombre: 'Binoculares', espacio: 'cuerpo' },
+    pirata: { nombre: 'Sombrero pirata', espacio: 'cabeza' }, fueguito: { nombre: 'Sombrero de fueguito', espacio: 'cabeza' },
+    barco: { nombre: 'Sombrero de barco de papel', espacio: 'cabeza' }, canotier: { nombre: 'Canotier de paja', espacio: 'cabeza' },
+    corazon: { nombre: 'Bolso de corazón', espacio: 'cuerpo' }, libelula: { nombre: 'Alas de libélula', espacio: 'espalda' },
+    mono: { nombre: 'Moño', espacio: 'cabeza' }, camara: { nombre: 'Cámara de rollo', espacio: 'cuerpo' }, bruja: { nombre: 'Sombrero de bruja', espacio: 'cabeza' }
+  },
+  // Qué medalla lleva regalo (el regalo se ve, el premio no)
+  PREMIO_META: {
+    cat: { 10: 'patito', 25: 'brote', 50: 'aro', 100: 'corona', 150: 'corona2', 200: 'copa' },
+    col: { 5: 'bolsa', 10: 'brujula', 20: 'binoculares', 30: 'pirata' },
+    racha: { 5: 'fueguito', 15: 'barco', 25: 'canotier' },
+    reen: { 10: 'conejo', 20: 'angel', 50: 'murcielago' }
+  },
+  ESPACIOS_PIN: [['cabeza', 'Cabeza'], ['cuerpo', 'Cuerpo'], ['espalda', 'Espalda'], ['aro', 'Aro']],
+  // Premios del juego de los grupos de encuentro ("Mira esto")
   PREMIOS: {
     10:  { id: 'patito',  nombre: 'un patito' },
     25:  { id: 'brote',   nombre: 'un brote' },
@@ -118,13 +140,59 @@ window.CONFIG = {
   COLECCIONES_MAX: 15,
   NOMBRES_PREMIO: { oro: 'Oro', coral: 'Coral', negro: 'Negro' },
   PREMIO_GANADO: 'Tus pines de {titulo} ganan {premio}.',
+  PERFIL_NOMBRE_PISTA: 'Escribe tu nombre',
+  PREMIO_NUEVO: '¡Premio nuevo!',
+  PREMIO_GUARDADO: 'Ya está en tu guardarropa.',
+  PREMIO_PONER: 'Ponérmelo',
+  PREMIO_PUESTO: 'Listo, ya lo llevas',
+  PREMIO_SEGUIR: 'Seguir',
+  GUARDARROPA: 'Guardarropa',
+  GUARDARROPA_TODAS: 'Todas',
+  GUARDARROPA_NADA: 'Nada',
+  GUARDARROPA_VACIO: 'Aquí aparecerán los premios que ganes.',
+  GUARDARROPA_GUARDADO: 'Tu pin quedó listo',
+  GUARDARROPA_INAUGURA: 'Se inaugura el Guardarropa: los premios que ganas al usar Collector Go ya se pueden lucir en tus pines.',
+  GUARDARROPA_ABRIR: 'Abrir guardarropa',
+  BRUJA_TITULO: '¡Feliz Halloween!',
+  BRUJA_TEXTO: 'Te regalamos un sombrero de bruja.',
+  INAUGURA_TITULO: '¡Nuevo guardarropa!',
+  // Primeros pasos: un pequeño tutorial con premio al terminar
+  PASOS_TITULO: 'Primeros pasos',
+  PASOS_IR: 'Ir',
+  PASOS: [
+    { k: 'coleccion', texto: 'Crea tu primera colección', pista: 'Ponle nombre, ícono y color.' },
+    { k: 'hallazgo', texto: 'Registra tu primer hallazgo', pista: 'Toca la cámara de abajo.' },
+    { k: 'reaccion', texto: 'Reacciona o comenta un hallazgo del muro', pista: 'Elige una foto del muro y deja una reacción.' },
+    { k: 'sigue', texto: 'Sigue a alguien o una colección', pista: 'Busca a alguien y toca Seguir.' },
+    { k: 'verifica', texto: 'Verifica un pin del mapa con "Lo vi" o "No está"', pista: 'Estando en el lugar, abre su ficha y marca "Lo vi" o "No está".' },
+    { k: 'vuelve', texto: 'Vuelve otro día a uno de tus hallazgos y súmale una foto', pista: 'Abre uno de tus hallazgos y toca el botón de reencuentro.' }
+  ],
+  // Top de la semana y podio de colonias (avisos en el buzón)
+  TOP_AVISO: 'Tu {h} entró al top de la semana (lugar {n})',
+  PODIO_AVISO: 'Entraste al podio de exploradores de colonias (lugar {n})',
+  TOP_NOMBRE: 'En el top de la semana · lugar {n}',
+  // Seguir colecciones de otras personas
+  SEGUIR_COLECCION: 'Seguir esta colección',
+  SIGUIENDO_COLECCION: 'Siguiendo esta colección',
+  SIGUE_COL_AVISO: '{n} sigue tu colección {c}',
+  // Calificación en grupos (solo estrellas)
+  CALIF_GRUPO: 'Calificación con estrellas',
+  CALIF_GRUPO_TEXTO: 'Cada lugar se califica con 1 a 3 estrellas, solo estando ahí.',
+  CALIF_TU: 'Tu calificación',
+  CALIF_SOLO_AHI: 'Solo estando en el lugar.',
+  CALIF_POCAS: 'Aún sin promedio',
+  CALIF_N: '{n} calificaciones',
+  CALIF_LISTA: 'Calificación guardada',
+  CALIF_LEJOS: 'Para calificar tienes que estar en el lugar. Estás a {d}.',
+  CALIF_APROX: 'Tu teléfono está dando una ubicación aproximada. Activa la ubicación exacta para calificar.',
+  CALIF_SIN_GPS: 'Activa el GPS para calificar',
   COLECCION_NUEVA: 'Desbloqueaste una nueva colección: ahora puedes tener {n}.',
   COLECCION_MAXIMO: 'Desbloqueaste tu colección número 15. Llegaste al máximo de colecciones.',
   COLECCION_MAXIMO_CORTO: 'llegaste al máximo de colecciones',
   COLOR_PREMIO_LISTO: 'Color guardado',
-  METAS_COLONIAS: [1, 3, 5, 10, 20, 50],
-  METAS_RACHA_SEMANAS: [2, 4, 8, 12, 26, 52],
-  METAS_REENCUENTROS: [1, 5, 20, 50],
+  METAS_COLONIAS: [1, 3, 5, 10, 20, 30],
+  METAS_RACHA_SEMANAS: [5, 10, 15, 20, 25],
+  METAS_REENCUENTROS: [1, 5, 10, 20, 50],
   // Títulos de cada fila de medallas
   TITULOS_MEDALLAS: {
     col: 'Colonias exploradas',
@@ -159,7 +227,17 @@ window.CONFIG = {
   AVISO_RAPIDO_ESPERA: 'Espera unos segundos y vuelve a intentarlo.',
   AVISO_RAPIDO_SIN_GRUPOS: 'Para avisar rápido, primero crea un grupo de encuentro o únete a uno.',
   CAPA_VACIA: 'Ese grupo aún no tiene nada en el mapa',
-  GRUPO_PANEL_PISTA: 'Sube el panel para ver el tablero, los puntos y "Mira esto".',
+  GRUPO_VER_MAS: 'Ver más',
+  GRUPO_VER_MAS_TEXTO: 'Tablero, puntos, "Mira esto" y grupo',
+  GRUPO_AYUDA_1: '1 pide ayuda',
+  GRUPO_AYUDA_N: '{n} piden ayuda',
+  GRUPO_CARITAS_MAX: 5,
+  BIEN_AVISO: '{n}: todo bien · {g}',
+  BIEN_AVISO_N: '{n} personas avisaron que están bien',
+  COMPARTIENDO_TITULO: 'Compartiendo tu ubicación',
+  COMPARTIENDO_DETALLE: 'con {g} · quedan {m} min',
+  COMPARTIENDO_ABIERTA: 'Mantén la app abierta para que tu grupo te vea',
+  COMPARTIR_SUSPENDER: 'Suspender',
   GRUPO_PANEL_SUBIR: 'Subir el panel del grupo',
   GRUPO_PANEL_BAJAR: 'Bajar el panel del grupo',
   COL_TODAS: 'Todas',
@@ -468,6 +546,8 @@ window.CONFIG = {
       texto: 'Si no quieres ver el contenido de alguien, o de un grupo del que no formas parte, abre su perfil y toca silenciar. Deja de aparecer en tu Muro y tu mapa, y no puede escribirte ni etiquetarte; no se le avisa. No es posible silenciar a quienes comparten un grupo contigo.' },
     { icono: 'medal', titulo: 'Medallas y récords',
       texto: 'Ganas medallas por cantidad en cada categoría, por colonias exploradas, por semanas seguidas y por reencuentros. Toca una medalla para ver cuánto te falta. La copa muestra la tabla general.' },
+    { icono: 'hanger', titulo: 'Guardarropa',
+      texto: 'Al usar la app vas ganando premios sorpresa para tu pin. En tu perfil, el guardarropa te deja elegir qué lleva tu pin, en todas tus colecciones o en una sola.' },
     { icono: 'current-location', titulo: 'Ubicación',
       texto: 'La app guarda el punto de cada hallazgo. Puedes compartir la ubicación exacta o la aproximada; lo aproximado queda marcado y puedes corregirlo tocando el mapa.' },
     { icono: 'cloud-off', titulo: 'Sin conexión',
@@ -625,7 +705,7 @@ window.CONFIG = {
     { icono: 'lifebuoy', titulo: 'Aviso rápido', texto: 'El botón de ayuda (el salvavidas entre signos de exclamación) del mapa, o el que está junto al grupo en Colección, manda "Todo bien" o "Necesito ayuda" a tus grupos de encuentro de una vez. En Android también aparece al dejar presionado el ícono de la app.' },
     { icono: 'eye', titulo: 'Mira esto', texto: 'Marca algo en el mapa del grupo. Si el juego está encendido, suma premios dentro del grupo.' },
     { icono: 'sparkles', titulo: 'Tema de colección', texto: 'Quien administra puede proponer uno. Es posible cambiarlo sin límites.' },
-    { icono: 'current-location', titulo: 'Mi ubicación', texto: 'El botón de ubicación del panel te muestra solo a ti dónde estás. Para que el grupo te vea, compártela por 15 o 30 minutos mientras la app está abierta.' },
+    { icono: 'current-location', titulo: 'Mi ubicación', texto: 'El botón de ubicación del panel te muestra solo a ti dónde estás. Para que el grupo te vea, compártela por 15 o 30 minutos mientras la app está abierta. Aunque salgas del grupo se sigue compartiendo: una franja te lo recuerda y puedes suspenderlo.' },
     { icono: 'trash', titulo: 'Borrar', texto: 'Borra lo tuyo cuando quieras. El grupo se borra si la mayoría lo vota.' },
     { icono: 'bulb', titulo: 'Ideas para aprovecharlo', pasos: [
       'Viaje: el hotel y el punto del día; "Mira esto" para guardar lo que descubren.',
@@ -683,7 +763,7 @@ window.CONFIG = {
   // Textos de ayuda (aparecen al mantener presionado un ícono)
   AYUDA: {
     mapa: 'Mapa', muro: 'Muro', nuevo: 'Registrar hallazgo', coleccion: 'Mi colección', perfil: 'Perfil',
-    ubicar: 'Mi ubicación', cerca: 'Cerca de mí', filtro_mios: 'Solo lo mío', filtro_todos: 'Todo', filtro_siguiendo: 'Personas que sigo',
+    guardarropa: 'Guardarropa', ubicar: 'Mi ubicación', cerca: 'Cerca de mí', filtro_mios: 'Solo lo mío', filtro_todos: 'Todo', filtro_siguiendo: 'Personas que sigo',
     ir_al_punto: 'Ir al punto', visto: '¡Lo vi!', instalar: 'Instalar en mi teléfono', reencuentro: 'Lo volví a ver', editar: 'Editar', borrar: 'Borrar', avisar: 'Avisar a moderación',
     compartir: 'Compartir', whatsapp: 'Compartir por WhatsApp', privado: 'Privado: solo tú lo ves', publico: 'Público',
     recortar: 'Recortar fondo', original: 'Usar foto original', tabla: 'Tabla general', admin: 'Moderación', salir: 'Cerrar sesión',
