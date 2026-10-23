@@ -690,6 +690,9 @@ body.compartiendo .screen{padding-bottom:calc(var(--nav) + var(--safe-b) + var(-
 .podio-nom .medalla-nombre{margin-left:2px}
 .gr-cols{margin-bottom:6px}
 .gr-muestra{margin:4px 0 10px}
+.premio-cel .premio-motivo{margin:2px 0 8px;color:var(--tinta)}
+.gr-motivo{text-align:center;font-size:13px;margin:-4px 0 10px;color:var(--tinta2)}
+.gr-motivo b{color:var(--tinta)}
 .ranura{margin-top:10px}
 .ranura h4{margin:0 0 6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--tinta2)}
 .opciones{display:flex;flex-wrap:wrap;gap:8px}

@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '1.9.8',
+  VERSION: '1.9.9',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -117,6 +117,34 @@ window.CONFIG = {
     barco: { nombre: 'Sombrero de barco de papel', espacio: 'cabeza' }, canotier: { nombre: 'Canotier de paja', espacio: 'cabeza' },
     corazon: { nombre: 'Bolso de corazón', espacio: 'cuerpo' }, libelula: { nombre: 'Alas de libélula', espacio: 'espalda' },
     mono: { nombre: 'Moño', espacio: 'cabeza' }, camara: { nombre: 'Cámara de rollo', espacio: 'cuerpo' }, bruja: { nombre: 'Sombrero de bruja', espacio: 'cabeza' }
+  },
+  // Por qué se ganó cada premio: "largo" al ganarlo, "corto" en el guardarropa ({c} = nombre de la colección)
+  PREMIO_MOTIVO: {
+    patito: ['Por llegar a 10 hallazgos en {c}.', '10 hallazgos en la colección'],
+    brote: ['Por llegar a 25 hallazgos en {c}.', '25 hallazgos en la colección'],
+    aro: ['Por llegar a 50 hallazgos en {c}.', '50 hallazgos en la colección'],
+    corona: ['Por llegar a 100 hallazgos en {c}.', '100 hallazgos en la colección'],
+    corona2: ['Por llegar a 150 hallazgos en {c}.', '150 hallazgos en la colección'],
+    copa: ['Por llegar a 200 hallazgos en {c}.', '200 hallazgos en la colección'],
+    gato: ['Por registrar 20 hallazgos.', '20 hallazgos'],
+    gato_manchas: ['Por registrar 50 hallazgos.', '50 hallazgos'],
+    aureola: ['Por registrar 100 hallazgos.', '100 hallazgos'],
+    mariposa: ['Por registrar 150 hallazgos.', '150 hallazgos'],
+    conejo: ['Por hacer 10 reencuentros.', '10 reencuentros'],
+    angel: ['Por hacer 20 reencuentros.', '20 reencuentros'],
+    murcielago: ['Por hacer 50 reencuentros.', '50 reencuentros'],
+    bolsa: ['Por registrar hallazgos en 5 colonias.', '5 colonias'],
+    brujula: ['Por registrar hallazgos en 10 colonias.', '10 colonias'],
+    binoculares: ['Por registrar hallazgos en 20 colonias.', '20 colonias'],
+    pirata: ['Por registrar hallazgos en 30 colonias.', '30 colonias'],
+    fueguito: ['Por registrar hallazgos 5 semanas seguidas.', '5 semanas seguidas'],
+    barco: ['Por registrar hallazgos 15 semanas seguidas.', '15 semanas seguidas'],
+    canotier: ['Por registrar hallazgos 25 semanas seguidas.', '25 semanas seguidas'],
+    corazon: ['Por dar 100 reacciones a pines de otras personas.', '100 reacciones dadas'],
+    libelula: ['Por tener 10 amistades en la app.', '10 amistades'],
+    mono: ['Por tener hallazgos en 5 colecciones distintas.', '5 colecciones distintas'],
+    camara: ['Por completar los primeros pasos.', 'Primeros pasos'],
+    bruja: ['Por usar la app en octubre de 2026.', 'Octubre 2026']
   },
   // Qué medalla lleva regalo (el regalo se ve, el premio no)
   PREMIO_META: {

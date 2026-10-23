@@ -5,7 +5,7 @@
    3. Notificaciones: el texto es genérico y se escribe aquí, en el teléfono.
    Cada parche cambia VERSION: así el teléfono sabe que hay una versión nueva.
    ===================================================================== */
-const VERSION = '1.9.8';
+const VERSION = '1.9.9';
 self.window = self;
 importScripts('config.js');
 const C = self.CONFIG;

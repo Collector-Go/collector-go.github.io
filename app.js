@@ -2267,6 +2267,11 @@ function siguientePremio() {
 function adornoSolo(id) { const e = (C.PREMIOS_PIN[id] || {}).espacio; return e === 'cabeza' ? { c: id } : e === 'cuerpo' ? { b: id } : e === 'espalda' ? { e: id } : e === 'aro' ? { a: true } : null; }
 const coleccionDe = (amb) => (amb ? S.cats.find((c) => c.id === amb) || miGrupo(amb) || null : null);
 function muestraPin(amb) { const c = coleccionDe(amb) || S.cats[0] || {}; return { color: c.color || C.COLORES.terracota, icon: c.icon || 'star' }; }
+// Por qué se ganó: descripción simple (larga al ganarlo, corta en el guardarropa)
+function motivoPremio(id, col, corto) {
+  const m = (C.PREMIO_MOTIVO || {})[id]; if (!m) return '';
+  return corto ? m[1] : m[0].replace('{c}', col ? col.name : 'la colección');
+}
 function mostrarPremio(p) {
   api.premiosVistos([p.clave]).catch(() => null);
   const info = C.PREMIOS_PIN[p.premio], amb = p.ambito || null, col = coleccionDe(amb), m = muestraPin(amb);
@@ -2277,6 +2282,7 @@ function mostrarPremio(p) {
       <h1 class="serif unlock-t">${esc(C.PREMIO_NUEVO)}</h1>
       <div class="pin-muestra-grande">${pinGrande(m.color, m.icon, amb ? adornoSolo(p.premio) : adornoSolo(p.premio), k, 150)}</div>
       <h2>${esc(info.nombre)}</h2>
+      <p class="premio-motivo">${esc(motivoPremio(p.premio, col))}</p>
       ${col ? `<p>${catBadge(col.name, col.icon, col.color)}</p>` : ''}
       <p class="muted">${esc(C.PREMIO_GUARDADO)}</p>
       ${amb && (p.premio === 'corona' || p.premio === 'corona2') ? `<p class="tiny">${esc(C.AYUDA.color_premio)}</p>${selectorColorPremio(tipo, amb, k)}` : ''}
@@ -2294,7 +2300,7 @@ function mostrarInauguracion() {
     <div class="burst" aria-hidden="true"></div>
     <h1 class="serif unlock-t">${esc(bruja ? C.BRUJA_TITULO : C.INAUGURA_TITULO)}</h1>
     <div class="pin-muestra-grande">${pinGrande(m.color, m.icon, bruja ? { c: 'bruja' } : null, 'oro', 150)}</div>
-    ${bruja ? `<h2>${esc(C.BRUJA_TEXTO)}</h2>` : ''}
+    ${bruja ? `<h2>${esc(C.BRUJA_TEXTO)}</h2><p class="premio-motivo">${esc(motivoPremio('bruja'))}</p>` : ''}
     <p>${esc(C.GUARDARROPA_INAUGURA)}</p>
     ${bruja ? `<button class="btn block" data-act="premio_poner" data-p="bruja">${ic('hanger')} ${esc(C.PREMIO_PONER)}</button>` : ''}
     <button class="btn alt block" data-act="guardarropa" style="margin-top:8px">${ic('hanger')} ${esc(C.GUARDARROPA_ABRIR)}</button>
@@ -2364,13 +2370,14 @@ function hojaGuardarropa(ambInicial) {
       const actual = e === 'aro' ? (ad.a ? 'aro' : null) : ad[{ cabeza: 'c', cuerpo: 'b', espalda: 'e' }[e]];
       return `<div class="ranura"><h4>${esc(nombre)}</h4><div class="opciones">
         <button type="button" class="op ninguno ${actual ? '' : 'on'}" data-act="gr_elegir" data-esp="${e}" data-v="nada" aria-pressed="${!actual}">${esc(C.GUARDARROPA_NADA)}</button>
-        ${ops.map((p) => `<button type="button" class="op ${actual === p.premio ? 'on' : ''}" data-act="gr_elegir" data-esp="${e}" data-v="${esc(p.premio)}" aria-pressed="${actual === p.premio}" data-tip="${esc(C.PREMIOS_PIN[p.premio].nombre)}" aria-label="${esc(C.PREMIOS_PIN[p.premio].nombre)}">${pinGrande(m.color, m.icon, adornoSolo(p.premio), k, 40)}</button>`).join('')}
+        ${ops.map((p) => `<button type="button" class="op ${actual === p.premio ? 'on' : ''}" data-act="gr_elegir" data-esp="${e}" data-v="${esc(p.premio)}" aria-pressed="${actual === p.premio}" data-tip="${esc(C.PREMIOS_PIN[p.premio].nombre + ' · ' + motivoPremio(p.premio, null, true))}" aria-label="${esc(C.PREMIOS_PIN[p.premio].nombre + ', ' + motivoPremio(p.premio, null, true))}">${pinGrande(m.color, m.icon, adornoSolo(p.premio), k, 40)}</button>`).join('')}
       </div></div>`; }).join('');
     return `${cabeza(`${ic('hanger')} ${esc(C.GUARDARROPA)}`)}
       <div class="chips una-fila gr-cols" data-pick="gr_amb">
         <button type="button" class="chip ${D.amb ? '' : 'on'}" data-act="gr_amb" data-v="">${ic('cards')}${esc(C.GUARDARROPA_TODAS)}</button>
         ${cols.map((c) => chipColor('gr_amb', c.id, c.name, c.icon, c.color, D.amb === c.id)).join('')}</div>
       <div class="pin-muestra-grande gr-muestra">${pinGrande(m.color, m.icon, ad, k, 130)}</div>
+      ${D.ultimo && C.PREMIOS_PIN[D.ultimo] ? `<p class="gr-motivo"><b>${esc(C.PREMIOS_PIN[D.ultimo].nombre)}</b> · ${esc(motivoPremio(D.ultimo, null, true))}</p>` : ''}
       ${espacios || `<div class="empty">${ic('hanger')}<p>${esc(C.GUARDARROPA_VACIO)}</p></div>`}
       ${espacios ? `<button class="btn block" data-act="gr_guardar" style="margin-top:14px">${ic('check')} Guardar</button>` : ''}`;
   };
@@ -2381,7 +2388,7 @@ function hojaGuardarropa(ambInicial) {
     catch (err) { D.premios = D.premios || []; D.estilos = D.estilos || []; elegir(); fallo(err); }
     if (hojaArriba() === hoja) dibujarHoja();
   };
-  D.elegirAmb = (amb) => { D.amb = amb || null; elegir(); dibujarHoja(); };
+  D.elegirAmb = (amb) => { D.amb = amb || null; D.ultimo = null; elegir(); dibujarHoja(); };
   D.cargar();
 }
 
@@ -5648,6 +5655,7 @@ const ACCIONES = {
     const D = hojaArriba() && hojaArriba().datos; if (!D || !D.sel) return;
     const esp = b.dataset.esp, v = b.dataset.v;
     if (esp === 'aro') D.sel.aro = v !== 'nada'; else D.sel[esp] = v;
+    D.ultimo = v === 'nada' ? null : (esp === 'aro' ? 'aro' : v);
     dibujarHoja();
   },
   async gr_guardar(b) {
@@ -5861,7 +5869,7 @@ async function iniciar() {
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
-window.__CG__ = { ACCIONES, S, logros, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
+window.__CG__ = { ACCIONES, S, logros, motivoPremio, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
   subirPendientes, contarPendientes, BDP, encuentroActual, textoAviso, salirGrupo, fotoMuro, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos, arrancar, crearPDF, ordenarFichas,
   versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
 iniciar();
