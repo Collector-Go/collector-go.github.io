@@ -5,7 +5,7 @@
    3. Notificaciones: el texto es genérico y se escribe aquí, en el teléfono.
    Cada parche cambia VERSION: así el teléfono sabe que hay una versión nueva.
    ===================================================================== */
-const VERSION = '1.9.9';
+const VERSION = '2.0.3';
 self.window = self;
 importScripts('config.js');
 const C = self.CONFIG;
@@ -18,8 +18,8 @@ const ESPERA_RED_MS = C.OFFLINE_ESPERA_MS;
 const ARCHIVOS = ['./', 'index.html', 'app.js', 'config.js', 'styles.css', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'icon-ayuda.png', 'icon-registrar.png'];
 const EXTERNOS = C.OFFLINE_EXTERNOS;
 // Consultas de solo lectura que se guardan para verlas sin conexión
-const LECTURAS = ['profile_stats', 'leaderboard', 'mis_avisos', 'mis_conversaciones', 'estado_encuentro', 'puedo_etiquetar',
-  'puedo_escribir', 'comparte_grupo_conmigo', 'vitrina', 'uso_plan', 'mis_retos', 'colecciones_que_sigo', 'top_actual', 'calificacion'];
+const LECTURAS = ['profile_stats', 'top_siempre', 'leaderboard', 'mis_avisos', 'mis_conversaciones', 'estado_encuentro', 'puedo_etiquetar',
+  'puedo_escribir', 'comparte_grupo_conmigo', 'vitrina', 'uso_plan', 'mis_retos', 'colecciones_que_sigo', 'top_actual', 'calificacion', 'primeros_comentarios'];
 
 /* ---------- pequeña base de datos del trabajador ---------- */
 function bd() {
