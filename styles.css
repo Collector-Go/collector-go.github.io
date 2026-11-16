@@ -771,3 +771,10 @@ body.compartiendo .screen{padding-bottom:calc(var(--nav) + var(--safe-b) + var(-
 .banner.conv-nueva{margin-bottom:10px;align-items:flex-start}
 .btn.peligro{background:#B23A2A;color:#fff}
 .btn.alt.peligro{background:var(--papel3);color:#B23A2A;border-color:#B23A2A}
+/* 2.0.4: buscador con tres pestañas */
+.toggle.buscar-tabs{display:flex;width:100%}
+.toggle.buscar-tabs button{flex:1;justify-content:center;font-size:14px;font-weight:600;gap:4px;padding:0 6px;min-width:0}
+.persona-res .btn[disabled]{opacity:.7;cursor:default}
+/* 2.0.4: mover entre colecciones y grupos */
+.chip.nueva-col{border-style:dashed;background:transparent}
+.mover-nota{margin:4px 0 10px;color:var(--tinta2)}
