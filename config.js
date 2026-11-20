@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '2.0.6',
+  VERSION: '2.0.7',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -240,8 +240,10 @@ window.CONFIG = {
   CALIF_GRUPO_TEXTO: 'Cada lugar se califica con 1 a 3 estrellas. Quien lo registró califica desde donde sea; las demás personas, solo estando ahí.',
   CALIF_TU: 'Tu calificación',
   CALIF_SOLO_AHI: 'Solo estando en el lugar.',
-  CALIF_POCAS: 'Aún sin promedio',
-  CALIF_N: '{n} calificaciones',
+  CALIF_POCAS: 'Aún sin calificar',
+  CALIF_N: '{n} personas',
+  CALIF_N1: '1 persona',
+  CALIF_PROMEDIO: 'Promedio',
   CALIF_LISTA: 'Calificación guardada',
   CALIF_LEJOS: 'Para calificar tienes que estar en el lugar. Estás a {d}.',
   CALIF_APROX: 'Tu teléfono está dando una ubicación aproximada. Activa la ubicación exacta para calificar.',

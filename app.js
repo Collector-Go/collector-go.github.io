@@ -319,6 +319,7 @@ function supabaseApi() {
       : sb.from('sigue_coleccion').delete().eq('category_id', cat).then(ok)),
     calificar: (findId, estrellas, p) => sb.rpc('calificar', { hallazgo: findId, estrellas, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
     calificacion: (findId) => sb.rpc('calificacion', { hallazgo: findId }).then(ok),
+    calificacionesDe: (ids) => sb.rpc('calificaciones_de', { ids }).then(ok),
     miLimiteGrupos: () => sb.rpc('mi_limite_grupos').then(ok),
     buscarHallazgos: (q, lat, lng) => sb.rpc('buscar_hallazgos', { q, lat: lat == null ? null : lat, lng: lng == null ? null : lng }).then(ok),
     proponerLugar: (hallazgo, lat, lng, precision) => sb.rpc('proponer_lugar', { hallazgo, lat, lng, precision_m: precision }).then(ok),
@@ -1472,6 +1473,7 @@ function tarjeta(c) {
       <span class="tiny card-donde">${!marcaMapa(c) ? ic('map-pin-off') + ' ' + esc(C.SIN_MAPA_CORTO) + ' · ' : c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}</span></div>
     ${c.photo || c.thumb ? `<img class="photo" src="${fotoMuro(c)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
     <div class="body"><div class="row between card-tit"><h3>${esc(c.name)}</h3>${etiquetaDe(c)}</div>
+      ${califTarjeta(c)}
       <div class="card-accion">${puedoComentar(c) ? `<button type="button" class="campo-falso" data-act="comentar_ficha" data-id="${c.id}" aria-label="${esc(C.COMENTAR_PISTA)}"><span>${esc(C.COMENTAR_PISTA)}</span><span class="env">${ic('send')}</span></button><span class="sep" aria-hidden="true"></span>` : '<span class="grow"></span>'}
         <button type="button" class="ver-mas" data-act="ficha" data-id="${c.id}" aria-label="${esc(C.VER_MAS)}: ${esc(c.name)}">${esc(C.VER_MAS)}${ic('chevron-right')}</button></div>
       <div class="card-reacts">${reaccionesHTML(c)}</div></div>${franja}</article>`;
@@ -1517,7 +1519,7 @@ async function pintarMuro(masViejo) {
       <div class="row">${ib('tabla', 'trophy', 'tabla', '', 'dorado')}${ib('avisos', 'mail-heart', 'avisos', 'data-campana')}${ib('refrescar', 'refresh', 'Actualizar')}</div></div>
       <div class="chips" id="chips-muro" style="margin-bottom:12px">${chipsFiltro(S.muro, 'muro_filtro', false)}</div>
       <div class="feed" id="feed"><div class="empty"><span class="spin">${ic('loader-2')}</span></div></div>`;
-    S.feed = []; S.feedFin = false;
+    S.feed = []; S.feedFin = false; S.califs = new Map();
     pintarCampana();
   } else if (S.feedCargando || S.feedFin) return;
   if (vigiaMuro) { vigiaMuro.disconnect(); vigiaMuro = null; }
@@ -1550,6 +1552,7 @@ async function pintarMuro(masViejo) {
     else f.innerHTML = S.feed.length ? html(S.feed) + '<div class="feed-mas"></div>' : vacio;
     vigilarMuro();
     cargarPrimeros(lote.filter((it) => it.kind === 'find').map((it) => it.find_id));
+    cargarCalifs(lote.filter((it) => it.kind === 'find').map((it) => it.find_id));
   } catch (e) {
     if (pedido !== S.muroPedido) return;
     S.feedCargando = false; fallo(e);
@@ -1567,6 +1570,24 @@ async function cargarPrimeros(ids) {
     l.forEach((x) => S.primeros.set(x.find_id, x));
     l.forEach((x) => { const c = S.cache.get(x.find_id); if (c) $$(`[data-card="${c.id}"]`).forEach((el) => { el.outerHTML = tarjeta(c); }); });
   } catch (e) { /* sin primer comentario: la tarjeta muestra solo la cuenta */ }
+}
+// 2.0.7: la calificación se ve en el Muro desde la primera, con cuántas personas han calificado
+const textoPersonas = (n) => (n === 1 ? C.CALIF_N1 : C.CALIF_N.replace('{n}', n));
+function califTarjeta(c) {
+  const k = S.califs && S.califs.get(c.id);
+  if (!c.group_id || c.is_private || !k || !k.n) return '';
+  return `<button type="button" class="card-calif" data-act="ficha" data-id="${c.id}" aria-label="${esc(C.CALIF_PROMEDIO)} ${k.promedio} de 3, ${esc(textoPersonas(k.n))}">${estrellas(k.promedio, k.simbolo)}<span class="tiny">${esc(textoPersonas(k.n))}</span></button>`;
+}
+async function cargarCalifs(ids) {
+  S.califs = S.califs || new Map();
+  const faltan = [...new Set(ids)].filter((id) => { const c = S.cache.get(id); return c && c.group_id && !c.is_private && !S.califs.has(id); });
+  if (!faltan.length || !api.calificacionesDe) return;
+  try {
+    const l = await api.calificacionesDe(faltan) || [];
+    faltan.forEach((id) => { if (!S.califs.has(id)) S.califs.set(id, null); });
+    l.forEach((x) => S.califs.set(x.find_id, x));
+    l.forEach((x) => { const c = S.cache.get(x.find_id); if (c) $$(`[data-card="${c.id}"]`).forEach((el) => { el.outerHTML = tarjeta(c); }); });
+  } catch (e) { /* sin calificación en las tarjetas por ahora */ }
 }
 function primeroDe(id, coms) {
   S.primeros = S.primeros || new Map();
@@ -1928,7 +1949,7 @@ function califHTML(c, H) {
   const k = H.calif; if (k === undefined) return '';
   const n = k ? k.n || 0 : 0, prom = k && k.promedio, mia = k && k.mia;
   return `<div class="calif-caja">
-    <div class="row between">${prom ? estrellas(prom, k.simbolo) : `<span class="tiny">${esc(C.CALIF_POCAS)}</span>`}<span class="tiny">${esc(C.CALIF_N.replace('{n}', n))}</span></div>
+    <div class="row between">${prom ? estrellas(prom, k.simbolo) : `<span class="tiny">${esc(C.CALIF_POCAS)}</span>`}<span class="tiny">${n ? esc(textoPersonas(n)) : ''}</span></div>
     ${(c.user_id === S.user.id && !S.me.blocked) || puedoMarcarAusencia(c) ? `<div class="tiny" style="margin-top:6px">${esc(C.CALIF_TU)}</div>
     <div class="calif-botones">${[1, 2, 3].map((e) => `<button type="button" class="${mia === e ? 'on' : ''}" data-act="calificar" data-id="${c.id}" data-v="${e}" aria-pressed="${mia === e}" aria-label="${e} de 3">${simboloCalif(k && k.simbolo).repeat(e)}</button>`).join('')}</div>
     ${c.user_id === S.user.id ? '' : `<div class="tiny">${esc(C.CALIF_SOLO_AHI)}</div>`}` : ''}</div>`;
@@ -3238,6 +3259,8 @@ async function guardarSimbolo(b, gid) {
   } catch (e) { ocupado(b, false); return fallo(e); }
   cerrarHoja(); aviso('Guardado');
   if (fichaH && fichaH.calif) fichaH.calif.simbolo = s;
+  if (S.califs) S.califs.forEach((k, id) => { const c = S.cache.get(id); if (k && c && c.group_id === gid) k.simbolo = s; });
+  $$('[data-card]').forEach((el) => { const c = S.cache.get(el.dataset.card); if (c && c.group_id === gid) el.outerHTML = tarjeta(c); });
 }
 // 2.0.4: pasar todos mis hallazgos de un grupo de colección a una colección mía (nueva con el nombre del grupo, o una que ya tengo).
 // Solo los míos; de un grupo privado quedan secretos. Si el nombre ya existe en la colección, se le agrega " (2)", " (3)"…
@@ -6421,7 +6444,16 @@ const ACCIONES = {
     try {
       const r = await api.calificar(id, n, p);
       ocupado(b, false);
-      if (r && r.ok) { aviso(C.CALIF_LISTA, 'star'); if (fichaH && fichaH.id === id) { fichaH.calif = await api.calificacion(id).catch(() => fichaH.calif); refrescarFicha(id); } return; }
+      if (r && r.ok) {
+        aviso(C.CALIF_LISTA, 'star');
+        const k = await api.calificacion(id).catch(() => null);
+        if (k) {
+          S.califs = S.califs || new Map(); S.califs.set(id, { find_id: id, n: k.n, promedio: k.promedio, exacto: k.exacto, simbolo: k.simbolo });
+          const c = S.cache.get(id); if (c) $$(`[data-card="${id}"]`).forEach((el) => { el.outerHTML = tarjeta(c); });
+        }
+        if (fichaH && fichaH.id === id) { fichaH.calif = k || fichaH.calif; refrescarFicha(id); }
+        return;
+      }
       if (r && r.motivo === 'lejos') return aviso(C.CALIF_LEJOS.replace('{d}', metros(r.distancia)), 'navigation');
       if (r && r.motivo === 'sin_mapa') return aviso(C.SIN_MAPA_NO_APLICA, 'map-pin-off');
       return aviso(C.CALIF_APROX, 'current-location');
@@ -6600,7 +6632,7 @@ async function iniciar() {
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
-window.__CG__ = { ACCIONES, S, ARTE, logros, motivoPremio, tablaGeneral, agrupar, pintarPines, hojaChats, cargarPrimeros, tarjeta, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
+window.__CG__ = { ACCIONES, S, cargarCalifs, ARTE, logros, motivoPremio, tablaGeneral, agrupar, pintarPines, hojaChats, cargarPrimeros, tarjeta, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
   subirPendientes, contarPendientes, BDP, encuentroActual, textoAviso, salirGrupo, fotoMuro, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos, arrancar, crearPDF, ordenarFichas,
   versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
 iniciar();

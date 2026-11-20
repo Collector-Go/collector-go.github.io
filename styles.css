@@ -806,3 +806,7 @@ body.compartiendo .screen{padding-bottom:calc(var(--nav) + var(--safe-b) + var(-
 .inicio-pin .punta{width:18px;height:14px;margin-top:-2px;margin-left:calc(var(--punta, 0px) * 2);background:#2E2A26;clip-path:polygon(0 0,100% 0,50% 100%);position:relative}
 .inicio-pin .punta::after{content:'';position:absolute;left:3px;top:0;width:12px;height:9px;background:var(--terracota);clip-path:polygon(0 0,100% 0,50% 100%)}
 body.con-inicio .map-side{bottom:calc(var(--nav) + var(--safe-b) + 74px)}
+
+/* 2.0.7: calificación en la tarjeta del Muro */
+.card-calif{display:flex;align-items:center;gap:8px;margin:2px 0 8px;padding:0;background:none;border:0;color:inherit;font:inherit;cursor:pointer}
+.card-calif .estrellas{font-size:18px}
