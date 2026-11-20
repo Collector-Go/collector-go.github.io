@@ -778,3 +778,31 @@ body.compartiendo .screen{padding-bottom:calc(var(--nav) + var(--safe-b) + var(-
 /* 2.0.4: mover entre colecciones y grupos */
 .chip.nueva-col{border-style:dashed;background:transparent}
 .mover-nota{margin:4px 0 10px;color:var(--tinta2)}
+/* 2.0.5 */
+.ic.propio{background:var(--img) center/contain no-repeat;-webkit-mask:none;mask:none}
+.estrellas .ic{font-size:1em;vertical-align:middle}
+.calif-botones button .ic{font-size:18px}
+.estrellas .no .ic.propio{filter:grayscale(.6)}
+.calif-simbolo{gap:10px;align-items:center;margin:4px 0 10px;flex-wrap:wrap}
+.esta-aqui{margin:12px 0 0;padding:12px;border:1.5px dashed var(--tinta);border-radius:14px}
+.esta-aqui p{margin:0 0 8px}.esta-aqui .tiny{margin:8px 0 0}
+.esta-aqui-mapa{height:220px}
+.banner.revisar{width:100%;margin:0 0 12px;text-align:left;display:flex;align-items:center;gap:8px}
+.revisar-fila{flex-wrap:wrap}.revisar-fila .invit-botones{width:100%;justify-content:flex-end;gap:8px;margin-top:6px}
+/* 2.0.5: cuatro pestañas en el buscador: en pantallas angostas solo el texto */
+@media (max-width: 460px){.toggle.buscar-tabs button .ic{display:none}.toggle.buscar-tabs button{font-size:13px;padding:0 4px}}
+
+/* 2.0.6: podio dorado en el Muro, botones del perfil en un renglón, bienvenida y regalo del tutorial */
+.ib.dorado{background:var(--mostaza);color:#2E2A26}
+.perfil-botones{display:flex;align-items:center;justify-content:space-between;gap:3px;margin:14px 0}
+.perfil-botones2{margin:-4px 0 14px;gap:8px}
+.pasos-barra{gap:8px}
+.pasos-barra .progress{flex:1;min-width:0}
+.pasos-regalo{flex:none;width:30px;height:30px;border-radius:50%;border:2px dashed var(--tinta2);display:grid;place-items:center;color:var(--tinta2);font-size:16px}
+.nav button{position:relative}
+.punto-pasos{position:absolute;top:9px;right:9px;width:11px;height:11px;border-radius:50%;background:var(--mostaza);border:1.5px solid #2E2A26}
+.inicio-pin{position:fixed;z-index:450;display:flex;flex-direction:column;align-items:center;filter:drop-shadow(3px 3px 0 #2E2A26)}
+.inicio-pin .cuerpo{display:flex;align-items:center;gap:6px;background:var(--terracota);color:#FBF6EC;border:2px solid #2E2A26;border-radius:999px;padding:9px 14px 9px 11px;font-weight:700;font-size:15px;line-height:1;white-space:nowrap}
+.inicio-pin .punta{width:18px;height:14px;margin-top:-2px;margin-left:calc(var(--punta, 0px) * 2);background:#2E2A26;clip-path:polygon(0 0,100% 0,50% 100%);position:relative}
+.inicio-pin .punta::after{content:'';position:absolute;left:3px;top:0;width:12px;height:9px;background:var(--terracota);clip-path:polygon(0 0,100% 0,50% 100%)}
+body.con-inicio .map-side{bottom:calc(var(--nav) + var(--safe-b) + 74px)}
