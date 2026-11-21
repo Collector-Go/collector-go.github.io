@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '2.0.7',
+  VERSION: '2.0.8',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -65,7 +65,7 @@ window.CONFIG = {
     { id: 'cosas', icono: 'armchair', nombre: 'Cosas y plantas',
       iconos: ['trompo', 'armchair', 'lamp', 'bulb', 'clock', 'eyeglass', 'hanger', 'shirt', 'shoe', 'bottle', 'coffee', 'book', 'vinyl',
                'music', 'palette', 'brush', 'spray', 'key', 'bell', 'diamond', 'umbrella', 'camera', 'car', 'bike', 'motorbike',
-               'bus', 'tree', 'trees', 'plant', 'flower', 'leaf', 'cactus', 'mushroom'] },
+               'bus', 'ball-american-football', 'tree', 'trees', 'plant', 'flower', 'leaf', 'cactus', 'mushroom'] },
     { id: 'lugares', icono: 'building', nombre: 'Lugares',
       iconos: ['building', 'home', 'building-church', 'building-store', 'building-castle', 'building-bridge', 'building-arch',
                'building-monument', 'building-skyscraper', 'building-lighthouse', 'building-factory', 'building-community',
@@ -100,7 +100,8 @@ window.CONFIG = {
     camara: 'camera', foto: 'photo camera', paleta: 'palette', pintura: 'palette paint brush', pincel: 'brush', aerosol: 'spray',
     llave: 'key', llaves: 'key', campana: 'bell', diamante: 'diamond', joya: 'diamond jewelry', joyas: 'diamond jewelry',
     anillo: 'diamond ring', collar: 'diamond', paraguas: 'umbrella', sombrilla: 'umbrella', juguete: 'toy', juguetes: 'toy',
-    muneca: 'toy', pelota: 'ball', globo: 'balloon', vela: 'candle', espejo: 'mirror', jarron: 'vase', florero: 'vase',
+    muneca: 'toy', pelota: 'ball', balon: 'ball', futbol: 'ball-american-football ball-football', americano: 'ball-american-football',
+    ovalado: 'ball-american-football', tochito: 'ball-american-football', globo: 'balloon', vela: 'candle', espejo: 'mirror', jarron: 'vase', florero: 'vase',
     maleta: 'luggage briefcase', caja: 'box', regalo: 'gift', carta: 'mail letter', sobre: 'mail', fantasma: 'ghost', cohete: 'rocket',
     estrella: 'star', corazon: 'heart', luna: 'moon', sol: 'sun', nube: 'cloud', lluvia: 'cloud-rain', fuego: 'flame',
     comida: 'tools-kitchen food', pan: 'bread', pizza: 'pizza', helado: 'ice-cream', fruta: 'apple', manzana: 'apple',
@@ -133,7 +134,8 @@ window.CONFIG = {
     corazon: { nombre: 'Bolso de corazón', espacio: 'cuerpo' }, libelula: { nombre: 'Alas de libélula', espacio: 'espalda' },
     mono: { nombre: 'Moño', espacio: 'cabeza' }, camara: { nombre: 'Cámara de rollo', espacio: 'cuerpo' }, bruja: { nombre: 'Sombrero de bruja', espacio: 'cabeza' },
     gorra: { nombre: 'Gorra de mezclilla', espacio: 'cabeza' }, lentes3d: { nombre: 'Lentes 3D', espacio: 'cabeza' },
-    boina: { nombre: 'Boina', espacio: 'cabeza' }, maceta: { nombre: 'Maceta de corazón', espacio: 'cabeza' }, duende: { nombre: 'Gorro de duende', espacio: 'cabeza' }
+    boina: { nombre: 'Boina', espacio: 'cabeza' }, maceta: { nombre: 'Maceta de corazón', espacio: 'cabeza' }, duende: { nombre: 'Gorro de duende', espacio: 'cabeza' },
+    espada: { nombre: 'Espada', espacio: 'cuerpo' }
   },
   // Por qué se ganó cada premio: "largo" al ganarlo, "corto" en el guardarropa ({c} = nombre de la colección o colecciones)
   PREMIO_MOTIVO: {
@@ -166,7 +168,8 @@ window.CONFIG = {
     lentes3d: ['Porque alguien encontró uno de tus pines y marcó "Lo vi".', 'Alguien vio tu pin'],
     boina: ['Porque alguien guardó uno de tus hallazgos en sus favoritos.', 'Te guardaron en favoritos'],
     maceta: ['Por comentar en pines de otras personas.', 'Comentar'],
-    duende: ['Por usar la app en diciembre de 2026.', 'Diciembre 2026']
+    duende: ['Por usar la app en diciembre de 2026.', 'Diciembre 2026'],
+    espada: ['Por marcar "Lo vi" en pines de 3 personas distintas.', 'Lo vi en pines de 3 personas']
   },
   // Qué medalla lleva regalo (el regalo se ve, el premio no)
   PREMIO_META: {
@@ -303,6 +306,15 @@ window.CONFIG = {
   GRUPO_PANEL_SUBIR: 'Subir el panel del grupo',
   GRUPO_PANEL_BAJAR: 'Bajar el panel del grupo',
   COL_TODAS: 'Todas',
+  COMENTARIO_EDITAR: 'Editar comentario',
+  COMENTARIO_EDITADO: 'editado',
+  COMENTARIO_GUARDADO: 'Comentario corregido',
+  ICONOS_PERFIL_NOMBRE: 'Perfil',
+  PERFIL_SIN_EMOJI: 'En el perfil van íconos, no emojis. Escribe una palabra: gato, cámara, balón…',
+  GPS_USAR: 'Usar mi ubicación',
+  GPS_BUSCANDO: 'Buscando tu ubicación… vuelve a tocar Guardar en un momento',
+  COL_SIN: 'Sin colección',
+  COL_VACIA: 'Aún no hay hallazgos aquí',
   COL_HALLAZGOS: 'hallazgos',
   PLEGAR_NOTIF_ACTIVAS: 'activadas, {n} de {t}',
   PLEGAR_NOTIF: { apagadas: 'apagadas', bloqueadas: 'bloqueadas en el teléfono', no: 'no disponibles aquí', iphone: 'instala la app para activarlas' },
@@ -479,15 +491,20 @@ window.CONFIG = {
   INICIO_AQUI: 'Inicio aquí',
   PASOS_PREMIO: 'Al terminar, un premio',
   PASO_EN_CELULAR: 'Este paso se hace desde tu celular: abre Collector Go en tu teléfono e instálala.',
-  // 2.0.5: pines por revisar (solo aparece si hay algo pendiente)
-  REVISAR_LINEA: 'Pines por revisar · {n}',
-  REVISAR_TITULO: 'Pines por revisar',
-  REVISAR_TEXTO: 'Pines tuyos que alguien no encontró o con una propuesta de otro lugar. Si cambió por el paso del tiempo, puedes dejarlo como está.',
-  REVISAR_NO_1: '1 persona no lo encontró',
-  REVISAR_NO: '{n} personas no lo encontraron',
+  // 2.0.8: "Tus pines tienen novedades" (solo aparece si hay algo nuevo)
+  REVISAR_ICONO: 'cg-huellas',
+  REVISAR_LINEA: 'Tus pines tienen novedades · {n}',
+  REVISAR_TITULO: 'Novedades en tus pines',
+  REVISAR_TEXTO: 'Alguien fue a buscar estos hallazgos. Si ya no están, se quedan en el mapa como memoria; si no es la ubicación exacta, puedes moverlos.',
+  REVISAR_NO_1: '1 persona fue a buscarlo',
+  REVISAR_NO: '{n} personas fueron a buscarlo',
   REVISAR_PROP_1: '1 propuesta de lugar',
   REVISAR_PROP: '{n} propuestas de lugar',
-  REVISAR_VER_PROP: 'Ver propuestas',
+  REVISAR_VER_PROP: 'Ver dónde lo vieron',
+  REVISAR_MOVER: 'Mover',
+  REVISAR_LISTO: 'Listo',
+  REVISAR_LISTO_AVISO: 'Listo. Volverá a aparecer solo si hay algo nuevo',
+  REVISAR_A_METROS: 'A {m} de tu pin',
   REVISAR_VACIO: 'Todo en orden',
   // 2.0.5: símbolo para calificar en cada grupo
   CALIF_CON: 'Calificar con',
@@ -965,6 +982,9 @@ window.CONFIG = {
     'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js'
   ],
   SIN_CONEXION: 'Sin conexión',
+  SIN_SENAL_TITULO: 'Sin señal por ahora',
+  SIN_SENAL_TEXTO: 'Tu sesión sigue abierta. En cuanto haya señal, Collector Go entra solo.',
+  SIN_SENAL_REINTENTAR: 'Reintentar',
   PENDIENTE_GUARDADO: 'Guardado en tu teléfono. Se sube solo al volver la conexión',
   PENDIENTES_TITULO: 'Pendientes de subir',
   PENDIENTES_SUBIDOS: '{n} subidos',

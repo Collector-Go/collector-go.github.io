@@ -526,6 +526,7 @@ textarea.in.crece{min-height:44px;height:44px;resize:none;overflow:hidden;line-h
 .coment-campo{display:flex;align-items:center;gap:6px;margin-top:8px;padding:0 6px 0 12px;border:var(--borde);border-radius:12px;background:var(--papel3)}
 .coment-campo:focus-within{outline:3px solid var(--mostaza);outline-offset:1px}
 .coment-campo .in.compacto{padding-left:0}
+.com.editando .coment-campo{margin-top:0}
 .coment-n{text-align:right;margin-top:2px;color:var(--tinta2)}
 .meta-fila{gap:8px;align-items:center}
 .meta-fila .tiny{min-width:0}
@@ -561,6 +562,10 @@ textarea.in.crece{min-height:44px;height:44px;resize:none;overflow:hidden;line-h
 .col-portada .portada.una{grid-template-columns:1fr}
 .col-portada .portada img,.col-portada .portada span{width:100%;height:100%;object-fit:cover;display:block;background:var(--papel2)}
 .col-portada .catb{align-self:flex-start;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 2.0.8: portadas de "Todas" (3 por fila) */
+.portadas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 10px;margin:6px 0 4px}
+.portadas .col-portada{width:auto;min-width:0}
+.col-portada .portada .portada-ic{display:grid;place-items:center;color:var(--tinta2);font-size:30px}
 .pdf-orden{flex-wrap:wrap}
 .pdf-barra{height:8px;border-radius:4px;border:1px solid var(--tinta);background:var(--papel2);overflow:hidden}
 .pdf-barra i{display:block;height:100%;background:#6E7B3A;transition:width .2s}
@@ -682,6 +687,8 @@ body.compartiendo .screen{padding-bottom:calc(var(--nav) + var(--safe-b) + var(-
 .adorno.atras{z-index:0}
 .adorno.frente{z-index:2}
 .pin-grande{position:relative;display:inline-block;line-height:0;flex:none}
+.pin-perfil{flex:none;align-self:center;margin-left:-4px;padding:0;background:none;border:0;line-height:0}
+button.pin-perfil{cursor:pointer}
 .pin-grande svg{overflow:visible}
 .pin-grande .pg-ic{position:absolute;display:grid;place-items:center;color:var(--papel);line-height:1}
 .pin-grande .pg-ic .ic{width:100%;height:100%}
@@ -787,7 +794,8 @@ body.compartiendo .screen{padding-bottom:calc(var(--nav) + var(--safe-b) + var(-
 .esta-aqui{margin:12px 0 0;padding:12px;border:1.5px dashed var(--tinta);border-radius:14px}
 .esta-aqui p{margin:0 0 8px}.esta-aqui .tiny{margin:8px 0 0}
 .esta-aqui-mapa{height:220px}
-.banner.revisar{width:100%;margin:0 0 12px;text-align:left;display:flex;align-items:center;gap:8px}
+.banner.revisar{width:100%;margin:0 0 12px;text-align:left;display:flex;align-items:center;gap:8px;background:#E4E9D2}
+.me-dot.num{width:20px;height:20px;display:grid;place-items:center;font:700 11px/1 system-ui,sans-serif;color:var(--papel)}
 .revisar-fila{flex-wrap:wrap}.revisar-fila .invit-botones{width:100%;justify-content:flex-end;gap:8px;margin-top:6px}
 /* 2.0.5: cuatro pestañas en el buscador: en pantallas angostas solo el texto */
 @media (max-width: 460px){.toggle.buscar-tabs button .ic{display:none}.toggle.buscar-tabs button{font-size:13px;padding:0 4px}}

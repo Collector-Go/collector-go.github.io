@@ -1,0 +1,6607 @@
+/* =====================================================================
+   Collector Go · app.js · v1.8
+   Estructura (para parches rápidos):
+     1. Utilidades            6. Pantallas (muro, colección, perfil)
+     2. Capa de datos (api)   7. Hojas (ficha, registrar, editar, grupos…)
+     3. Juego (logros)        8. Acciones de botones (ACCIONES)
+     4. Hojas y avisos        9. Inicio
+     5. Mapa
+   Cada botón tiene data-act="nombre" y su lógica vive en ACCIONES.nombre
+   ===================================================================== */
+(function () {
+'use strict';
+const C = window.CONFIG;
+
+/* ---------------------------------------------------------------------
+   1. UTILIDADES
+   --------------------------------------------------------------------- */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const esEmoji = (n) => typeof n === 'string' && n.startsWith('emoji:') && n.length > 6 && n.length <= 30;
+const esIcono = (n) => typeof n === 'string' && (/^[a-z0-9-]{1,60}$/.test(n) || esEmoji(n));
+const okIcon = (n) => (esIcono(n) ? n : 'star');
+const okColor = (c) => (/^#[0-9a-f]{6}$/i.test(c || '') ? c : C.COLORES.terracota);
+// 2.0.5: íconos dibujados para la app (a color), además de los de la biblioteca
+const ICONOS_PROPIOS = {
+  trompo: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-12 0 64 64"><path d="M20 3V61" stroke="#2E2A26" stroke-width="4" stroke-linecap="round"/><path d="M20 3V61" stroke="#FBF6EC" stroke-width="1.6" stroke-linecap="round"/><rect x="13" y="7" width="14" height="10" rx="3" fill="#E8E46A" stroke="#2E2A26" stroke-width="2.4"/><path d="M4.5 19.5Q4 17.5 6 17.5H34Q36 17.5 35.5 19.5L22 54Q20 57.5 18 54Z" fill="#E9654F" stroke="#2E2A26" stroke-width="2.4" stroke-linejoin="round"/><path d="M22 24.5H31M14 30.5H24M21 36.5H28M15 42.5H21M22 47.5H25" stroke="#2E2A26" stroke-width="2.2" stroke-linecap="round" fill="none"/></svg>'
+};
+const ICONOS_PROPIOS_PALABRAS = { trompo: 'trompo pastor taco tacos taqueria comida carne' };
+// 2.0.6: íconos de trazo dibujados para la app; toman el color del texto, como los de la biblioteca
+const ICONOS_MASCARA = {
+  'cg-silenciar': '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 8.5q9.5-10 19 0q-9.5 10-19 0z"/><circle cx="12" cy="8.5" r="4"/><circle cx="12" cy="8.5" r="1.6" fill="#000" stroke="none"/><path d="M5 22v-.5a4.5 4.5 0 0 1 4.5-4.5h5a4.5 4.5 0 0 1 4.5 4.5v.5"/><path d="M5.5 1.5l13 13"/></svg>'
+};
+function ic(name) {
+  const n = okIcon(name);
+  if (ICONOS_PROPIOS[n]) return `<i class="ic propio" style="--img:url('data:image/svg+xml,${encodeURIComponent(ICONOS_PROPIOS[n])}')" aria-hidden="true"></i>`;
+  if (ICONOS_MASCARA[n]) return `<i class="ic" style="--i:url('data:image/svg+xml,${encodeURIComponent(ICONOS_MASCARA[n])}')" aria-hidden="true"></i>`;
+  if (esEmoji(n)) return `<i class="ic emo" aria-hidden="true">${esc(n.slice(6))}</i>`;
+  return `<i class="ic" style="--i:url('${C.ICONOS_URL}${n}.svg')" aria-hidden="true"></i>`;
+}
+function ib(act, icon, tip, attrs = '', cls = '') {
+  const t = esc(C.AYUDA[tip] || tip || '');
+  return `<button class="ib ${cls}" data-act="${act}" data-tip="${t}" aria-label="${t}" ${attrs}>${ic(icon)}</button>`;
+}
+function avatar(p, cls = '') {
+  return `<span class="avatar ${cls}" style="background:${okColor(p && p.avatar_color)}">${ic(p && p.avatar)}</span>`;
+}
+function catBadge(name, icon, color) {
+  return `<span class="catb" style="background:${okColor(color)}">${ic(icon)}${esc(name)}</span>`;
+}
+// En lo de un grupo, la etiqueta abre el grupo (ahí se puede silenciar si es público y no eres parte)
+function etiquetaDe(c) {
+  const b = catBadge(c.cat_name, c.cat_icon, c.cat_color);
+  if (c.group_id) return `<button class="catb-btn" data-act="grupo" data-id="${c.group_id}" aria-label="${esc(c.cat_name)}">${b.replace('</span>', ` ${ic('users')}</span>`)}</button>`;
+  // Tocar la categoría abre esa colección: la tuya, o la galería pública de la otra persona
+  const duena = c.owner_id || c.user_id;
+  return c.category_id && duena ? `<button class="catb-btn" data-act="galeria_cat" data-id="${duena}" data-cat="${c.category_id}" aria-label="${esc(c.cat_name)}" data-tip="${esc(C.AYUDA.galeria_cat)}">${b}</button>` : b;
+}
+const sinAcentos = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+function primerGrafema(t) {
+  const s = String(t || '').trim();
+  if (!s) return '';
+  if (window.Intl && Intl.Segmenter) { const it = new Intl.Segmenter('es', { granularity: 'grapheme' }).segment(s)[Symbol.iterator]().next(); return it.value ? it.value.segment : ''; }
+  return Array.from(s)[0];
+}
+const rtf = new Intl.RelativeTimeFormat('es', { numeric: 'auto' });
+function hace(ts) {
+  const s = (new Date(ts) - Date.now()) / 1000;
+  const u = [['year', 31536000], ['month', 2592000], ['week', 604800], ['day', 86400], ['hour', 3600], ['minute', 60]];
+  for (const [n, v] of u) if (Math.abs(s) >= v) return rtf.format(Math.round(s / v), n);
+  return 'ahora';
+}
+const fecha = (ts) => new Date(ts).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+function distancia(a, b) {
+  const R = 6371000, r = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+const metros = (m) => (m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`);
+function cajaAlrededor(p, m) {
+  const dLat = m / 111320, dLng = m / (111320 * Math.cos(p.lat * Math.PI / 180));
+  return { s: p.lat - dLat, n: p.lat + dLat, w: p.lng - dLng, e: p.lng + dLng };
+}
+function getPos() {
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error('NO_GPS'));
+    navigator.geolocation.getCurrentPosition(
+      (p) => res({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }),
+      (e) => rej(e), { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+  });
+}
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
+}
+// Una ruta de foto nunca puede salirse del atributo donde se escribe
+const rutaSegura = (t) => String(t || '').replace(/["'<>`\s\\]/g, (c) => encodeURIComponent(c));
+const errTexto = (e) => String((e && (e.message || e.code)) || e || '');
+function mensajeError(e) {
+  const m = errTexto(e);
+  if (m.includes('MAX_CATEGORIAS')) return `Máximo ${limiteCategorias()} categorías`;
+  if (m.includes('MAX_GRUPOS')) return C.GRUPOS_LIMITE_TEXTO.replace('{n}', maxGrupos());
+  if (m.includes('GRUPO_LLENO')) return `El grupo ya tiene ${C.ENCUENTRO_MAX_MIEMBROS} personas`;
+  if (m.includes('ESPERA')) return 'Espera unos segundos para enviar otro aviso';
+  if (m.includes('MAX_PUNTOS')) return 'El grupo ya tiene 50 puntos de encuentro';
+  if (m.includes('MAX_COADMIN')) return 'Máximo 3 coadministradoras';
+  if (m.includes('AUN_ACTIVO')) return 'Aún hay actividad en el grupo';
+  if (m.includes('MAX_MIRA')) return 'Llegaste al máximo de "Mira esto" en este grupo';
+  if (m.includes('PUSH_NO_LISTO')) return C.PUSH_NO_LISTAS;
+  if (m.includes('MAX_ETIQUETAS')) return `Máximo ${C.ETIQUETAS_MAX} personas por hallazgo`;
+  if (m.includes('messages_body_check')) return `Máximo ${C.MENSAJE_MAX} caracteres`;
+  if (m.includes('"messages"')) return C.CHAT_BLOQUEADO;
+  if (m.includes('NOMBRE_REPETIDO')) return 'Ese nombre ya existe aquí';
+  if (m.includes('MAPA_OBLIGATORIO')) return 'En los grupos de encuentro todo va en el mapa';
+  if (m.includes('finds_mapa_check')) return C.SIN_MAPA_ELEGIR_LUGAR;
+  if (m.includes('TIENE_COLABORACIONES')) return C.TIENE_COLABORACIONES;
+  if (m.includes('MAX_COMENTARIOS')) return `Máximo ${C.COMENTARIOS_POR_PERSONA} comentarios por hallazgo`;
+  if (m.includes('comments_body_check')) return `Máximo ${C.COMENTARIO_MAX} caracteres`;
+  if (m.includes('INVITACION_INVALIDA')) return 'Esa invitación ya no es válida';
+  if (m.includes('YA_ES_MIEMBRO')) return 'Ya es parte del grupo';
+  if (m.includes('SIGUE_PRIMERO')) return C.AMISTAD_SIGUE_PRIMERO;
+  if (m.includes('SOLICITUD_INVALIDA')) return 'Esa solicitud ya no está disponible';
+  if (m.includes('VETADA')) return C.INVITAR_VETADA;
+  if (m.includes('DEMASIADAS_BUSQUEDAS')) return C.BUSCAR_ESPERA;
+  // La app es más nueva que la base de datos (falta correr la migración o refrescar la lista de funciones)
+  if ((e && e.code === 'PGRST202') || m.includes('Could not find the function')) return C.FALTA_MIGRACION;
+  if ((e && e.code === '23503') || m.includes('foreign key')) return 'Primero borra o mueve sus hallazgos';
+  if (e && e.code === '23505') return 'Ya estaba registrado';
+  if (m.includes('"mutes"')) return 'No se puede silenciar a quien comparte un grupo contigo';
+  if (m.includes('requests_body_check')) return `Máximo ${C.BUZON_MAX} caracteres`;
+  if (m.includes('row-level security') || m.includes('NO_PERMITIDO')) return 'No tienes permiso para eso';
+  if (esErrorRed(e)) return 'Sin conexión. Intenta de nuevo';
+  return `Algo falló (código ${codigoError(e)}). Intenta de nuevo o escríbenos en el buzón`;
+}
+// ¿Falló por falta de red? (sin señal o red saturada)
+function esErrorRed(e) {
+  const m = errTexto(e);
+  return /Failed to fetch|NetworkError|Load failed|network connection|fetch failed|ERR_INTERNET|ERR_NETWORK/i.test(m) || (e && e.name === 'TypeError' && /fetch/i.test(m)) || !navigator.onLine;
+}
+// Código corto para identificar un error: el de la base de datos o uno derivado del mensaje
+function codigoError(e) {
+  if (e && e.code && /^[0-9A-Z]{3,6}$/.test(String(e.code))) return String(e.code);
+  let h = 0; const t = errTexto(e); for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  return 'E' + (h % 46656).toString(36).toUpperCase().padStart(3, '0');
+}
+
+/* ---------------------------------------------------------------------
+   2. CAPA DE DATOS (todo lo que habla con Supabase está aquí)
+   --------------------------------------------------------------------- */
+function supabaseApi() {
+  const sb = window.supabase.createClient(C.SUPABASE_URL, C.SUPABASE_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' }
+  });
+  const ok = ({ data, error }) => { if (error) throw error; return data; };
+  const cards = () => sb.from('find_cards').select('*');
+  // Fotos privadas: viven en el almacén cerrado "privadas" y se ven con enlaces temporales.
+  // En la base de datos su ruta empieza con "priv:".
+  const URLS = new Map();
+  const almacen = (path) => (String(path).startsWith('priv:') ? ['privadas', path.slice(5)] : ['fotos', path]);
+  async function firmar(filas) {
+    const lista = Array.isArray(filas) ? filas : (filas ? [filas] : []);
+    const pend = new Set();
+    lista.forEach((f) => ['photo', 'thumb', 'last_thumb', 'screenshot'].forEach((k) => {
+      const v = f && f[k]; if (v && String(v).startsWith('priv:') && !URLS.has(v)) pend.add(v.slice(5)); }));
+    if (pend.size) {
+      try {
+        const r = ok(await sb.storage.from('privadas').createSignedUrls([...pend], 3600));
+        (r || []).forEach((x) => { if (x && x.signedUrl) URLS.set('priv:' + x.path, x.signedUrl); });
+      } catch (e) { /* sin enlace: la foto no se muestra */ }
+    }
+    return filas;
+  }
+  // o: { uid, cat, uids, group, comunidad }
+  const filtrar = (q, o) => {
+    if (o.uid) q = q.eq('user_id', o.uid);
+    if (o.cat) q = q.eq('category_id', o.cat);
+    if (o.uids && o.cats && o.cats.length) q = q.or(`user_id.in.(${(o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']).join(',')}),category_id.in.(${o.cats.join(',')})`);
+    else if (o.uids) q = q.in('user_id', o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']);
+    if (o.group) q = q.eq('group_id', o.group);
+    if (o.comunidad) q = q.or('group_id.is.null,group_public.eq.true');
+    return q;
+  };
+  return {
+    async session() { const { data } = await sb.auth.getSession(); return (data.session && data.session.user) || null; },
+    onAuth(cb) { sb.auth.onAuthStateChange((ev, s) => cb(ev, (s && s.user) || null)); },
+    login() { return sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: location.origin + location.pathname } }); },
+    logout() { return sb.auth.signOut(); },
+    getProfile: (id) => sb.from('profiles').select('*').eq('id', id).maybeSingle().then(ok),
+    createProfile: (p) => sb.from('profiles').insert(p).select().single().then(ok),
+    updateProfile: (id, p) => sb.from('profiles').update(p).eq('id', id).select().single().then(ok),
+    listCats: (uid) => sb.from('categories').select('*').eq('user_id', uid).order('created_at').then(ok),
+    addCat: (c) => sb.from('categories').insert(c).select().single().then(ok),
+    updateCat: (id, c) => sb.from('categories').update(c).eq('id', id).select().single().then(ok),
+    delCat: (id) => sb.from('categories').delete().eq('id', id).then(ok),
+    cardsInBox(b, o = {}) {
+      const q = cards().gte('lat', b.s).lte('lat', b.n).gte('lng', b.w).lte('lng', b.e);
+      let q2 = filtrar(q, o); if (o.sinSilenciados) q2 = q2.eq('muted', false);
+      return q2.order('created_at', { ascending: false }).limit(o.limit || 400).then(ok).then(firmar);
+    },
+    // Muro: hallazgos y reencuentros con foto, cada uno como novedad
+    feed(before, o = {}) {
+      let q = sb.from('feed_items').select('*').eq('is_private', false).eq('muted', false);
+      if (o.uids && o.cats && o.cats.length) q = q.or(`actor_id.in.(${(o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']).join(',')}),category_id.in.(${o.cats.join(',')})`);
+      else if (o.uids) q = q.in('actor_id', o.uids.length ? o.uids : ['00000000-0000-0000-0000-000000000000']);
+      if (o.cat) q = q.eq('category_id', o.cat);
+      if (o.group) q = q.eq('group_id', o.group);
+      if (o.comunidad) q = q.or('group_id.is.null,group_public.eq.true');
+      q = q.order('at', { ascending: false }).limit(20);
+      if (before) q = q.lt('at', before);
+      return q.then(ok).then(firmar);
+    },
+    userCards: (uid) => cards().eq('user_id', uid).order('created_at', { ascending: false }).limit(1000).then(ok).then(firmar),
+    groupCards: (gid) => cards().eq('group_id', gid).order('created_at', { ascending: false }).limit(1000).then(ok).then(firmar),
+    card: (id) => cards().eq('id', id).maybeSingle().then(ok).then(firmar),
+    cardsByIds: (ids) => (ids.length ? cards().in('id', ids).then(ok).then(firmar) : Promise.resolve([])),
+    history: (findId) => sb.from('sighting_cards').select('*').eq('find_id', findId).order('created_at', { ascending: false }).then(ok).then(firmar),
+    vitrina: (uid) => sb.rpc('vitrina', { persona: uid }).then(ok),
+    comparteGrupo: (uid) => sb.rpc('comparte_grupo_conmigo', { otra: uid }).then(ok),
+    muteList: () => sb.from('mute_cards').select('*').order('created_at', { ascending: false }).then(ok),
+    mute: (m) => sb.from('mutes').insert(m).then(ok),
+    unmute: (id) => sb.from('mutes').delete().eq('id', id).then(ok),
+    sendRequest: (r) => sb.from('requests').insert(r).then(ok),
+    myRequests: (uid) => sb.from('requests').select('*').eq('user_id', uid).order('created_at', { ascending: false }).then(ok).then(firmar),
+    allRequests: () => sb.from('request_cards').select('*').order('created_at', { ascending: false }).limit(200).then(ok).then(firmar),
+    updateRequest: (id, r) => sb.from('requests').update(r).eq('id', id).then(ok),
+    delRequest: (id) => sb.from('requests').delete().eq('id', id).then(ok),
+    avisos: () => sb.rpc('mis_avisos', { lim: 30 }).then(ok).then(firmar),
+    avisosBien: (desde) => sb.rpc('avisos_bien', { desde }).then(ok),
+    avisosVistos: () => sb.rpc('avisos_vistos').then(ok),
+    usoPlan: () => sb.rpc('uso_plan').then(ok),
+    colorPremioGrupo: (gid, color) => sb.rpc('color_premio_grupo', { grupo: gid, color }).then(ok),
+    conversaciones: () => sb.rpc('mis_conversaciones').then(ok),
+    async hilo(uid) {
+      const { data: { user } } = await sb.auth.getUser();
+      const yo = user && user.id;
+      const r = ok(await sb.from('messages').select('*')
+        .or(`and(sender.eq.${yo},recipient.eq.${uid}),and(sender.eq.${uid},recipient.eq.${yo})`)
+        .order('created_at', { ascending: false }).limit(100));
+      return (r || []).reverse();
+    },
+    enviarMensaje: (uid, body, findId) => sb.from('messages').insert(Object.assign({ recipient: uid, body: body || '' }, findId ? { find_id: findId } : {})).then(ok),
+    estadoAmistad: (uid) => sb.rpc('estado_amistad', { persona: uid }).then(ok),
+    pedirAmistad: (uid, mensaje) => sb.rpc('pedir_amistad', { persona: uid, p_mensaje: mensaje || null }).then(ok),
+    responderAmistad: (uid, acepta) => sb.rpc('responder_amistad', { persona: uid, acepta }).then(ok),
+    amigasParaFicha: (fid) => sb.rpc('amigas_para_ficha', { fid }).then(ok),
+    marcarLeidos: (uid) => sb.rpc('marcar_leidos', { con: uid }).then(ok),
+    puedoEscribir: (uid) => sb.rpc('puedo_escribir', { destino: uid }).then(ok),
+    puedoEtiquetar: () => sb.rpc('puedo_etiquetar').then(ok),
+    async misEtiquetas(findId) {
+      const { data: { user } } = await sb.auth.getUser();
+      return ok(await sb.from('tags').select('user_id').eq('find_id', findId).eq('tagger', user && user.id)).map((x) => x.user_id);
+    },
+    etiquetar: (findId, ids) => (ids.length ? sb.from('tags').insert(ids.map((u) => ({ find_id: findId, user_id: u }))).then(ok) : Promise.resolve()),
+    async desetiquetar(findId, ids) {
+      if (!ids.length) return;
+      const { data: { user } } = await sb.auth.getUser();
+      ok(await sb.from('tags').delete().eq('find_id', findId).eq('tagger', user && user.id).in('user_id', ids));
+    },
+    marcarVisto: (findId, p) => sb.rpc('marcar_visto', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
+    marcarAusencia: (findId, p) => sb.rpc('marcar_ausencia', { hallazgo: findId, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
+    historiaAusencias: (findId) => sb.rpc('historia_ausencias', { fid: findId }).then(ok),
+    puedoColaborar: (findId) => sb.rpc('puedo_colaborar', { hallazgo: findId }).then(ok),
+    buscarPersonas: (q) => sb.rpc('buscar_personas', { q }).then(ok),
+    buscarColecciones: (q) => sb.rpc('buscar_colecciones', { q }).then(ok),
+    buscarGrupos: (q) => sb.rpc('buscar_grupos', { q }).then(ok),
+    solicitarGrupo: (gid) => sb.rpc('solicitar_grupo', { gid }).then(ok),
+    miSolicitud: (gid) => sb.rpc('mi_solicitud', { gid }).then(ok),
+    responderSolicitud: (sid, acepta) => sb.rpc('responder_solicitud', { sid, acepta }).then(ok),
+    amigasParaInvitar: (gid) => sb.rpc('amigas_para_invitar', { gid }).then(ok),
+    invitarAGrupo: (gid, persona) => sb.rpc('invitar_a_grupo', { gid, persona }).then(ok),
+    responderInvitacion: (gid, acepta) => sb.rpc('responder_invitacion', { gid, acepta }).then(ok),
+    vetadosDeGrupo: (gid) => sb.rpc('vetados_de_grupo', { gid }).then(ok),
+    readmitir: (gid, persona) => sb.rpc('readmitir', { gid, persona }).then(ok),
+    colaborar: (findId, tipo, p, photo, thumb, nota) => sb.rpc('colaborar', { hallazgo: findId, p_tipo: tipo, lat: p.lat, lng: p.lng,
+      precision_m: p.acc == null ? 999 : p.acc, p_photo: photo, p_thumb: thumb, p_nota: nota || null }).then(ok),
+    delSighting: (id) => sb.from('sightings').delete().eq('id', id).select('id').then(ok),
+    reportarColaboracion: (sid, motivo) => sb.from('reportes_colaboracion').insert({ sighting_id: sid, motivo }).then(ok),
+    reportesColaboracion: () => sb.from('reporte_colaboracion_cards').select('*').order('created_at', { ascending: false }).then(ok).then(firmar),
+    descartarReporteColaboracion: (id) => sb.from('reportes_colaboracion').delete().eq('id', id).then(ok),
+    borrarHallazgo: (findId) => sb.rpc('borrar_hallazgo', { fid: findId }).then(ok),
+    sightingsDe: (ids) => (ids.length ? sb.from('sighting_cards').select('*').in('find_id', ids).order('created_at').then(ok).then(firmar) : Promise.resolve([])),
+    anuncios: () => sb.from('anuncios').select('*').order('created_at', { ascending: false }).then(ok),
+    publicarAnuncio: (texto, destino, dias) => sb.rpc('publicar_anuncio', { p_texto: texto, p_destino: destino || null, p_dias: dias || null }).then(ok),
+    duracionAnuncio: (id, dias) => sb.rpc('duracion_anuncio', { p_id: id, p_dias: dias || null }).then(ok),
+    retirarAnuncio: (id) => sb.rpc('retirar_anuncio', { p_id: id }).then(ok),
+    comments: (findId) => sb.from('comment_cards').select('*').eq('find_id', findId).order('created_at').then(ok),
+    addComment: (findId, body) => sb.from('comments').insert({ find_id: findId, body }).then(ok),
+    delComment: (id) => sb.from('comments').delete().eq('id', id).then(ok),
+    findByName: (nombre, categoria, grupo) => sb.rpc('find_by_name', { nombre, categoria: categoria || null, grupo: grupo || null }).then(ok),
+    addFind: (f) => sb.from('finds').insert(f).select('id').single().then(ok).then((r) => r.id),
+    updateFind: (id, f) => sb.from('finds').update(f).eq('id', id).then(ok),
+    delFind: (id) => sb.from('finds').delete().eq('id', id).then(ok),
+    merge: (origen, destino) => sb.rpc('merge_finds', { origen, destino }).then(ok),
+    addSighting: (s) => sb.from('sightings').insert(s).then(ok),
+    updateSighting: (id, s) => sb.from('sightings').update(s).eq('id', id).then(ok),
+    react(findId, kind, on, uid) {
+      return on ? sb.from('reactions').insert({ find_id: findId, kind }).then(ok)
+                : sb.from('reactions').delete().match({ find_id: findId, kind, user_id: uid }).then(ok);
+    },
+    report: (findId) => sb.from('reports').insert({ find_id: findId }).then(ok),
+    stats: (uid) => sb.rpc('profile_stats', { p_uid: uid, tz: C.ZONA_HORARIA }).then(ok),
+    leaderboard: (metric, grupo) => sb.rpc('leaderboard', { metric, lim: 100, grupo: grupo || null }).then(ok),
+    topFotos: (grupo) => sb.rpc('top_fotos', { grupo: grupo || null }).then(ok),
+    topActual: () => sb.rpc('top_actual').then(ok),
+    topSiempre: () => sb.rpc('top_siempre').then(ok),
+    primerosComentarios: (ids) => sb.rpc('primeros_comentarios', { ids }).then(ok),
+    estadoVisitas: (findId) => sb.rpc('estado_visitas', { hallazgo: findId }).then(ok),
+    eliminarGrupo: (gid) => sb.rpc('eliminar_grupo', { gid }).then(ok),
+    // 1.9.8: premios, guardarropa y primeros pasos
+    revisarPremios: () => sb.rpc('revisar_premios').then(ok),
+    premiosVistos: (claves) => sb.rpc('premios_vistos', { claves }).then(ok),
+    misPremios: () => sb.from('premios_ganados').select('premio, ambito, ganado_at').order('ganado_at').then(ok),
+    misEstilos: () => sb.from('pin_estilo').select('ambito, cabeza, cuerpo, espalda, aro').then(ok),
+    guardarEstilo: (amb, e) => sb.rpc('guardar_estilo', { p_amb: amb || null, p_cabeza: e.cabeza || null, p_cuerpo: e.cuerpo || null, p_espalda: e.espalda || null, p_aro: e.aro == null ? null : !!e.aro }).then(ok),
+    misRetos: () => sb.rpc('mis_retos').then(ok),
+    coleccionesQueSigo: () => sb.rpc('colecciones_que_sigo').then(ok),
+    seguirColeccion: (cat, on) => (on ? sb.from('sigue_coleccion').insert({ category_id: cat }).then(ok)
+      : sb.from('sigue_coleccion').delete().eq('category_id', cat).then(ok)),
+    calificar: (findId, estrellas, p) => sb.rpc('calificar', { hallazgo: findId, estrellas, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? 999 : p.acc }).then(ok),
+    calificacion: (findId) => sb.rpc('calificacion', { hallazgo: findId }).then(ok),
+    miLimiteGrupos: () => sb.rpc('mi_limite_grupos').then(ok),
+    buscarHallazgos: (q, lat, lng) => sb.rpc('buscar_hallazgos', { q, lat: lat == null ? null : lat, lng: lng == null ? null : lng }).then(ok),
+    proponerLugar: (hallazgo, lat, lng, precision) => sb.rpc('proponer_lugar', { hallazgo, lat, lng, precision_m: precision }).then(ok),
+    propuesta: (id) => sb.from('propuestas_lugar').select('id,find_id,lat,lng,distancia,estado').eq('id', id).maybeSingle().then(ok),
+    responderPropuesta: (propuesta, mover, colonia) => sb.rpc('responder_propuesta', { propuesta, mover, colonia_nueva: colonia || null }).then(ok),
+    pinesPorRevisar: () => sb.rpc('pines_por_revisar').then(ok),
+    // 2.0.6: favoritos (privados) e instalación
+    misFavIds: () => sb.from('favoritos').select('find_id').then(ok).then((r) => (r || []).map((x) => x.find_id)),
+    favorito: (id, on) => (on ? sb.from('favoritos').upsert({ find_id: id }, { onConflict: 'user_id,find_id', ignoreDuplicates: true }).then(ok)
+      : sb.from('favoritos').delete().eq('find_id', id).then(ok)),
+    misFavoritos: () => sb.rpc('mis_favoritos').then(ok),
+    marcarInstalada: () => sb.rpc('marcar_instalada').then(ok),
+    following: (uid) => sb.from('follows').select('followee').eq('follower', uid).then(ok).then((r) => r.map((x) => x.followee)),
+    follow(uid, on, me) {
+      return on ? sb.from('follows').insert({ followee: uid }).then(ok)
+                : sb.from('follows').delete().match({ follower: me, followee: uid }).then(ok);
+    },
+    myGroups: (uid) => sb.from('group_members').select('group_id, groups(*)').eq('user_id', uid).then(ok)
+      .then((r) => r.map((x) => x.groups).filter(Boolean).sort((a, b) => a.created_at.localeCompare(b.created_at))),
+    getGroup: (gid) => sb.from('groups').select('*').eq('id', gid).maybeSingle().then(ok),
+    groupMembers: (gid) => sb.from('group_members').select('user_id, joined_at, coadmin, profiles(name, avatar, avatar_color)').eq('group_id', gid).then(ok)
+      .then((r) => r.map((m) => Object.assign({ user_id: m.user_id, coadmin: !!m.coadmin }, m.profiles || {}))),
+    createGroup: (g) => sb.from('groups').insert(g).select().single().then(ok),
+    updateGroup: (gid, g) => sb.from('groups').update(g).eq('id', gid).select().single().then(ok),
+    leaveGroup: (gid, uid) => sb.from('group_members').delete().match({ group_id: gid, user_id: uid }).then(ok),
+    invitePreview: (code) => sb.rpc('invite_preview', { code }).then(ok).then((r) => (r && r[0]) || null),
+    joinGroup: (code) => sb.rpc('join_group', { code }).then(ok),
+    reports: () => sb.from('reports').select('find_id, created_at').then(ok),
+    dismiss: (findId) => sb.from('reports').delete().eq('find_id', findId).then(ok),
+    setBlocked: (uid, b) => sb.from('profiles').update({ blocked: b }).eq('id', uid).then(ok),
+    blockedList: () => sb.from('profiles').select('*').eq('blocked', true).then(ok),
+    upload(path, blob) {
+      const [b, n] = almacen(path);
+      return sb.storage.from(b).upload(n, blob, { contentType: blob.type, cacheControl: '31536000', upsert: false }).then(ok);
+    },
+    async removeFiles(paths) {
+      const por = { fotos: [], privadas: [] };
+      paths.filter(Boolean).forEach((x) => { const [b, n] = almacen(x); por[b].push(n); });
+      for (const b of Object.keys(por)) if (por[b].length) ok(await sb.storage.from(b).remove(por[b]));
+    },
+    // Cambia una foto de almacén (al pasar un hallazgo de privado a público o al revés)
+    async moverFoto(path, aPrivado) {
+      if (!path || String(path).startsWith('priv:') === aPrivado) return path;
+      const [b, n] = almacen(path);
+      const blob = ok(await sb.storage.from(b).download(n));
+      const nuevo = aPrivado ? 'priv:' + n : n;
+      const [b2, n2] = almacen(nuevo);
+      ok(await sb.storage.from(b2).upload(n2, blob, { contentType: blob.type, upsert: true }));
+      await sb.storage.from(b).remove([n]).catch(() => null);
+      URLS.delete(path);
+      return nuevo;
+    },
+    async deleteAccount(uid) {
+      // Todas las fotos, también las de las subcarpetas (grupos de encuentro: <persona>/enc/<grupo>/)
+      const archivos = async (b, carpeta, nivel) => {
+        const l = ok(await sb.storage.from(b).list(carpeta, { limit: 1000 })) || [];
+        let out = [];
+        for (const f of l) {
+          if (f.id) out.push(`${carpeta}/${f.name}`);
+          else if (nivel < 3) out = out.concat(await archivos(b, `${carpeta}/${f.name}`, nivel + 1));
+        }
+        return out;
+      };
+      for (const b of ['fotos', 'privadas']) {
+        for (let i = 0; i < 50; i++) {
+          const files = await archivos(b, uid, 0);
+          if (!files.length) break;
+          for (let j = 0; j < files.length; j += 100) ok(await sb.storage.from(b).remove(files.slice(j, j + 100)));
+        }
+      }
+      ok(await sb.rpc('delete_my_account'));
+      await sb.auth.signOut().catch(() => null);
+    },
+    photoUrl: (path) => (!path ? '' : String(path).startsWith('priv:') ? rutaSegura(URLS.get(path) || '')
+      : `${C.SUPABASE_URL}/storage/v1/object/public/fotos/${rutaSegura(path)}`),
+    async colonia(lat, lng) {
+      try {
+        const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 4000);
+        const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=16&accept-language=es&lat=${lat}&lon=${lng}`, { signal: ctl.signal });
+        clearTimeout(t);
+        if (!r.ok) return null;
+        const a = (await r.json()).address || {};
+        const c = a.neighbourhood || a.suburb || a.quarter || a.city_district || a.village || a.town || a.hamlet;
+        return c ? String(c).slice(0, 80) : null;
+      } catch (e) { return null; }
+    },
+    // Grupos de encuentro
+    async estadoEncuentro(gid) {
+      const e = ok(await sb.rpc('estado_encuentro', { gid }));
+      if (e) { await firmar(e.puntos || []); await firmar(e.miras || []); }
+      return e;
+    },
+    ajustesEncuentro: (gid, o) => sb.rpc('ajustes_encuentro', { gid, p_juego: !!o.juego, p_tema: o.tema || null, p_acuerdo: o.acuerdo || null }).then(ok),
+    nombrarCoadmin: (gid, uid, si) => sb.rpc('nombrar_coadmin', { gid, persona: uid, si }).then(ok),
+    sacarMiembro: (gid, uid) => sb.rpc('sacar_miembro', { gid, persona: uid }).then(ok),
+    compartirUbicacion: (gid, p, minutos) => sb.rpc('compartir_ubicacion', { gid, lat: p.lat, lng: p.lng, precision_m: p.acc == null ? null : p.acc, minutos: minutos || null }).then(ok),
+    dejarDeCompartir: (gid) => sb.rpc('dejar_de_compartir', { gid }).then(ok),
+    borrarLoMio: (gid) => sb.rpc('borrar_lo_mio', { gid }).then(ok),
+    votarBorrado: (gid, si) => sb.rpc('votar_borrado', { gid, si }).then(ok),
+    eliminarPorInactividad: (gid) => sb.rpc('eliminar_por_inactividad', { gid }).then(ok),
+    puntoPrincipal: (pid) => sb.rpc('punto_principal', { pid }).then(ok),
+    addPunto: (p) => sb.from('meeting_points').insert(p).then(ok),
+    delPunto: (id) => sb.from('meeting_points').delete().eq('id', id).then(ok),
+    addEstado: (x) => sb.from('group_status').insert(x).then(ok),
+    addMira: (m) => sb.from('group_marks').insert(m).then(ok),
+    delMira: (id) => sb.from('group_marks').delete().eq('id', id).then(ok),
+    fotosPorBorrar: () => sb.from('fotos_por_borrar').select('id, path').limit(200).then(ok),
+    quitarFotosPorBorrar: (ids) => sb.from('fotos_por_borrar').delete().in('id', ids).then(ok),
+    // Notificaciones
+    pushPrefs: () => sb.from('push_prefs').select('*').maybeSingle().then(ok),
+    guardarPushPrefs: (uid, p) => sb.from('push_prefs').upsert(Object.assign({ user_id: uid }, p)).then(ok),
+    registrarPush: (x) => sb.rpc('registrar_push', { p_endpoint: x.endpoint, p_p256dh: x.p256dh, p_auth: x.auth }).then(ok),
+    quitarPush: (endpoint) => sb.rpc('quitar_push', { p_endpoint: endpoint }).then(ok),
+    appActiva: (si) => sb.rpc('app_activa', { si }).then(ok),
+    async llavePush() {
+      const r = await fetch(C.PUSH_FUNCION, { method: 'GET' });
+      if (!r.ok) throw new Error('PUSH_NO_LISTO');
+      const j = await r.json(); if (!j || !j.publica) throw new Error('PUSH_NO_LISTO');
+      return j.publica;
+    },
+    // Respaldo: además de la base de datos, la app pide a la función que envíe lo pendiente
+    dispararPush: () => fetch(C.PUSH_FUNCION, { method: 'POST' }).then(() => null).catch(() => null),
+    async iconList() {
+      const r = await fetch(C.ICONOS_LISTA_URL);
+      if (!r.ok) throw new Error('ICONOS');
+      const j = await r.json();
+      return Object.values(j).filter((x) => x && x.styles && x.styles.outline)
+        .map((x) => ({ n: x.name, t: (x.name + ' ' + (x.tags || []).join(' ')).toLowerCase() }));
+    }
+  };
+}
+let api = null;
+
+/* Estado de la app */
+const S = {
+  user: null, me: null, cats: [], groups: [], following: new Set(), tab: 'map', stats: null,
+  filtro: { modo: 'todos', id: null }, muro: { modo: 'todos', id: null },
+  cache: new Map(), feed: [], feedFin: false, coleccionCat: null, grupo: null, colAbierta: false,
+  map: null, capa: null, yo: null, mini: null, arrancando: false,
+  mutes: [], avisos: [], avisosVistos: new Set(), avisosListo: false,
+  colaPremios: [], top: null, sigoCols: [], retos: null
+};
+// Un hallazgo heredado llega sin colección: se ve con "?" hasta que su nueva dueña elija una
+function sinColeccion(c) {
+  if (c && !c.category_id && !c.group_id && !c.cat_icon) Object.assign(c, { cat_name: '?', cat_icon: 'question-mark', cat_color: C.COLOR_SIN_COLECCION });
+  return c;
+}
+const guarda = (arr) => { (arr || []).forEach((c) => S.cache.set(c.id, sinColeccion(c))); return arr || []; };
+const foto = (c, mini) => api.photoUrl(mini ? (c.thumb || c.photo) : (c.photo || c.thumb));
+const miGrupo = (gid) => S.groups.find((g) => g.id === gid);
+const esEncuentro = (g) => !!(g && g.tipo === 'encuentro');
+const gruposColeccion = () => S.groups.filter((g) => !esEncuentro(g));
+const puedoReencontrar = (c) => c.user_id === S.user.id || (c.group_id && !!miGrupo(c.group_id));
+// Opciones de consulta según el filtro elegido (mapa y muro)
+function opcionesFiltro(f) {
+  if (f.modo === 'mios') return { uid: S.user.id };
+  if (f.modo === 'cat') return { uid: S.user.id, cat: f.id };
+  if (f.modo === 'siguiendo') return { uids: [...S.following], cats: (S.sigoCols || []).map((c) => c.category_id), comunidad: true, sinSilenciados: true };
+  if (f.modo === 'sigcol') return { cat: f.id, comunidad: true, sinSilenciados: true };
+  if (f.modo === 'grupo') return { group: f.id };
+  return { comunidad: true, sinSilenciados: true };
+}
+
+/* ---------------------------------------------------------------------
+   3. JUEGO: logros a partir de las estadísticas
+   --------------------------------------------------------------------- */
+function logros(st) {
+  const L = [];
+  if (!st) return L;
+  (st.categorias || []).forEach((c) => C.METAS_CATEGORIA.forEach((m) => L.push({
+    k: `cat:${c.id}:${m}`, on: c.total >= m, m, v: c.total, icon: okIcon(c.icon), color: okColor(c.color), titulo: c.name, tipo: 'cat', cat: c.id })));
+  (st.premios_grupos || []).forEach((g) => C.METAS_CATEGORIA.forEach((m) => L.push({
+    k: `grupo:${g.id}:${m}`, on: g.total >= m, m, v: g.total, icon: okIcon(g.icon), color: okColor(g.color), titulo: g.name, tipo: 'grupo', grupo: g.id })));
+  const nCol = (st.colonias || []).length;
+  C.METAS_COLONIAS.forEach((m) => L.push({ k: 'col:' + m, on: nCol >= m, m, v: nCol, icon: 'map-pin', color: C.COLORES.oliva, titulo: C.TITULOS_MEDALLAS.col, tipo: 'col' }));
+  C.METAS_RACHA_SEMANAS.forEach((m) => L.push({ k: 'racha:' + m, on: (st.racha_mejor || 0) >= m, m, v: st.racha_mejor || 0, icon: 'flame', color: C.COLORES.terracota, titulo: C.TITULOS_MEDALLAS.racha, tipo: 'racha' }));
+  C.METAS_REENCUENTROS.forEach((m) => L.push({ k: 'reen:' + m, on: (st.reencuentros || 0) >= m, m, v: st.reencuentros || 0, icon: 'repeat', color: '#3F6E73', titulo: C.TITULOS_MEDALLAS.reen, tipo: 'reen' }));
+  return L;
+}
+function novedades(antes, despues) {
+  const ya = new Set(logros(antes).filter((l) => l.on).map((l) => l.k));
+  const nuevos = logros(despues).filter((l) => l.on && !ya.has(l.k));
+  const limA = (antes && antes.limite_categorias) || C.MAX_CATEGORIAS, limD = (despues && despues.limite_categorias) || limA;
+  const colecciones = limD > limA ? limD : null;
+  const colAntes = new Set(((antes && antes.colonias) || []).map((c) => c.colonia));
+  const colonias = ((despues && despues.colonias) || []).map((c) => c.colonia).filter((c) => !colAntes.has(c));
+  const records = [];
+  if (antes && despues && despues.mejor_dia && (!antes.mejor_dia || despues.mejor_dia.n > antes.mejor_dia.n) && despues.mejor_dia.n > 1)
+    records.push({ icon: 'calendar', texto: `Récord: ${despues.mejor_dia.n} en un día` });
+  return { nuevos, colonias, records, colecciones };
+}
+// Premio que da una medalla (si lo da): el regalo se ve en la medalla; qué es, solo al ganarlo
+const premioDe = (l) => { const id = (C.PREMIO_META[l.tipo === 'grupo' ? 'cat' : l.tipo] || {})[l.m]; return id ? Object.assign({ id }, C.PREMIOS_PIN[id]) : null; };
+function textoMedalla(l) {
+  const unidad = l.tipo === 'racha' ? ' semanas' : '';
+  const pr = premioDe(l);
+  if (pr) return l.on ? `${l.titulo}: meta de ${l.m}${unidad} lograda · Premio: ${pr.nombre}` : `${l.titulo}: ${l.v} de ${l.m}${unidad} · Hay un premio`;
+  return l.on ? `${l.titulo}: meta de ${l.m}${unidad} lograda` : `${l.titulo}: ${l.v} de ${l.m}${unidad}`;
+}
+function medalla(l) {
+  return `<button class="medal ${l.on ? '' : 'off'}" data-act="medalla" data-info="${esc(textoMedalla(l))}" data-icon="${esc(l.icon)}" aria-label="${esc(textoMedalla(l))}">
+    <span class="m" style="background:${l.color}">${ic(l.icon)}${premioDe(l) ? `<span class="regalo">${ic('gift')}</span>` : ''}</span><span>${l.m}</span></button>`;
+}
+
+/* ---------------------------------------------------------------------
+   4. HOJAS, CONFIRMACIONES Y AVISOS
+   --------------------------------------------------------------------- */
+const pila = [];
+function abrirHoja(render, after, tipo, fija) { pila.push({ render, after, tipo, fija }); dibujarHoja(); }
+function dibujarHoja() {
+  if (S.mini) { S.mini.remove(); S.mini = null; }
+  const root = $('#sheet-root');
+  if (!pila.length) { soltarFoco(root); root.innerHTML = ''; return; }
+  const top = pila[pila.length - 1];
+  const antes = $('.sheet', root), arriba = antes && dibujarHoja.ultima === top ? antes.scrollTop : 0;
+  // La animación de entrada solo al abrir una hoja nueva; al volver a dibujar la misma, nada se mueve (evita el parpadeo)
+  const nueva = dibujarHoja.ultima !== top || !antes;
+  soltarFoco(root);
+  root.innerHTML = `<div class="overlay" data-act="fondo"><div class="sheet${nueva ? ' entra' : ''}${top.tipo === 'registro' ? ' alta' : ''}" role="dialog" aria-modal="true">${top.render()}</div></div>`;
+  dibujarHoja.ultima = top;
+  liberarTexto();
+  const hoja = $('.sheet', root);
+  crecerTextos(hoja); mostrarElegido(hoja);
+  if (arriba) hoja.scrollTop = arriba;
+  if (top.after) top.after(hoja);
+}
+// En el iPhone (app instalada), si un campo con el teclado abierto se borra de la pantalla al redibujar,
+// el teclado puede quedarse trabado y ya no abrir en ningún campo. Antes de redibujar se suelta el campo.
+function soltarFoco(raiz) {
+  const a = document.activeElement;
+  if (a && a !== document.body && raiz && raiz.contains(a) && typeof a.blur === 'function') { try { a.blur(); } catch (e) { /* nada */ } }
+}
+// Ningún bloqueo de selección (del mapa u otro) debe llegar a los campos de texto
+window.addEventListener('selectstart', (ev) => {
+  const t = ev.target && ev.target.nodeType === 1 ? ev.target : ev.target && ev.target.parentElement;
+  if (t && t.closest && t.closest('input, textarea, [contenteditable]')) ev.stopImmediatePropagation();
+}, true);
+// El mapa bloquea la selección de texto mientras se arrastra y en iPhone a veces no la libera,
+// lo que impide escribir en los campos. Se libera siempre que aparece una hoja.
+function liberarTexto() {
+  try { if (window.L && L.DomUtil) { L.DomUtil.enableTextSelection(); L.DomUtil.enableImageDrag(); } } catch (e) { /* nada */ }
+  const h = document.documentElement.style; if (h.userSelect === 'none' || h.webkitUserSelect === 'none') { h.userSelect = ''; h.webkitUserSelect = ''; }
+}
+document.addEventListener('focusin', (ev) => { if (ev.target.matches && ev.target.matches('input, textarea')) liberarTexto(); });
+// Se libera también al tocar el campo, antes de que el iPhone decida si abre el teclado
+document.addEventListener('touchstart', (ev) => { if (ev.target.closest && ev.target.closest('input, textarea')) liberarTexto(); }, { capture: true, passive: true });
+// Las notas empiezan en un renglón y crecen con el texto
+function crecer(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 220) + 'px'; }
+function crecerTextos(raiz) { if (raiz) $$('textarea.crece', raiz).forEach((t) => { if (t.value) crecer(t); }); }
+document.addEventListener('input', (ev) => { if (ev.target.matches && ev.target.matches('textarea.crece')) crecer(ev.target); });
+// En las filas que se deslizan, la opción elegida queda a la vista
+function mostrarElegido(raiz) {
+  if (!raiz) return;
+  $$('.chips.una-fila', raiz).forEach((f) => { const b = $('.on', f); if (b && f.scrollWidth > f.clientWidth) f.scrollLeft = Math.max(0, b.offsetLeft - f.offsetLeft - 12); });
+}
+function cerrarHoja() { pila.pop(); dibujarHoja(); premiosDespues(); }
+function cerrarTodo() { pila.length = 0; dibujarHoja(); premiosDespues(); }
+function premiosDespues() { if (!pila.length && S.colaPremios && S.colaPremios.length) setTimeout(siguientePremio, 400); }
+const hojaArriba = () => pila[pila.length - 1];
+function cabeza(titulo, extra = '') {
+  const top = hojaArriba();
+  const back = pila.length > 1 ? ib('atras', 'arrow-left', 'atras') : '';
+  const x = top && top.fija ? '' : ib('cerrar', 'x', 'cerrar');
+  return `<div class="sheet-head">${back}<h2 class="grow">${titulo}</h2>${extra}${x}</div>`;
+}
+let tToast;
+function aviso(texto, icono = 'check') {
+  const t = $('#toast');
+  t.innerHTML = `${ic(icono)}<span>${esc(texto)}</span>`;
+  t.classList.add('show');
+  clearTimeout(tToast); tToast = setTimeout(() => t.classList.remove('show'), 2800);
+}
+const fallo = (e) => {
+  console.error(e);
+  const texto = mensajeError(e);
+  S.ultimoError = { codigo: codigoError(e), texto, detalle: errTexto(e).slice(0, 300), cuando: new Date().toISOString() };
+  aviso(texto, 'alert-triangle');
+};
+// Confirmación con dos botones de ícono (sí / no) y una imagen opcional
+function confirmar(texto, icono = 'trash', imagen = '', iconoSi = 'check') {
+  return new Promise((res) => {
+    const d = document.createElement('div');
+    d.className = 'overlay'; d.id = 'confirmar'; d.style.zIndex = 2000; d.style.alignItems = 'center';
+    d.innerHTML = `<div class="card" style="padding:18px;max-width:320px;margin:16px;text-align:center">
+      ${imagen ? `<img src="${esc(imagen)}" alt="" style="width:120px;height:120px;object-fit:contain;display:block;margin:0 auto 8px;background:var(--papel2);border-radius:12px;border:1px solid var(--tinta)">`
+               : `<div style="font-size:40px;color:var(--terracota)">${ic(icono)}</div>`}
+      <p style="margin:8px 0 16px">${esc(texto)}</p>
+      <div class="row" style="justify-content:center;gap:16px">
+        <button class="ib" data-si="0" aria-label="No">${ic('x')}</button>
+        <button class="ib on" data-si="1" aria-label="Sí">${ic(iconoSi)}</button></div></div>`;
+    d.addEventListener('click', (ev) => {
+      const b = ev.target.closest('[data-si]');
+      if (b || ev.target === d) { d.remove(); res(!!(b && b.dataset.si === '1')); }
+    });
+    document.body.appendChild(d);
+  });
+}
+function ocupado(btn, si) {
+  if (!btn) return;
+  if (si) { btn.dataset.html = btn.innerHTML; btn.disabled = true; btn.innerHTML = `<span class="spin">${ic('loader-2')}</span>`; }
+  else { btn.disabled = false; if (btn.dataset.html) btn.innerHTML = btn.dataset.html; }
+}
+
+/* Etiquetas al mantener presionado un ícono */
+(function ayudas() {
+  let t = null, visto = false;
+  const tip = () => $('#tip');
+  const ocultar = () => { clearTimeout(t); tip().classList.remove('show'); };
+  document.addEventListener('pointerdown', (ev) => {
+    visto = false;
+    if (ev.target.closest('input, textarea, select')) return;
+    const el = ev.target.closest('[data-tip]');
+    if (!el || !el.dataset.tip) return;
+    t = setTimeout(() => {
+      const r = el.getBoundingClientRect(), tp = tip();
+      tp.textContent = el.dataset.tip; tp.classList.add('show');
+      const w = tp.offsetWidth;
+      tp.style.left = Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2)) + 'px';
+      tp.style.top = Math.max(8, r.top - 40) + 'px';
+      visto = true;
+    }, 450);
+  });
+  ['pointerup', 'pointercancel', 'scroll'].forEach((e) => document.addEventListener(e, ocultar, true));
+  document.addEventListener('click', (ev) => { if (visto) { ev.stopPropagation(); ev.preventDefault(); visto = false; } }, true);
+  document.addEventListener('contextmenu', (ev) => { if (ev.target.closest('[data-tip]')) ev.preventDefault(); });
+})();
+
+/* Selectores dentro de formularios */
+function selector(nombre, opciones, actual, tipo) {
+  if (tipo === 'color')
+    return `<div class="swatches" data-pick="${nombre}">${opciones.map((c) => `<button type="button" data-act="elegir" data-v="${c}" class="${c === actual ? 'on' : ''}" style="background:${c}" aria-label="${c}"></button>`).join('')}</div>`;
+  return `<div class="pick" data-pick="${nombre}">${opciones.map((n) => `<button type="button" data-act="elegir" data-v="${n}" class="${n === actual ? 'on' : ''}" aria-label="${n}">${ic(n)}</button>`).join('')}</div>`;
+}
+// Destino de un hallazgo: una categoría propia (c:ID) o un grupo (g:ID)
+// Destino de la cámara: una fila con tus colecciones y otra con tus grupos (primero los de encuentro); las dos se deslizan
+// 2.0.4: quien aún no tiene colecciones ve "Mis hallazgos"; se crea al guardar la primera foto
+const MIS_HALLAZGOS = 'c:auto';
+function selectorDestino(actual) {
+  const chip = (v, color, icon, nombre, despues = '') => `<button type="button" class="chip cc ${v === actual ? 'on' : ''}" style="--c:${okColor(color)}" data-act="elegir" data-v="${v}">${ic(icon)}${esc(nombre)}${despues}</button>`;
+  const grupos = [...gruposEncuentro().map((g) => chip('g:' + g.id, g.color, 'lifebuoy', g.name)),
+    ...gruposColeccion().map((g) => chip('g:' + g.id, g.color, g.icon, g.name, ic('users')))];
+  // Cada fila empieza con un ícono pequeño que dice qué es (colecciones o grupos), sin ocupar un renglón aparte
+  return `<div class="dest-filas" data-pick="dest">
+    <div class="dest-fila"><span class="dest-et" data-tip="${esc(C.DEST_COLECCIONES)}" aria-label="${esc(C.DEST_COLECCIONES)}">${ic('cards')}</span>
+      <div class="chips una-fila">${S.cats.length ? S.cats.map((c) => chip('c:' + c.id, c.color, c.icon, c.name)).join('')
+        : chip(MIS_HALLAZGOS, C.MIS_HALLAZGOS_COLOR, C.MIS_HALLAZGOS_ICONO, C.MIS_HALLAZGOS_NOMBRE)}</div></div>
+    ${grupos.length ? `<div class="dest-fila"><span class="dest-et" data-tip="${esc(C.DEST_GRUPOS)}" aria-label="${esc(C.DEST_GRUPOS)}">${ic('users')}</span>
+      <div class="chips una-fila">${grupos.join('')}</div></div>` : ''}</div>`;
+}
+// 2.0.3: "Sin mapa": la foto vive en su colección (y en el muro) sin pin ni ubicación
+const enMapa = (c) => !!c && c.en_mapa !== false && c.lat != null && c.lng != null;
+// Para mostrar y decidir botones: las tarjetas del muro llegan sin ubicación, solo con la marca en_mapa
+const marcaMapa = (c) => !!c && (c.parcial ? c.en_mapa !== false : enMapa(c));
+// La app recuerda la última elección en cada colección o grupo
+function sinMapaRecordado(dest) { try { return !!dest && localStorage.getItem('cg_sinmapa_' + dest) === '1'; } catch (e) { return false; } }
+function recordarSinMapa(dest, v) { try { if (dest) { if (v) localStorage.setItem('cg_sinmapa_' + dest, '1'); else localStorage.removeItem('cg_sinmapa_' + dest); } } catch (e) { /* sin memoria: no pasa nada */ } }
+// ¿El destino elegido es un grupo de encuentro? Ahí la foto se guarda como "Mira esto" o como punto de encuentro
+const destEncuentro = (d = R.dest) => !!(d && d.startsWith('g:') && esEncuentro(miGrupo(d.slice(2))));
+const valor = (raiz, nombre) => { const b = $(`[data-pick="${nombre}"] .on`, raiz); return b ? b.dataset.v : null; };
+
+/* Selector de íconos: tres grupos, buscador en toda la biblioteca y emoji */
+let LISTA_ICONOS = null;
+function iconPicker(actual) {
+  const sel = okIcon(actual);
+  const g = esEmoji(sel) ? 'emoji' : ((C.ICONOS_GRUPOS.find((x) => x.iconos.includes(sel)) || C.ICONOS_GRUPOS[0]).id);
+  return `<div class="iconpick" data-iconpick data-sel="${esc(sel)}">
+    <div class="row" style="margin-bottom:10px"><span class="avatar" id="icono-elegido" style="background:var(--tinta)">${ic(sel)}</span>
+      <input class="in grow" data-in="buscar-icono" id="buscar-icono" placeholder="Buscar: gato, puerta, silla…" autocomplete="off" aria-label="${esc(C.AYUDA.buscar)}" ${g === 'emoji' ? 'hidden' : ''}></div>
+    <div class="toggle tabs" style="margin-bottom:10px">
+      ${C.ICONOS_GRUPOS.map((x) => `<button type="button" data-act="icon_tab" data-v="${x.id}" class="${x.id === g ? 'on' : ''}" data-tip="${esc(x.nombre)}" aria-label="${esc(x.nombre)}">${ic(x.icono)}</button>`).join('')}
+      <button type="button" data-act="icon_tab" data-v="emoji" class="${g === 'emoji' ? 'on' : ''}" data-tip="${esc(C.AYUDA.emoji)}" aria-label="${esc(C.AYUDA.emoji)}">${ic('mood-smile')}</button>
+    </div>
+    <div id="icon-lista">${listaIconos(g, sel)}</div></div>`;
+}
+function botonesIconos(nombres, sel) {
+  return `<div class="pick">${nombres.map((n) => `<button type="button" data-act="elegir_icono" data-v="${esc(n)}" class="${n === sel ? 'on' : ''}" aria-label="${esc(n)}">${ic(n)}</button>`).join('')}</div>`;
+}
+function listaIconos(grupo, sel) {
+  if (grupo === 'emoji') return `${botonesIconos(C.EMOJIS.map((e) => 'emoji:' + e), sel)}
+    <p class="tiny" style="margin:10px 0 6px">¿Otro? Escríbelo con el teclado de emojis de tu teléfono:</p>
+    <div class="row"><input class="in grow" id="emoji-in" maxlength="16" placeholder="😀" value="${esEmoji(sel) && !C.EMOJIS.includes(sel.slice(6)) ? esc(sel.slice(6)) : ''}" style="font-size:24px">
+    ${ib('usar_emoji', 'check', 'emoji', '', 'on')}</div>`;
+  const x = C.ICONOS_GRUPOS.find((y) => y.id === grupo) || C.ICONOS_GRUPOS[0];
+  return botonesIconos(x.iconos, sel);
+}
+const esEmojiTexto = (t) => !!t && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(t);
+async function buscarIconos(q) {
+  const box = $('#icon-lista'), raiz = $('[data-iconpick]'); if (!box || !raiz) return;
+  const emo = primerGrafema(q);
+  if (esEmojiTexto(emo)) {
+    raiz.dataset.sel = 'emoji:' + emo;
+    $('#icono-elegido', raiz).innerHTML = ic(raiz.dataset.sel);
+    box.innerHTML = `<p class="muted row">${ic(raiz.dataset.sel)} Emoji elegido</p>`;
+    return;
+  }
+  const texto = sinAcentos(q);
+  if (!texto) { const tab = $('[data-act="icon_tab"].on', raiz); box.innerHTML = listaIconos(tab ? tab.dataset.v : 'animales', raiz.dataset.sel); return; }
+  box.innerHTML = `<div class="empty" style="padding:16px"><span class="spin">${ic('loader-2')}</span></div>`;
+  try {
+    if (!LISTA_ICONOS) LISTA_ICONOS = (await api.iconList()).concat(Object.keys(ICONOS_PROPIOS).map((n) => ({ n, t: ICONOS_PROPIOS_PALABRAS[n] || n })));
+  } catch (e) { box.innerHTML = '<p class="muted">Sin conexión para buscar íconos</p>'; return; }
+  if (sinAcentos($('#buscar-icono') ? $('#buscar-icono').value : '') !== texto) return;
+  const palabras = texto.split(/\s+/).filter(Boolean);
+  const terminos = palabras.map((p) => [p].concat(String(C.DICCIONARIO[p] || '').split(' ').filter(Boolean)));
+  const res = [];
+  LISTA_ICONOS.forEach((x) => {
+    let puntos = 0;
+    for (const ts of terminos) {
+      let mejor = 99;
+      for (const t of ts) {
+        if (x.n === t) mejor = Math.min(mejor, 0);
+        else if (x.n.startsWith(t + '-') || x.n.startsWith(t)) mejor = Math.min(mejor, 1);
+        else if (x.n.includes(t)) mejor = Math.min(mejor, 2);
+        else if (t.length >= 3 && x.t.includes(t)) mejor = Math.min(mejor, 3);
+      }
+      if (mejor === 99) return;
+      puntos += mejor;
+    }
+    res.push({ n: x.n, p: puntos });
+  });
+  res.sort((a, b) => a.p - b.p || a.n.length - b.n.length);
+  box.innerHTML = res.length ? botonesIconos(res.slice(0, 60).map((r) => r.n), raiz.dataset.sel)
+    : `<p class="muted">Sin resultados. Prueba otra palabra o usa un emoji ${ic('mood-smile')}</p>`;
+}
+const iconoElegido = (raiz) => { const p = $('[data-iconpick]', raiz); return p ? p.dataset.sel : null; };
+
+/* Mini mapa para elegir o mover la ubicación */
+function miniMapa(el, pos, alMover) {
+  const centro = pos ? [pos.lat, pos.lng] : (S.map ? [S.map.getCenter().lat, S.map.getCenter().lng] : C.MAPA_CENTRO);
+  const m = L.map(el, { zoomControl: false, attributionControl: false }).setView(centro, 17);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
+  const mk = L.marker(centro, { draggable: true, icon: L.divIcon({ className: '', html: `<div class="pin" style="background:${C.COLORES.terracota}">${ic('map-pin')}</div>`, iconSize: [36, 36], iconAnchor: [18, 36] }) }).addTo(m);
+  mk.on('dragend', () => { const p = mk.getLatLng(); alMover({ lat: p.lat, lng: p.lng, acc: null }); });
+  m.on('click', (e) => { mk.setLatLng(e.latlng); alMover({ lat: e.latlng.lat, lng: e.latlng.lng, acc: null }); });
+  S.mini = m;
+  let vivo = true; m.on('unload', () => { vivo = false; });
+  return { mover(p) { if (!vivo || m.removed) return; try { mk.setLatLng([p.lat, p.lng]); m.setView([p.lat, p.lng], 17); } catch (e) { /* el mapa ya se cerró */ } } };
+}
+// Mapa de solo lectura con varios puntos (historia de un hallazgo)
+function mapaPuntos(el, puntos, color, icono) {
+  const m = L.map(el, { zoomControl: false, attributionControl: false });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
+  puntos.forEach((p, i) => L.marker([p.lat, p.lng], { interactive: false, icon: L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30],
+    html: `<div class="pin sm ${i ? 'old' : ''}" style="background:${okColor(color)}">${ic(icono)}</div>` }) }).addTo(m));
+  if (puntos.length > 1 && m.fitBounds) m.fitBounds(puntos.map((p) => [p.lat, p.lng]), { padding: [30, 30], maxZoom: 18 });
+  else m.setView([puntos[0].lat, puntos[0].lng], 17);
+  S.mini = m;
+}
+
+/* ---------------------------------------------------------------------
+   5. MAPA
+   --------------------------------------------------------------------- */
+/* Premios en el pin: patito (10), brote (25), aro de oro con brillo (50), corona (100),
+   corona mayor y destellos (250), sombrero vaquero (500). Solo dibujo, sin imágenes. */
+const TINTA = '#2E2A26';
+const colorPremio = (k) => C.COLORES_PREMIO[k] || C.COLORES_PREMIO.oro;
+const trazoPremio = (k) => (k === 'negro' ? '#6B635A' : TINTA);
+function svgPremio(id, k) {
+  const c = colorPremio(k), o = trazoPremio(k);
+  const joya = k === 'negro' ? '#FFC21A' : k === 'oro' ? '#FF5A3C' : '#FFF3B0';
+  if (id === 'patito') return `<svg viewBox="0 0 40 30" width="30" height="23" aria-hidden="true"><ellipse cx="23" cy="20" rx="14" ry="8" fill="#FFD23F" stroke="${TINTA}" stroke-width="2"/><path d="M34 16 L39 9 L37 21 Z" fill="#FFD23F" stroke="${TINTA}" stroke-width="2" stroke-linejoin="round"/><circle cx="13" cy="10" r="7" fill="#FFD23F" stroke="${TINTA}" stroke-width="2"/><path d="M6.5 9 L1 11.5 L6.5 14 Z" fill="#FF8A1F" stroke="${TINTA}" stroke-width="1.5" stroke-linejoin="round"/><circle cx="11" cy="8.5" r="1.4" fill="${TINTA}"/><path d="M18 19 Q23 23.5 29 19" fill="none" stroke="${TINTA}" stroke-width="1.5"/></svg>`;
+  if (id === 'brote') return `<svg viewBox="0 0 40 32" width="28" height="22" aria-hidden="true"><path d="M20 29 V14" stroke="#4E7D2E" stroke-width="3"/><ellipse cx="11" cy="13" rx="9" ry="5" fill="#7DB83A" stroke="${TINTA}" stroke-width="2" transform="rotate(-15 11 13)"/><ellipse cx="29" cy="9" rx="10" ry="5.5" fill="#7DB83A" stroke="${TINTA}" stroke-width="2" transform="rotate(-10 29 9)"/><ellipse cx="20" cy="29" rx="8" ry="2.6" fill="#8A5A44" stroke="${TINTA}" stroke-width="1.5"/></svg>`;
+  if (id === 'corona') return `<svg viewBox="0 0 40 30" width="26" height="20" aria-hidden="true"><path d="M5 26 V10 L13 18 L20 5 L27 18 L35 10 V26 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/><circle cx="5" cy="8" r="3" fill="${c}" stroke="${o}" stroke-width="2"/><circle cx="20" cy="4" r="3" fill="${c}" stroke="${o}" stroke-width="2"/><circle cx="35" cy="8" r="3" fill="${c}" stroke="${o}" stroke-width="2"/></svg>`;
+  if (id === 'corona2') return `<svg viewBox="0 0 56 40" width="38" height="27" aria-hidden="true"><path d="M5 30 V9 L14 21 L21 5 L28 19 L35 5 L42 21 L51 9 V30 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/><rect x="5" y="28" width="46" height="9" fill="${c}" stroke="${o}" stroke-width="2.5"/><circle cx="17" cy="32.5" r="2.6" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="28" cy="32.5" r="3.6" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="39" cy="32.5" r="2.6" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="5" cy="8" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="21" cy="4" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="35" cy="4" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/><circle cx="51" cy="8" r="3" fill="${joya}" stroke="${o}" stroke-width="1.5"/></svg>`;
+  if (id === 'sombrero') return `<svg viewBox="0 0 70 34" width="44" height="22" aria-hidden="true"><path d="M20 24 L18 8 Q24 2 30 6 Q35 9 40 6 Q46 2 52 8 L50 24 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/><path d="M19 18 H51" stroke="${k === 'negro' ? '#F3EBDD' : TINTA}" stroke-width="3"/><path d="M2 14 Q8 26 35 27 Q62 26 68 14 Q66 30 35 32 Q4 30 2 14 Z" fill="${c}" stroke="${o}" stroke-width="2.5" stroke-linejoin="round"/></svg>`;
+  return '';
+}
+const DESTELLO = (t) => `<svg viewBox="0 0 20 20" width="${t}" height="${t}" aria-hidden="true"><path d="M10 0 L12.5 7.5 L20 10 L12.5 12.5 L10 20 L7.5 12.5 L0 10 L7.5 7.5 Z" fill="#FFFFFF" stroke="${TINTA}" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
+const BRILLO = `<svg viewBox="0 0 20 20" width="11" height="11" aria-hidden="true"><path d="M10 0 L12.5 7.5 L20 10 L12.5 12.5 L10 20 L7.5 12.5 L0 10 L7.5 7.5 Z" fill="#FFD84D" stroke="${TINTA}" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
+function nivelPremio(n) { return [500, 250, 100, 50, 25, 10].find((m) => n >= m) || 0; }
+// HTML del pin con su premio (también se usa grande en las celebraciones)
+function pinHTML(color, icono, nivel, colorK, pinCls) {
+  const n = nivelPremio(nivel || 0);
+  const arriba = n >= 500 ? 'sombrero' : n >= 250 ? 'corona2' : n >= 100 ? 'corona' : n >= 50 ? '' : n >= 25 ? 'brote' : n >= 10 ? 'patito' : '';
+  return `<div class="pinw ${n >= 50 ? 'con-aro' : ''}">
+    <div class="pin ${n >= 50 ? 'aro' : ''} ${pinCls || ''}" style="background:${okColor(color)}">${ic(icono)}</div>
+    ${n >= 50 ? `<span class="brillo">${BRILLO}</span>` : ''}
+    ${arriba ? `<span class="premio p-${arriba}">${svgPremio(arriba, colorK)}</span>` : ''}
+    ${n >= 250 ? `<span class="destellos"><i>${DESTELLO(14)}</i><i>${DESTELLO(9)}</i></span>` : ''}</div>`;
+}
+/* ---------------------------------------------------------------------
+   Guardarropa (1.9.8): premios del pin dibujados en un mismo lienzo.
+   La cabeza de la gota está en (50,46) con radio 30 y la punta en (50,104).
+   En el mapa se dibujan por encima y por debajo del pin de siempre, sin moverlo.
+   --------------------------------------------------------------------- */
+const ARTE = {
+  // 2.0.5: gorra de mezclilla de lado (coleccionar en compañía) y lentes 3D ladeados (alguien vio tu pin)
+  gorra: `<g transform="rotate(-10 50 10)"><path d="M24 20 Q22 -6 50 -8 Q78 -6 76 20 Z" fill="#4A6FA5" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M50 -8 V19 M37 -5 Q33 6 32 19 M63 -5 Q67 6 68 19" fill="none" stroke="#35558A" stroke-width="1.8"/><path d="M27 15 Q50 19 73 15" fill="none" stroke="#D9A21B" stroke-width="1.6" stroke-dasharray="3 2.4"/><path d="M43 0 Q42 9 41 17 M57 0 Q58 9 59 17" fill="none" stroke="#D9A21B" stroke-width="1.2" stroke-dasharray="2.4 2.2" opacity=".85"/><circle cx="50" cy="-8" r="3.6" fill="#35558A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M68 13 Q90 8 102 16 Q100 24 74 22 Z" fill="#35558A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M74 17.5 Q88 14 98 18" fill="none" stroke="#D9A21B" stroke-width="1.5" stroke-dasharray="3 2.4"/></g>`,
+  lentes3d: `<g transform="rotate(-9 50 18)"><path d="M21 15 Q14 18 16 26 M79 15 Q86 18 84 26" fill="none" stroke="#2E2A26" stroke-width="3" stroke-linecap="round"/><path d="M24 8 H76 Q79 8 79 11 V22 Q79 25 76 25 H58 Q54 25 53 20 Q50 16 47 20 Q46 25 42 25 H24 Q21 25 21 22 V11 Q21 8 24 8 Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><rect x="25" y="11.5" width="18" height="10" rx="2.5" fill="#E2453C" stroke="#2E2A26" stroke-width="1.8"/><rect x="57" y="11.5" width="18" height="10" rx="2.5" fill="#3FB2C9" stroke="#2E2A26" stroke-width="1.8"/><path d="M28 14 l5 0 M60 14 l5 0" stroke="#FBF6EC" stroke-width="1.6" stroke-linecap="round" opacity=".8"/><text x="50" y="6" text-anchor="middle" font-family="system-ui,sans-serif" font-size="9" font-weight="800" fill="#2E2A26">3D</text></g>`,
+  patito: `<g transform="translate(31 -2) scale(0.95)"><ellipse cx="23" cy="20" rx="14" ry="8" fill="#FFD23F" stroke="#2E2A26" stroke-width="2"/><path d="M34 16 L39 9 L37 21 Z" fill="#FFD23F" stroke="#2E2A26" stroke-width="2" stroke-linejoin="round"/><circle cx="13" cy="10" r="7" fill="#FFD23F" stroke="#2E2A26" stroke-width="2"/><path d="M6.5 9 L1 11.5 L6.5 14 Z" fill="#FF8A1F" stroke="#2E2A26" stroke-width="1.5"/><circle cx="11" cy="8.5" r="1.4" fill="#2E2A26"/></g>`,
+  brote: `<g transform="translate(32 -4) scale(0.9)"><path d="M20 29 V14" stroke="#4E7D2E" stroke-width="3"/><ellipse cx="11" cy="13" rx="9" ry="5" fill="#7DB83A" stroke="#2E2A26" stroke-width="2" transform="rotate(-15 11 13)"/><ellipse cx="29" cy="9" rx="10" ry="5.5" fill="#7DB83A" stroke="#2E2A26" stroke-width="2" transform="rotate(-10 29 9)"/><ellipse cx="20" cy="29" rx="8" ry="2.6" fill="#8A5A44" stroke="#2E2A26" stroke-width="1.5"/></g>`,
+  aro: `<circle cx="50" cy="46" r="34" fill="none" stroke="#2E2A26" stroke-width="10"/><circle cx="50" cy="46" r="34" fill="none" stroke="#FFC21A" stroke-width="6"/>`,
+  corona: `<g transform="translate(33 -4) scale(0.85)"><path d="M5 26 V10 L13 18 L20 5 L27 18 L35 10 V26 Z" fill="§C§" stroke="§O§" stroke-width="2.5" stroke-linejoin="round"/><circle cx="5" cy="8" r="3" fill="§C§" stroke="§O§" stroke-width="2"/><circle cx="20" cy="4" r="3" fill="§C§" stroke="§O§" stroke-width="2"/><circle cx="35" cy="8" r="3" fill="§C§" stroke="§O§" stroke-width="2"/></g>`,
+  corona2: `<g transform="translate(30 -10) scale(0.72)"><path d="M5 30 V9 L14 21 L21 5 L28 19 L35 5 L42 21 L51 9 V30 Z" fill="§C§" stroke="§O§" stroke-width="2.5" stroke-linejoin="round"/><rect x="5" y="28" width="46" height="9" fill="§C§" stroke="§O§" stroke-width="2.5"/><circle cx="17" cy="32.5" r="2.6" fill="§J§" stroke="§O§" stroke-width="1.5"/><circle cx="28" cy="32.5" r="3.6" fill="§J§" stroke="§O§" stroke-width="1.5"/><circle cx="39" cy="32.5" r="2.6" fill="§J§" stroke="§O§" stroke-width="1.5"/></g>`,
+  copa: `<g transform="translate(50 18)"><path d="M-17 4 L-15 -30 Q0 -33 15 -30 L17 4Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-16 -4 L16 -4 L17 4 L-17 4Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-32 4 Q0 0 32 4 Q30 11 0 11 Q-30 11 -32 4Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+     <g transform="translate(14 -2)"><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(0)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(72)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(144)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(216)"/><ellipse cx="0" cy="-4.5" rx="3.4" ry="4.6" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.6" transform="rotate(288)"/><circle r="2.6" fill="#C4532F" stroke="#2E2A26" stroke-width="1.4"/></g></g>`,
+  gato: `<g transform="translate(50 18)">
+  <path d="M-24 8 Q-27 -10 -18 -16 L-20 -32 L-6 -20 Q0 -22 6 -20 L20 -32 L18 -16 Q27 -10 24 8 Q0 14 -24 8Z" fill="#D9A21B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M-17 -18 L-18 -27 L-10 -20Z M17 -18 L18 -27 L10 -20Z" fill="#B5577A"/>
+  <path d="M0 -20 V-12 M-8 -18 L-6 -11 M8 -18 L6 -11" stroke="#C4532F" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="-7" cy="-3" r="2.2" fill="#2E2A26"/><circle cx="7" cy="-3" r="2.2" fill="#2E2A26"/>
+  <path d="M-2.5 1.5 L2.5 1.5 L0 4Z" fill="#B5577A" stroke="#2E2A26" stroke-width="1"/><path d="M0 4 q-3 3 -5 1 M0 4 q3 3 5 1" fill="none" stroke="#2E2A26" stroke-width="1.4"/>
+  <path d="M-12 2 H-22 M-12 5 L-21 8 M12 2 H22 M12 5 L21 8" stroke="#2E2A26" stroke-width="1.4" stroke-linecap="round"/></g>`,
+  gato_manchas: `<g transform="translate(50 18)">
+  <path d="M-24 8 Q-27 -10 -18 -16 L-20 -32 L-6 -20 Q0 -22 6 -20 L20 -32 L18 -16 Q27 -10 24 8 Q0 14 -24 8Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M-17 -18 L-18 -27 L-10 -20Z M17 -18 L18 -27 L10 -20Z" fill="#B5577A"/>
+  <path d="M-22 -2 Q-24 -12 -14 -12 Q-12 -4 -22 -2Z" fill="#2E2A26"/><path d="M6 -18 Q14 -20 16 -12 Q8 -10 6 -18Z" fill="#C4532F"/>
+  <circle cx="-7" cy="-3" r="2.2" fill="#2E2A26"/><circle cx="7" cy="-3" r="2.2" fill="#2E2A26"/>
+  <path d="M-2.5 1.5 L2.5 1.5 L0 4Z" fill="#B5577A" stroke="#2E2A26" stroke-width="1"/><path d="M0 4 q-3 3 -5 1 M0 4 q3 3 5 1" fill="none" stroke="#2E2A26" stroke-width="1.4"/>
+  <path d="M-12 2 H-22 M-12 5 L-21 8 M12 2 H22 M12 5 L21 8" stroke="#2E2A26" stroke-width="1.4" stroke-linecap="round"/></g>`,
+  aureola: `<g transform="translate(50 4)"><ellipse rx="24" ry="7" fill="none" stroke="#2E2A26" stroke-width="7"/><ellipse rx="24" ry="7" fill="none" stroke="#FFC21A" stroke-width="3.5"/></g>
+     <g fill="#FFC21A" stroke="#2E2A26" stroke-width="1.4"><path d="M22 -9 L23.6 -5.6 L27 -4 L23.6 -2.4 L22 1 L20.4 -2.4 L17 -4 L20.4 -5.6Z"/><path d="M80 -5 L81.6 -1.6 L85 0 L81.6 1.6 L80 5 L78.4 1.6 L75 0 L78.4 -1.6Z"/></g>`,
+  mariposa: `
+    <path d="M46 46 C36 18 18 4 6 8 C-4 12 -2 30 8 40 C18 50 32 52 46 54Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M45 57 C32 58 18 64 16 76 C14 88 26 92 34 84 C42 76 45 66 46 60Z" fill="#7A4E7E" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <g fill="#FBF6EC" stroke="#2E2A26" stroke-width="1.4"><circle cx="16" cy="20" r="4"/><circle cx="28" cy="34" r="3"/><circle cx="12" cy="34" r="2.4"/><circle cx="28" cy="76" r="3.4"/></g>
+    <path d="M10 12 Q28 22 42 46" fill="none" stroke="#2E2A26" stroke-width="1.4" opacity=".5"/>
+    <path d="M44 20 Q40 4 30 -6" fill="none" stroke="#2E2A26" stroke-width="2.5" stroke-linecap="round"/><circle cx="29" cy="-7" r="3.6" fill="#D9A21B" stroke="#2E2A26" stroke-width="1.8"/><g transform="translate(100 0) scale(-1 1)">
+    <path d="M46 46 C36 18 18 4 6 8 C-4 12 -2 30 8 40 C18 50 32 52 46 54Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M45 57 C32 58 18 64 16 76 C14 88 26 92 34 84 C42 76 45 66 46 60Z" fill="#7A4E7E" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/>
+    <g fill="#FBF6EC" stroke="#2E2A26" stroke-width="1.4"><circle cx="16" cy="20" r="4"/><circle cx="28" cy="34" r="3"/><circle cx="12" cy="34" r="2.4"/><circle cx="28" cy="76" r="3.4"/></g>
+    <path d="M10 12 Q28 22 42 46" fill="none" stroke="#2E2A26" stroke-width="1.4" opacity=".5"/>
+    <path d="M44 20 Q40 4 30 -6" fill="none" stroke="#2E2A26" stroke-width="2.5" stroke-linecap="round"/><circle cx="29" cy="-7" r="3.6" fill="#D9A21B" stroke="#2E2A26" stroke-width="1.8"/></g>`,
+  conejo: `<path d="M22 30 Q22 9 50 9 Q78 9 78 30 Q64 25 50 25 Q36 25 22 30Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M36 14 Q24 -16 33 -24 Q44 -18 44 12Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M38 6 Q32 -12 35 -17 Q40 -12 40 6Z" fill="#E3A9BE"/>
+     <path d="M64 14 Q76 -16 67 -24 Q56 -18 56 12Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M62 6 Q68 -12 65 -17 Q60 -12 60 6Z" fill="#E3A9BE"/>`,
+  angel: `<path d="M42 42 Q24 18 2 14 Q-6 22 0 30 Q-8 34 -2 42 Q-8 48 2 54 Q0 62 12 62 Q26 62 42 58Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M6 30 Q22 30 36 44 M4 42 Q20 42 36 50 M10 54 Q24 54 38 56" fill="none" stroke="#2E2A26" stroke-width="1.8"/><g transform="translate(100 0) scale(-1 1)"><path d="M42 42 Q24 18 2 14 Q-6 22 0 30 Q-8 34 -2 42 Q-8 48 2 54 Q0 62 12 62 Q26 62 42 58Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M6 30 Q22 30 36 44 M4 42 Q20 42 36 50 M10 54 Q24 54 38 56" fill="none" stroke="#2E2A26" stroke-width="1.8"/></g>`,
+  murcielago: `<defs><linearGradient id="mB" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3A2650"/><stop offset=".6" stop-color="#16121A"/></linearGradient></defs><path d="M40 44 Q28 14 22 18 L10 -8 Q8 6.3999999999999995 -12 10 Q-4 27.4 -14 34 Q1 49.4 -2 54 Q15 64.4 14 64 Q36 64.8 40 62 Z" fill="url(#mB)" stroke="#120F14" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M22 18 L-12 10 M22 18 L-14 34 M22 18 L-2 54 M22 18 L14 64" stroke="#6A4E8A" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+    <path d="M22 18 l-3 -5" stroke="#120F14" stroke-width="2" stroke-linecap="round"/><g transform="translate(100 0) scale(-1 1)"><path d="M40 44 Q28 14 22 18 L10 -8 Q8 6.3999999999999995 -12 10 Q-4 27.4 -14 34 Q1 49.4 -2 54 Q15 64.4 14 64 Q36 64.8 40 62 Z" fill="url(#mB)" stroke="#120F14" stroke-width="2" stroke-linejoin="round"/>
+    <path d="M22 18 L-12 10 M22 18 L-14 34 M22 18 L-2 54 M22 18 L14 64" stroke="#6A4E8A" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+    <path d="M22 18 l-3 -5" stroke="#120F14" stroke-width="2" stroke-linecap="round"/></g>`,
+  bolsa: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#9A3E22" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(58 70)"><rect width="36" height="30" rx="7" fill="#9A3E22" stroke="#2E2A26" stroke-width="3"/><path d="M0 7 Q18 22 36 7 V5 Q36 0 30 0 H6 Q0 0 0 5Z" fill="#C4532F" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><rect x="15" y="11" width="6" height="6" rx="1.5" fill="#FFC21A" stroke="#2E2A26" stroke-width="2"/></g>`,
+  brujula: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#6E7B3A" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(76 86)"><circle r="17" fill="#D9A21B" stroke="#2E2A26" stroke-width="3"/><circle r="12" fill="#FBF6EC" stroke="#2E2A26" stroke-width="2"/><path d="M0 -10 L4 0 L0 10 L-4 0Z" fill="#C4532F" stroke="#2E2A26" stroke-width="1.5"/><path d="M0 0 L4 0 L0 10 L-4 0Z" fill="#6B635A"/><rect x="-3" y="-21" width="6" height="5" rx="1.5" fill="#D9A21B" stroke="#2E2A26" stroke-width="2"/></g>`,
+  binoculares: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#3F6E73" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(57 72)"><rect y="4" width="15" height="24" rx="5" fill="#2E2A26" stroke="#2E2A26" stroke-width="3"/><rect x="21" y="4" width="15" height="24" rx="5" fill="#2E2A26" stroke="#2E2A26" stroke-width="3"/><rect x="12" y="8" width="12" height="8" fill="#6B635A" stroke="#2E2A26" stroke-width="2.5"/><circle cx="7.5" cy="25" r="4.5" fill="#9DBDBF" stroke="#2E2A26" stroke-width="1.5"/><circle cx="28.5" cy="25" r="4.5" fill="#9DBDBF" stroke="#2E2A26" stroke-width="1.5"/></g>`,
+  pirata: `<g transform="translate(50 22)"><path d="M-26 4 Q-26 -16 0 -18 Q26 -16 26 4Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-44 -20 Q-40 2 -20 6 Q0 10 20 6 Q40 2 44 -20 Q34 -6 20 -4 Q0 0 -20 -4 Q-34 -6 -44 -20Z" fill="#2E2A26" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-40 -14 Q-32 -2 -18 0 Q0 4 18 0 Q32 -2 40 -14" fill="none" stroke="#FFC21A" stroke-width="2.5"/>
+     <circle cy="-8" r="5.5" fill="#FBF6EC" stroke="#2E2A26" stroke-width="1.5"/><circle cx="-2" cy="-9" r="1.3" fill="#2E2A26"/><circle cx="2" cy="-9" r="1.3" fill="#2E2A26"/><path d="M-7 1 L7 -4 M7 1 L-7 -4" stroke="#FBF6EC" stroke-width="2.2"/></g>`,
+  fueguito: `<g transform="translate(50 17)"><path d="M-22 8 Q-26 -6 -16 -14 Q-16 -6 -10 -4 Q-14 -18 -2 -30 Q0 -18 8 -14 Q8 -22 14 -24 Q12 -14 20 -8 Q26 0 22 8 Q0 14 -22 8Z" fill="#C4532F" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M-12 7 Q-14 -2 -6 -8 Q-4 -2 0 -2 Q2 -10 8 -12 Q8 -4 13 0 Q15 4 12 7 Q0 10 -12 7Z" fill="#D9A21B"/><circle cx="-5" cy="2" r="1.8" fill="#2E2A26"/><circle cx="5" cy="2" r="1.8" fill="#2E2A26"/><path d="M-3 5 Q0 7.5 3 5" fill="none" stroke="#2E2A26" stroke-width="1.5"/></g>`,
+  barco: `<g transform="translate(50 18)"><path d="M-30 6 L-22 -6 L22 -6 L30 6Z" fill="#F3EBDD" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M-18 -6 L0 -30 L18 -6Z" fill="#FBF6EC" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-10 -14 H8 M-6 -19 H5" stroke="#6B635A" stroke-width="1.6"/><path d="M-24 0 H-8 M6 0 H24" stroke="#6B635A" stroke-width="1.6"/><path d="M0 -30 V-6" stroke="#2E2A26" stroke-width="1.5" opacity=".4"/></g>`,
+  canotier: `<g transform="translate(50 18)"><path d="M-18 4 L-17 -14 Q0 -17 17 -14 L18 4Z" fill="#D9A21B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-17.5 -6 H17.5 V0 H-17.5Z" fill="#3F6E73" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-36 4 Q0 0 36 4 Q34 11 0 11 Q-34 11 -36 4Z" fill="#D9A21B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-26 7 H26 M-12 -11 V-6 M0 -12 V-6 M12 -11 V-6" stroke="#A97C10" stroke-width="1.6"/></g>`,
+  corazon: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#C4532F" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(75 84)"><path d="M0 18 L-17 1 Q-24 -8 -16 -15 Q-8 -20 0 -10 Q8 -20 16 -15 Q24 -8 17 1Z" fill="#B5577A" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/><path d="M-9 -9 Q-13 -7 -12 -2" fill="none" stroke="#FBF6EC" stroke-width="2.5" stroke-linecap="round"/><rect x="-3" y="-3" width="6" height="5" rx="1.5" fill="#FFC21A" stroke="#2E2A26" stroke-width="1.8"/></g>`,
+  libelula: `<path d="M44 40 Q20 22 -6 26 Q-12 34 -2 38 Q22 44 44 46Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M44 50 Q22 56 0 70 Q-4 78 6 78 Q28 68 44 56Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M40 43 Q16 32 -2 32 M40 53 Q18 64 4 74" fill="none" stroke="#3F6E73" stroke-width="1.6"/><path d="M28 34 l-4 6 M16 30 l-3 7 M28 60 l-2 -6 M16 66 l-2 -6" stroke="#3F6E73" stroke-width="1.2"/><g transform="translate(100 0) scale(-1 1)"><path d="M44 40 Q20 22 -6 26 Q-12 34 -2 38 Q22 44 44 46Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M44 50 Q22 56 0 70 Q-4 78 6 78 Q28 68 44 56Z" fill="#CFE0DF" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M40 43 Q16 32 -2 32 M40 53 Q18 64 4 74" fill="none" stroke="#3F6E73" stroke-width="1.6"/><path d="M28 34 l-4 6 M16 30 l-3 7 M28 60 l-2 -6 M16 66 l-2 -6" stroke="#3F6E73" stroke-width="1.2"/></g>`,
+  mono: `<g transform="translate(64 16) rotate(18)"><path d="M0 0 L-22 -12 Q-26 0 -22 12Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M0 0 L22 -12 Q26 0 22 12Z" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-3 2 L-10 20 L-4 17 L0 22 L2 4 M3 2 L10 20 L4 17 L0 22" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><rect x="-5" y="-5" width="10" height="10" rx="3" fill="#B5577A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-16 -6 Q-18 0 -16 6 M16 -6 Q18 0 16 6" fill="none" stroke="#2E2A26" stroke-width="1.6"/></g>`,
+  camara: `<path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="8.5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#2E2A26" stroke-width="5" stroke-linecap="round"/><path d="M21 50 Q40 72 66 84" fill="none" stroke="#FBF6EC" stroke-width="1" stroke-dasharray="2.5 3" opacity=".7"/><g transform="translate(56 72)"><rect width="40" height="24" rx="4" fill="#2E2A26" stroke="#2E2A26" stroke-width="3"/><rect width="40" height="8" rx="3" fill="#F3EBDD" stroke="#2E2A26" stroke-width="3"/><rect x="5" y="-5" width="8" height="5" rx="1.5" fill="#F3EBDD" stroke="#2E2A26" stroke-width="2.5"/><circle cx="20" cy="15" r="9" fill="#6B635A" stroke="#2E2A26" stroke-width="3"/><circle cx="20" cy="15" r="4.5" fill="#9DBDBF" stroke="#2E2A26" stroke-width="1.5"/><circle cx="33" cy="4" r="2" fill="#C4532F"/></g>`,
+  bruja: `<g transform="translate(50 20)"><path d="M-18 2 Q-12 -14 -6 -24 Q2 -38 18 -40 Q8 -34 8 -22 Q10 -10 18 2Z" fill="#4E3354" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M-16 -4 Q0 0 16 -4 L17 2 Q0 6 -17 2Z" fill="#C4532F" stroke="#2E2A26" stroke-width="2"/><rect x="-4" y="-5" width="8" height="7" rx="1" fill="none" stroke="#FFC21A" stroke-width="2.2"/>
+     <path d="M-38 4 Q0 -4 38 4 Q34 12 0 12 Q-34 12 -38 4Z" fill="#4E3354" stroke="#2E2A26" stroke-width="3" stroke-linejoin="round"/>
+     <path d="M10 -28 l2 -3 l1 3 l3 1 l-3 1 l-1 3 l-1 -3 l-3 -1Z" fill="#FFC21A"/></g>`
+};
+Object.assign(ARTE, {
+  // 2.0.6: Boina (te guardaron en favoritos), Maceta de corazón (comentar), Gorro de duende (diciembre)
+  boina: `<g transform="translate(50 20)"><path d="M-30 6 Q-34 -14 -4 -16 Q30 -18 32 0 Q30 8 18 8 Q0 10 -30 6Z" fill="#C4532F" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-22 6 Q0 12 22 6" fill="none" stroke="#2E2A26" stroke-width="2.5"/><path d="M-2 -16 q2 -6 6 -6" fill="none" stroke="#2E2A26" stroke-width="2.5" stroke-linecap="round"/></g>`,
+  maceta: `<g transform="translate(50 11)"><path d="M0 -8 C -2 -16 3 -22 0 -32" fill="none" stroke="#2E2A26" stroke-width="5" stroke-linecap="round"/><path d="M0 -8 C -2 -16 3 -22 0 -32" fill="none" stroke="#5E9A3A" stroke-width="2.6" stroke-linecap="round"/><path d="M-1 -17 Q-14 -24 -17 -15 Q-9 -11 -1 -17Z" fill="#5E9A3A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M1 -12 Q14 -19 17 -10 Q9 -6 1 -12Z" fill="#5E9A3A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path transform="translate(0 -38) scale(1.05)" d="M0 9 L-9 0.5 Q-13 -4 -9 -8 Q-4.5 -11 0 -5.5 Q4.5 -11 9 -8 Q13 -4 9 0.5Z" fill="#E0566B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-6 -44 q-2 2 -1 5" fill="none" stroke="#FBF6EC" stroke-width="2" stroke-linecap="round"/><path d="M-11 -3 L-8.5 12 Q-8 14 -6 14 H6 Q8 14 8.5 12 L11 -3Z" fill="#C4532F" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><rect x="-13.5" y="-8" width="27" height="6.5" rx="2" fill="#9A3E22" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M-7 3 H7" stroke="#9A3E22" stroke-width="1.6" stroke-linecap="round"/></g>`,
+  duende: `<defs><clipPath id="§ID§"><path d="M24 18 Q30 -12 54 -26 Q70 -34 86 -24 Q76 -20 70 -10 Q66 4 76 18 Z"/></clipPath></defs><path d="M24 18 Q30 -12 54 -26 Q70 -34 86 -24 Q76 -20 70 -10 Q66 4 76 18 Z" fill="#FBF6EC"/><g clip-path="url(#§ID§)" stroke="#D23B32" stroke-width="7"><path d="M-30 30 L30 -40"/><path d="M-14 30 L46 -40"/><path d="M2 30 L62 -40"/><path d="M18 30 L78 -40"/><path d="M34 30 L94 -40"/><path d="M50 30 L110 -40"/></g><path d="M24 18 Q30 -12 54 -26 Q70 -34 86 -24 Q76 -20 70 -10 Q66 4 76 18 Z" fill="none" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M20 16 L27 24 L33 15 L40 24 L46 15 L53 24 L59 15 L66 24 L72 15 L79 24 L82 15 Q50 6 20 16Z" fill="#2F7D4A" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><circle cx="87" cy="-22" r="6.5" fill="#D9A21B" stroke="#2E2A26" stroke-width="2.5" stroke-linejoin="round"/><path d="M83 -21 H91" stroke="#2E2A26" stroke-width="1.6"/><circle cx="87" cy="-19" r="1.3" fill="#2E2A26"/>`
+});
+const ARTE_ATRAS = new Set(['aro', 'mariposa', 'angel', 'murcielago', 'libelula']);
+let arteN = 0;
+const VB_PIN = '-16 -42 132 152';
+function arte(id, k) {
+  let s = ARTE[id] || '';
+  if (s.includes('§ID§')) s = s.replace(/§ID§/g, 'cga' + (++arteN));   // recortes con nombre único en cada pin
+  if (id === 'corona' || id === 'corona2') s = s.replace(/§C§/g, colorPremio(k)).replace(/§O§/g, trazoPremio(k)).replace(/§J§/g, k === 'negro' ? '#FFC21A' : k === 'oro' ? '#FF5A3C' : '#FFF3B0');
+  return s;
+}
+// Medalla del top: el lugar adentro, sin texto
+// Con corona: top de todos los tiempos
+function medallaTop(n, x, y, corona) {
+  return `<g transform="translate(${x} ${y})"><path d="M-7 8 L-12 28 L-5 24 L-1 31 L1 12 M7 8 L12 28 L5 24 L1 31 L-1 12" fill="#C4532F" stroke="${TINTA}" stroke-width="2.5" stroke-linejoin="round"/><circle r="12" fill="#FFC21A" stroke="${TINTA}" stroke-width="3"/><text y="5" text-anchor="middle" font-size="14" font-weight="800" font-family="system-ui,sans-serif" fill="${TINTA}">${Number(n) || ''}</text>${corona ? `<path class="corona-top" d="M-9 -11 L-10 -21 L-5 -16 L0 -23 L5 -16 L10 -21 L9 -11 Z" fill="#FFC21A" stroke="${TINTA}" stroke-width="2.5" stroke-linejoin="round"/>` : ''}</g>`;
+}
+// La medalla sola, para listas (con corona, más alta)
+const medallaSvg = (n, corona, w) => `<svg viewBox="${corona ? '-14 -25 28 59' : '-14 -14 28 48'}" width="${w}" height="${Math.round(w * (corona ? 59 : 48) / 28)}" aria-hidden="true">${medallaTop(n, 0, 0, corona)}</svg>`;
+function medallaNombre(uid) {
+  // si tiene fotos en los dos tops, se ve la de corona (todos los tiempos)
+  const s = S.top && S.top.personasSiempre && S.top.personasSiempre.get(uid), n = s || (S.top && S.top.personas.get(uid)); if (!n) return '';
+  const t = esc((s ? C.TOP_SIEMPRE_NOMBRE : C.TOP_NOMBRE).replace('{n}', n));
+  return `<span class="medalla-nombre ${s ? 'siempre' : ''}" data-tip="${t}" aria-label="${t}">${medallaSvg(n, !!s, s ? 15 : 14)}</span>`;
+}
+// Capas del adorno: lo de atrás (alas, aro) y lo de adelante (sombrero, lo que cuelga, medalla)
+function capasAdorno(ad, k, top, corona) {
+  const ids = ad ? [ad.e, ad.a ? 'aro' : null, ad.c, ad.b].filter((x) => x && ARTE[x]) : [];
+  const atras = ids.filter((x) => ARTE_ATRAS.has(x)).map((x) => arte(x, k)).join('');
+  let frente = ids.filter((x) => !ARTE_ATRAS.has(x)).map((x) => arte(x, k)).join('');
+  if (top) frente += medallaTop(top, 80, 22, corona);
+  return { atras, frente };
+}
+function pinIcono(c, zoom) {
+  const tenue = atenuado(c) ? 'tenue' : '';   // alguien dice que ya no está: se atenúa, nunca desaparece
+  const base = `<div class="pin chico ${c.is_private ? 'priv' : ''} ${c.id === S.nuevoId ? 'cae' : ''}" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>`;
+  // los adornos solo de cerca (nivel calle); las medallas del top siempre
+  const deCerca = zoom == null || zoom >= (C.MAPA_ADORNOS_DESDE || 16);
+  const siempre = S.top && S.top.siempre && S.top.siempre.get(c.id);
+  const top = siempre || (S.top && S.top.pines.get(c.id));
+  const ad = deCerca && c.adorno && typeof c.adorno === 'object' ? c.adorno : null;
+  if (!ad && !top) return L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: base.replace('class="pin ', `class="pin ${tenue} `) });
+  const { atras, frente } = capasAdorno(ad, c.premio_color, top, !!siempre);
+  const capa = (x, cls) => (x ? `<svg class="adorno ${cls}" viewBox="${VB_PIN}" aria-hidden="true">${x}</svg>` : '');
+  return L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30], html: `<div class="pinw adornado chico ${tenue}">${capa(atras, 'atras')}${base}${capa(frente, 'frente')}</div>` });
+}
+// El pin grande (celebraciones y guardarropa): todo en un dibujo, con el ícono de la colección encima
+function pinGrande(color, icono, ad, k, ancho) {
+  const w = ancho || 150, h = Math.round(w * 152 / 132), { atras, frente } = capasAdorno(ad, k, null);
+  const cx = (66 / 132) * w, cy = (88 / 152) * h, t = Math.round(w * 0.16);
+  return `<span class="pin-grande" style="width:${w}px;height:${h}px"><svg viewBox="${VB_PIN}" width="${w}" height="${h}" aria-hidden="true">${atras}
+    <path d="M50 104 L28 68 A30 30 0 1 1 72 68 Z" fill="${okColor(color)}" stroke="${TINTA}" stroke-width="4" stroke-linejoin="round"/>${frente}</svg>
+    <span class="pg-ic" style="left:${cx - t / 2}px;top:${cy - t / 2}px;font-size:${t}px;width:${t}px;height:${t}px">${ic(icono)}</span></span>`;
+}
+function crearMapa() {
+  document.documentElement.style.setProperty('--map-filter', C.MAPA_FILTRO);
+  S.map = L.map('map', { zoomControl: false }).setView(C.MAPA_CENTRO, C.MAPA_ZOOM);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(S.map);
+  S.capa = L.layerGroup().addTo(S.map);
+  S.capaEnc = L.layerGroup().addTo(S.map);   // lo del grupo de encuentro activo (modo grupo)
+  let t; S.map.on('moveend', () => { clearTimeout(t); t = setTimeout(cargarPines, 250); });
+  getPos().then((p) => { ponerYo(p); if (!S.grupo) S.map.setView([p.lat, p.lng], 16); }).catch(() => cargarPines());
+  // el grupo que quedó activo la última vez vuelve a abrirse en el mapa
+  const g = leerGrupoMapa(); if (g && miGrupo(g) && esEncuentro(miGrupo(g))) abrirEncuentro(g); else if (g) recordarGrupoMapa(null);
+}
+function ponerYo(p) {
+  if (!S.map) return;
+  if (!S.yo) S.yo = L.marker([p.lat, p.lng], { interactive: false, icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(S.map);
+  else S.yo.setLatLng([p.lat, p.lng]);
+}
+/* Instalar la app en el teléfono
+   Android (Chrome, Edge, Samsung): botón de un toque con el aviso del propio navegador.
+   iPhone: Apple no permite instalar con un toque; se muestran los dos pasos (Compartir → Agregar a inicio).
+   Navegador dentro de WhatsApp, Instagram o Facebook: no permite instalar; se pide abrir la liga en el navegador. */
+let eventoInstalar = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); eventoInstalar = e; pintarInstalar(); });
+window.addEventListener('appinstalled', () => { eventoInstalar = null; noMostrarInstalar(); pintarInstalar(); aviso(C.INSTALAR_LISTO, 'device-mobile'); });
+const yaInstalada = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+function tipoInstalacion() {
+  if (yaInstalada()) return null;
+  const ua = navigator.userAgent || '';
+  if (/FBAN|FBAV|FB_IAB|Instagram|WhatsApp|Line\/|TikTok|Snapchat/i.test(ua)) return 'interno';
+  if (eventoInstalar) return 'boton';
+  if (/iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'iphone';
+  if (/Android/.test(ua)) return 'menu';
+  return null; // en computadora no se ofrece
+}
+const instalarDescartado = () => { try { return !!localStorage.getItem('cg_instalar_no'); } catch (e) { return false; } };
+const noMostrarInstalar = () => { try { localStorage.setItem('cg_instalar_no', '1'); } catch (e) { /* nada */ } };
+// Tarjeta de la entrada, botón del perfil y franja del mapa (una sola vez, se puede cerrar)
+function pintarInstalar() {
+  const t = tipoInstalacion();
+  $$('[data-instalar]').forEach((el) => {
+    el.innerHTML = t ? `<button class="btn alt block" data-act="instalar">${ic('device-mobile')} ${esc(C.INSTALAR_BOTON)}</button>` : '';
+  });
+  const fr = $('#instalar-franja');
+  if (fr) fr.hidden = !t || instalarDescartado() || pasosPendientes();
+  $$('[data-act="instalar"].ib').forEach((b) => { b.hidden = !t; });
+}
+async function instalarApp() {
+  const t = tipoInstalacion();
+  if (t === 'boton' && eventoInstalar) {
+    const e = eventoInstalar; eventoInstalar = null;
+    try { await e.prompt(); const r = await e.userChoice; if (r && r.outcome === 'accepted') noMostrarInstalar(); }
+    catch (err) { console.error(err); }
+    return pintarInstalar();
+  }
+  const pasos = t === 'iphone' ? C.INSTALAR_IPHONE : t === 'interno' ? C.INSTALAR_INTERNO : C.INSTALAR_MENU;
+  abrirHoja(() => `${cabeza(`${ic('device-mobile')} ${esc(C.INSTALAR_BOTON)}`)}
+    <ol class="pasos-instalar">${pasos.map((x) => `<li><span class="gicon">${ic(x.icono)}</span><span>${esc(x.texto)}</span></li>`).join('')}</ol>
+    ${t === 'interno' ? `<button class="btn block" data-act="copiar_liga">${ic('copy')} ${esc(C.INSTALAR_COPIAR)}</button>` : ''}`, null, 'instalar');
+}
+
+/* "¡Lo vi!" (reacción "eye"): solo se marca estando en el lugar. La ubicación se usa para medir y no se guarda. */
+async function marcarVisto(btn, c) {
+  ocupado(btn, true);
+  let p;
+  try { p = await getPos(); } catch (e) { ocupado(btn, false); return aviso(C.VISTO_SIN_GPS, 'current-location'); }
+  try {
+    const r = await api.marcarVisto(c.id, p);
+    ocupado(btn, false);
+    if (r && r.ok) {
+      const ya = (c.my_reactions || []).includes('eye'), rs = Object.assign({}, c.reactions || {}); if (!ya) rs.eye = (rs.eye || 0) + 1;
+      guarda([Object.assign({}, c, { reactions: rs, my_reactions: ya ? c.my_reactions : (c.my_reactions || []).concat('eye'), ausencias: 0 })]);
+      refrescarFicha(c.id);
+      $$(`[data-act="reaccion"][data-id="${c.id}"][data-v="eye"]`).forEach((x) => x.classList.add('visto-ok'));
+      return ofrecerFotoCol(c, 'visto', C.VISTO_OK);
+    }
+    // 2.0.2: la segunda y la tercera del día van con foto; más de 3, no
+    if (r && r.motivo === 'foto') return hojaSegunda(c, 'visto', await api.estadoVisitas(c.id).catch(() => null));
+    if (r && r.motivo === 'limite') return aviso(C.VISTO_LIMITE, 'calendar');
+    if (r && r.motivo === 'sin_mapa') return aviso(C.SIN_MAPA_NO_APLICA, 'map-pin-off');
+    const lejos = r && r.motivo === 'lejos';
+    abrirHoja(() => `${cabeza(`${ic('eye-check')} ${esc(C.AYUDA.visto)}`)}
+      <p>${esc(lejos ? C.VISTO_LEJOS.replace('{d}', metros(r.distancia)) : C.VISTO_APROXIMADA)}</p>
+      ${lejos ? `<button class="btn block" data-act="ir_al_punto" data-id="${c.id}">${ic('navigation')} ${esc(C.AYUDA.ir_al_punto)}</button>`
+        : `<button class="btn alt block" data-act="info_precision" data-acc="${p.acc || ''}">${ic('current-location')} ${esc(C.PRECISION_TITULO)}</button>`}`, null, 'visto');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+
+/* "¡Ya no está!": también solo estando en el lugar. Con 2 personas el marcador se atenúa;
+   un "¡Lo vi!" o un reencuentro lo devuelve a normal. La ubicación se usa para medir y no se guarda. */
+async function marcarAusencia(btn, c) {
+  ocupado(btn, true);
+  let p;
+  try { p = await getPos(); } catch (e) { ocupado(btn, false); return aviso(C.AUSENCIA_SIN_GPS, 'current-location'); }
+  try {
+    const r = await api.marcarAusencia(c.id, p);
+    ocupado(btn, false);
+    if (r && r.ok) {
+      guarda([Object.assign({}, S.cache.get(c.id) || c, { ausencias: r.ausencias != null ? r.ausencias : (c.ausencias || 0) + 1 })]);
+      if (fichaH && fichaH.id === c.id) fichaH.cargar();
+      refrescarFicha(c.id);
+      if (S.tab === 'map') cargarPines();
+      return ofrecerFotoCol(c, 'no_esta', C.AUSENCIA_OK);
+    }
+    if (r && r.motivo === 'foto') return hojaSegunda(c, 'no_esta', await api.estadoVisitas(c.id).catch(() => null));
+    if (r && r.motivo === 'limite') return aviso(C.AUSENCIA_LIMITE, 'calendar');
+    if (r && r.motivo === 'sin_mapa') return aviso(C.SIN_MAPA_NO_APLICA, 'map-pin-off');
+    const lejos = r && r.motivo === 'lejos';
+    abrirHoja(() => `${cabeza(`${ic('map-pin-off')} ${esc(C.AYUDA.ausencia)}`)}
+      <p>${esc(lejos ? C.AUSENCIA_LEJOS.replace('{d}', metros(r.distancia)) : C.AUSENCIA_APROXIMADA)}</p>
+      ${lejos ? `<button class="btn block" data-act="ir_al_punto" data-id="${c.id}">${ic('navigation')} ${esc(C.AYUDA.ir_al_punto)}</button>`
+        : `<button class="btn alt block" data-act="info_precision" data-acc="${p.acc || ''}">${ic('current-location')} ${esc(C.PRECISION_TITULO)}</button>`}`, null, 'visto');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+const atenuado = (c) => (c.ausencias || 0) >= C.AUSENCIAS_ATENUAR;
+
+/* Fotos de la comunidad: al marcar "Lo vi" o "No está" estando en el lugar se puede sumar una foto de ese día.
+   Hasta 3 veces al día por persona (desde la segunda, con foto). Se guarda con la ubicación del hallazgo, no la del teléfono. */
+const K = {};
+async function ofrecerFotoCol(c, tipo, textoOk) {
+  let puede = false;
+  if (!c.is_private && navigator.onLine) {
+    // Si la pregunta falla se dice por qué (antes se ocultaba y solo quedaba el mensaje corto)
+    try { puede = await api.puedoColaborar(c.id); } catch (e) { aviso(textoOk, tipo === 'visto' ? 'eye-check' : 'map-pin-off'); return fallo(e); }
+  }
+  if (!puede) return aviso(textoOk, tipo === 'visto' ? 'eye-check' : 'map-pin-off');
+  abrirCol(c, tipo);
+}
+// 2.0.5: "Está aquí": proponer a la autora el lugar correcto con tu ubicación (buena señal y a menos de 200 m)
+const puedoProponer = (c) => !!c && enMapa(c) && c.user_id !== S.user.id && !c.is_private && !S.me.blocked;
+function mapaPropuesta(el, c, p) {
+  const m = L.map(el, { zoomControl: false, attributionControl: false });
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(m);
+  L.marker([c.lat, c.lng], { interactive: false, icon: L.divIcon({ className: '', iconSize: [30, 30], iconAnchor: [15, 30],
+    html: `<div class="pin sm tenue" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` }) }).addTo(m);
+  L.marker([p.lat, p.lng], { interactive: false, icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }) }).addTo(m);
+  if (L.polyline) L.polyline([[c.lat, c.lng], [p.lat, p.lng]], { color: TINTA, weight: 2.5, dashArray: '6 5' }).addTo(m);
+  if (m.fitBounds) m.fitBounds([[c.lat, c.lng], [p.lat, p.lng]], { padding: [40, 40], maxZoom: 18 }); else m.setView([p.lat, p.lng], 17);
+  S.mini = m;
+}
+async function estaAqui(b) {
+  const c = S.cache.get(b.dataset.id); if (!puedoProponer(c)) return;
+  ocupado(b, true);
+  let p;
+  try { p = await getPos(); } catch (e) { ocupado(b, false); return aviso(C.ESTA_AQUI_SIN_GPS, 'current-location'); }
+  ocupado(b, false);
+  if (p.acc > C.ESTA_AQUI_PRECISION) return aviso(C.ESTA_AQUI_SENAL, 'current-location');
+  const d = distancia(p, c);
+  if (d > C.ESTA_AQUI_MAX) return aviso(C.ESTA_AQUI_LEJOS, 'map-pin');
+  abrirHoja(() => `${cabeza(`${ic('map-pin')} ${esc(C.ESTA_AQUI)}`)}
+    <p class="tiny" style="margin:0 0 10px">${esc(C.ESTA_AQUI_MAPA.replace('{n}', c.user_name || ''))}</p>
+    <div class="minimap esta-aqui-mapa" id="mapa-propuesta"></div>
+    <p class="tiny" style="margin:6px 0 0;text-align:center"><b>${esc(metros(d))}</b></p>
+    <p style="margin:10px 0">${esc(C.ESTA_AQUI_EXPLICA.replace('{n}', c.user_name || ''))}</p>
+    <button class="btn block" data-act="esta_aqui_enviar" data-id="${c.id}" data-lat="${p.lat}" data-lng="${p.lng}" data-acc="${p.acc}">${ic('send')} ${esc(C.ESTA_AQUI_ENVIAR.replace('{n}', c.user_name || ''))}</button>
+    <button class="btn alt block" data-act="cerrar" style="margin-top:8px">${ic('x')} ${esc(C.NO_GRACIAS)}</button>`,
+  (raiz) => { const el = $('#mapa-propuesta', raiz); if (el) mapaPropuesta(el, c, p); }, 'esta_aqui');
+}
+async function estaAquiEnviar(b) {
+  const c = S.cache.get(b.dataset.id); if (!c) return;
+  ocupado(b, true);
+  let r;
+  try { r = await api.proponerLugar(c.id, Number(b.dataset.lat), Number(b.dataset.lng), Number(b.dataset.acc)); }
+  catch (e) { ocupado(b, false); return fallo(e); }
+  if (!r || !r.ok) { ocupado(b, false); return aviso(r && r.motivo === 'senal' ? C.ESTA_AQUI_SENAL : C.ESTA_AQUI_LEJOS, 'map-pin'); }
+  cerrarHoja();
+  aviso(C.ESTA_AQUI_LISTO.replace('{n}', c.user_name || ''), 'send');
+}
+// La autora decide: "Mover" (el pin pasa al lugar propuesto, con su colonia) o "Dejarlo" (no se avisa a nadie)
+async function responderPropuesta(b) {
+  const [pid] = String(b.dataset.id || '').split(':'), mover = b.dataset.v === '1'; if (!pid) return;
+  ocupado(b, true);
+  let r;
+  try {
+    let colonia = null;
+    if (mover) { const p = await api.propuesta(pid); if (p) colonia = await api.colonia(p.lat, p.lng).catch(() => null); }
+    r = await api.responderPropuesta(pid, mover, colonia);
+  } catch (e) { ocupado(b, false); return fallo(e); }
+  S.avisos = (S.avisos || []).filter((a) => !(a.kind === 'propuesta' && String(a.reaccion || '').startsWith(pid))); pintarCampana();
+  if (r === 'aceptada') { S.cache.clear(); refrescarActual(); }
+  if (hojaArriba()) dibujarHoja();
+  aviso(r === 'aceptada' ? C.PROPUESTA_MOVIDO : C.PROPUESTA_DEJADO, r === 'aceptada' ? 'map-pin' : 'check');
+}
+function abrirCol(c, tipo, obligatoria) {
+  limpiarCol();
+  Object.assign(K, { fid: c.id, tipo, foto: null, enc: null, vistaUrl: null, nota: '', obligatoria: !!obligatoria });
+  abrirHoja(colHTML, montarCol, 'colaborar');
+}
+async function alternarReaccion(c, tipo, mia) {
+  const r = Object.assign({}, c.reactions || {});
+  let mias = (c.my_reactions || []).slice();
+  if (mia) { r[tipo] = Math.max(0, (r[tipo] || 0) - 1); mias = mias.filter((x) => x !== tipo); }
+  else {
+    // 2.0.2: una sola reacción por persona; elegir otra cambia la anterior ("Lo vi" va aparte)
+    if (tipo !== 'eye') { mias.filter((x) => x !== 'eye').forEach((x) => { r[x] = Math.max(0, (r[x] || 0) - 1); }); mias = mias.filter((x) => x === 'eye'); }
+    r[tipo] = (r[tipo] || 0) + 1; mias.push(tipo);
+  }
+  const nueva = Object.assign({}, c, { reactions: r, my_reactions: mias });
+  guarda([nueva]); refrescarFicha(c.id);
+  try { await api.react(c.id, tipo, !mia, S.user.id); }
+  catch (e) { guarda([c]); refrescarFicha(c.id); fallo(e); }
+}
+// "Lo vi" ya marcado (2.0.2): sumar la visita de hoy, sumar otra con foto (hasta 3 al día) o quitar la marca
+function hojaVistoMarcado(c, e) {
+  const n = e ? e.visto || 0 : null, max = (e && e.maximo) || 3;
+  abrirHoja(() => `${cabeza(`${ic('eye-check')} ${esc(C.AYUDA.visto)}`)}<div class="hoja-segunda">
+    ${n === 0 ? `<p class="tiny">${esc(C.VISTO_OTRO_DIA)}</p>
+      <button class="btn block" data-act="visto_hoy" data-id="${c.id}">${ic('eye-check')} ${esc(C.VISTO_SUMAR_HOY)}</button>`
+    : n != null && n < max ? `<p class="tiny">${esc(e.adjuntar_visto ? C.VISTO_ADJUNTAR : C.VISTO_SEGUNDA)}</p>
+      <button class="btn block" data-act="visto_sumar_foto" data-id="${c.id}" data-tipo="visto">${ic('camera')} ${esc(C.TOMAR_FOTO)}</button>`
+    : n != null ? `<p class="tiny">${esc(C.VISTO_LIMITE)}</p>` : ''}
+    <button class="btn alt block" data-act="visto_quitar" data-id="${c.id}" style="margin-top:8px">${ic('eye-off')} ${esc(C.VISTO_QUITAR)}</button></div>`, null, 'visto_marcado');
+}
+// La segunda o tercera vez del día: hace falta una foto de cómo está ahora
+// Si la visita de hace un momento aún no tiene foto, la foto se suma a esa misma visita (no cuenta otra)
+function hojaSegunda(c, tipo, e) {
+  const visto = tipo === 'visto', adjuntar = !!(e && e[visto ? 'adjuntar_visto' : 'adjuntar_no_esta']);
+  abrirHoja(() => `${cabeza(`${ic(visto ? 'eye-check' : 'map-pin-off')} ${esc(visto ? C.AYUDA.visto : C.AYUDA.ausencia)}`)}<div class="hoja-segunda">
+    <p><b>${esc(visto ? C.VISTO_YA_HOY : C.AUSENCIA_YA_HOY)}</b></p><p class="tiny">${esc(adjuntar ? C.ADJUNTAR_TEXTO : C.SEGUNDA_TEXTO)}</p>
+    <button class="btn block" data-act="visto_sumar_foto" data-id="${c.id}" data-tipo="${tipo}">${ic('camera')} ${esc(C.TOMAR_FOTO)}</button>
+    <button class="btn alt block" data-act="cerrar" style="margin-top:8px">${esc(C.CANCELAR)}</button></div>`, null, 'segunda');
+}
+function limpiarCol() {
+  if (K.vistaUrl) URL.revokeObjectURL(K.vistaUrl);
+  if (K.enc) soltarLienzo(K.enc.img);
+  Object.assign(K, { foto: null, enc: null, vistaUrl: null });
+}
+function colHTML() {
+  const visto = K.tipo === 'visto';
+  return `${cabeza(`${ic(visto ? 'eye-check' : 'map-pin-off')} ${esc(visto ? C.COL_TITULO_VISTO : C.COL_TITULO_NO_ESTA)}`)}
+    <p class="tiny" style="margin:0 0 12px">${esc(K.obligatoria ? C.COL_TEXTO_OBLIGATORIA : visto ? C.COL_TEXTO_VISTO : C.COL_TEXTO_NO_ESTA)}</p>
+    <div class="col-foto" style="margin-bottom:12px">
+      <label class="ib" data-tip="${esc(C.AYUDA.camara)}" aria-label="${esc(C.AYUDA.camara)}">${ic('camera')}<input type="file" accept="image/*" capture="environment" hidden data-in="foto-col"></label>
+      <label class="ib" data-tip="${esc(C.AYUDA.galeria)}" aria-label="${esc(C.AYUDA.galeria)}">${ic('upload')}<input type="file" accept="image/*" hidden data-in="foto-col"></label>
+      ${K.foto ? `<button type="button" class="foto-mini" data-act="encuadrar_col" data-tip="${esc(C.AYUDA.encuadrar)}" aria-label="${esc(C.AYUDA.encuadrar)}"><img id="vista-col" src="${K.vistaUrl}" alt=""></button>${ib('quitar_foto_col', 'x', 'quitar_captura', '', 'sm')}` : ''}
+    </div>
+    <label class="campo-ic">${ic('pencil')}<textarea id="col-nota" class="in compacto crece" rows="1" maxlength="${C.COL_NOTA_MAX}" placeholder="${esc(C.COL_NOTA)}" aria-label="${esc(C.COL_NOTA)}">${esc(K.nota)}</textarea></label>
+    ${!visto && puedoProponer(S.cache.get(K.fid)) ? `<div class="esta-aqui"><p><b>${esc(C.ESTA_AQUI_PREGUNTA)}</b></p>
+      <button class="btn alt block" data-act="esta_aqui" data-id="${K.fid}">${ic('map-pin')} ${esc(C.ESTA_AQUI)}</button>
+      <p class="tiny">${esc(C.ESTA_AQUI_PISTA.replace('{n}', (S.cache.get(K.fid) || {}).user_name || ''))}</p></div>` : ''}
+    <button class="btn block" data-act="col_guardar" style="margin-top:12px">${ic(visto ? 'camera' : 'map-pin-off')} ${esc(visto ? C.COL_GUARDAR_VISTO : C.COL_GUARDAR_NO_ESTA)}</button>
+    <button class="btn alt block" data-act="cerrar" style="margin-top:8px">${K.obligatoria ? esc(C.CANCELAR) : `${ic('check')} ${esc(C.COL_SIN_FOTO)}`}</button>
+    <p class="tiny" style="text-align:center">${esc(C.COL_DIA)}</p>`;
+}
+function montarCol(raiz) {
+  $$('[data-in="foto-col"]', raiz).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && tomarFotoCol(inp.files[0])));
+}
+function recordarCol() { const t = $('#col-nota'); if (t) K.nota = t.value; }
+async function cuadroCol() {
+  const E = K.enc; if (!E) return;
+  E.sucio = false;
+  const cv = cuadroDe(E, C.FOTO_LADO), b = await lienzoABlob(cv, C.FOTO_CALIDAD, false);
+  soltarLienzo(cv);
+  if (K.enc !== E) return;
+  K.foto = b;
+  if (K.vistaUrl) URL.revokeObjectURL(K.vistaUrl);
+  K.vistaUrl = URL.createObjectURL(b);
+  const v = $('#vista-col'); if (v) v.src = K.vistaUrl;
+}
+async function tomarFotoCol(file) {
+  try {
+    recordarCol();
+    const img = await cargarImagen(file);
+    if (K.enc) soltarLienzo(K.enc.img);
+    K.enc = nuevoEncuadre(escalar(img, C.ENCUADRE_FUENTE));
+    await cuadroCol();
+    dibujarHoja();
+    hojaEncuadre(K.enc, async () => { await cuadroCol(); });
+  } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
+}
+async function guardarCol(btn) {
+  recordarCol();
+  if (!K.foto) return aviso(C.COL_FALTA_FOTO, 'camera');
+  const visto = K.tipo === 'visto';
+  ocupado(btn, true);
+  if (K.enc && K.enc.sucio) await cuadroCol();
+  let p;
+  try { p = await getPos(); } catch (e) { ocupado(btn, false); return aviso(visto ? C.VISTO_SIN_GPS : C.AUSENCIA_SIN_GPS, 'current-location'); }
+  let sub = null;
+  try {
+    const fotos = await fotosDe(K.foto);
+    sub = await subirFotosDe(fotos, S.user.id);
+    const r = await api.colaborar(K.fid, K.tipo, p, sub.pFoto, sub.pMini, (K.nota || '').trim().slice(0, C.COL_NOTA_MAX));
+    if (!r || !r.ok) {
+      api.removeFiles([sub.pFoto, sub.pMini]).catch(() => null);
+      ocupado(btn, false);
+      if (r && (r.motivo === 'limite' || r.motivo === 'semana')) return aviso(visto ? C.VISTO_LIMITE : C.AUSENCIA_LIMITE, 'calendar');
+      if (r && r.motivo === 'lejos') return aviso((visto ? C.VISTO_LEJOS : C.AUSENCIA_LEJOS).replace('{d}', metros(r.distancia)), 'navigation');
+      return aviso(visto ? C.VISTO_APROXIMADA : C.AUSENCIA_APROXIMADA, 'current-location');
+    }
+    const fid = K.fid;
+    limpiarCol(); cerrarHoja();
+    aviso(visto ? C.COL_LISTO_VISTO : C.COL_LISTO_NO_ESTA, visto ? 'camera' : 'map-pin-off');
+    const nueva = await api.card(fid).catch(() => null); if (nueva) guarda([nueva]);
+    S.feed = [];
+    if (fichaH && fichaH.id === fid) await fichaH.cargar();
+    refrescarFicha(fid);
+  } catch (e) {
+    if (sub && sub.pFoto) api.removeFiles([sub.pFoto, sub.pMini]).catch(() => null);
+    ocupado(btn, false); fallo(e);
+  }
+}
+// Quien subió una foto de la comunidad la puede borrar completa (foto y nota)
+async function borrarColaboracion(btn, sid, fid) {
+  const h = fichaH && (fichaH.lista || []).find((x) => x.id === sid);
+  if (!h || h.user_id !== S.user.id) return;
+  if (!(await confirmar(C.COL_BORRAR_CONFIRMAR, 'trash', api.photoUrl(h.thumb || h.photo)))) return;
+  ocupado(btn, true);
+  try {
+    const borradas = await api.delSighting(sid);
+    if (!borradas || !borradas.length) { ocupado(btn, false); await fichaH.cargar(); refrescarFicha(fid); return aviso(C.COL_YA_NO_ESTA, 'alert-triangle'); }
+    await api.removeFiles([h.photo, h.thumb]).catch(() => null);
+    const nueva = await api.card(fid).catch(() => null); if (nueva) guarda([nueva]);
+    S.feed = []; fichaH.i = 0; await fichaH.cargar(); refrescarFicha(fid);
+    aviso(C.COL_BORRADA, 'trash');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+// Quien registró el hallazgo no borra fotos ajenas: las reporta con un motivo y decide la administradora
+function hojaReportarColaboracion(sid) {
+  const h = fichaH && (fichaH.lista || []).find((x) => x.id === sid); if (!h) return;
+  abrirHoja(() => `${cabeza(`${ic('flag')} ${esc(C.COL_REPORTAR)}`)}
+    <div class="row" style="gap:12px;margin-bottom:10px"><img class="thumb" src="${api.photoUrl(h.thumb || h.photo)}" alt="" style="width:84px;height:84px">
+      <span class="tiny">${esc(C.COL_DE.replace('{n}', h.user_name || ''))} · ${esc(fecha(h.created_at))}</span></div>
+    <label class="campo-ic">${ic('pencil')}<textarea id="col-motivo" class="in compacto crece" rows="2" maxlength="200" placeholder="${esc(C.COL_REPORTAR_MOTIVO)}" aria-label="${esc(C.COL_REPORTAR_MOTIVO)}"></textarea></label>
+    <p class="tiny">${esc(C.COL_REPORTAR_TEXTO)}</p>
+    <button class="btn block" data-act="col_reporte_enviar" data-id="${sid}">${ic('send')} ${esc(C.COL_REPORTAR_ENVIAR)}</button>`, null, 'reportar_col');
+}
+
+/* Ir al punto: el mapa de la app lleva hasta un hallazgo. La distancia y la dirección
+   se calculan en el teléfono; la ubicación no se envía a ningún servicio de mapas. */
+const RUMBOS = ['norte', 'noreste', 'este', 'sureste', 'sur', 'suroeste', 'oeste', 'noroeste'];
+function rumbo(a, b) {
+  const r = Math.PI / 180, dl = (b.lng - a.lng) * r;
+  const y = Math.sin(dl) * Math.cos(b.lat * r);
+  const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos(dl);
+  return RUMBOS[Math.round(((Math.atan2(y, x) / r) + 360) % 360 / 45) % 8];
+}
+function irAlPunto(c) {
+  if (!enMapa(c)) return aviso(C.SIN_MAPA_NO_APLICA, 'map-pin-off');
+  terminarGuia();
+  cerrarTodo(); irA('map');
+  const G = S.guia = { c, pin: null, watch: null, pos: null, centrado: false, sinGps: false };
+  pintarGuia();
+  setTimeout(() => {
+    if (S.guia !== G || !S.map) return;
+    G.pin = L.marker([c.lat, c.lng], { icon: L.divIcon({ className: '', iconSize: [36, 36], iconAnchor: [18, 36],
+      html: `<div class="pin destino" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</div>` }) })
+      .on('click', () => (c.act === 'encuentro' ? (terminarGuia(), abrirEncuentro(c.actId)) : abrirFicha(c.id))).addTo(S.map);
+    S.map.setView([c.lat, c.lng], 18);
+    if (!navigator.geolocation) { G.sinGps = true; return pintarGuia(); }
+    G.watch = navigator.geolocation.watchPosition((p) => {
+      if (S.guia !== G) return;
+      G.pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) };
+      ponerYo(G.pos);
+      if (!G.centrado) { G.centrado = true; S.map.fitBounds([[G.pos.lat, G.pos.lng], [c.lat, c.lng]], { padding: [70, 70], maxZoom: 18 }); }
+      pintarGuia();
+    }, () => { if (S.guia === G) { G.sinGps = true; pintarGuia(); } }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  }, 60);
+}
+function pintarGuia() {
+  const G = S.guia, el = $('#guia-punto'); if (!el) return;
+  if (!G) { el.hidden = true; el.innerHTML = ''; return; }
+  const d = G.pos ? distancia(G.pos, G.c) : null;
+  const txt = d == null ? (G.sinGps ? C.GUIA_SIN_GPS : C.GUIA_BUSCANDO)
+    : d <= C.LLEGADA_METROS ? C.GUIA_LLEGASTE : `${metros(d)} al ${rumbo(G.pos, G.c)}`;
+  el.hidden = false;
+  el.innerHTML = `<button class="row grow" data-act="${G.c.act || 'ficha'}" data-id="${G.c.actId || G.c.id}" style="text-align:left;min-width:0">
+      <span class="avatar" style="background:${okColor(G.c.cat_color)}">${ic(G.c.cat_icon)}</span>
+      <span class="grow" style="min-width:0"><b class="guia-nombre">${esc(G.c.name)}</b><span class="guia-dist">${ic('navigation')} ${esc(txt)}</span></span></button>
+    ${ib('cerrar_guia', 'x', 'cerrar', '', 'sm')}`;
+}
+function terminarGuia() {
+  const G = S.guia; if (!G) return;
+  if (G.watch != null && navigator.geolocation) navigator.geolocation.clearWatch(G.watch);
+  if (G.pin && S.map) { if (S.map.removeLayer) S.map.removeLayer(G.pin); else if (G.pin.el) G.pin.el.remove(); }
+  S.guia = null; pintarGuia();
+}
+
+async function cargarPines() {
+  if (!S.map) return;
+  // En modo grupo solo se ve lo del grupo de encuentro
+  if (S.grupo) { if (S.capa) S.capa.clearLayers(); return; }
+  const b = S.map.getBounds().pad(0.3);
+  const caja = { s: b.getSouth(), n: b.getNorth(), w: b.getWest(), e: b.getEast() };
+  try {
+    const lista = guarda(await api.cardsInBox(caja, opcionesFiltro(S.filtro)));
+    if (S.grupo) return;   // se entró al modo grupo mientras llegaban
+    S.ultimosPines = lista;
+    pintarPines(lista);
+  } catch (e) { fallo(e); }
+}
+/* 2.0.2: de lejos los pines cercanos se juntan en una burbuja con el número y el color de la colección que más tiene.
+   Al tocarla el mapa se acerca. Los adornos solo se ven de cerca; las medallas del top, siempre. */
+function proyectar(lat, lng, z) {
+  const t = 256 * Math.pow(2, z), s = Math.sin(lat * Math.PI / 180);
+  return { x: t * (lng + 180) / 360, y: t * (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) };
+}
+function agrupar(lista, z) {
+  lista = (lista || []).filter(enMapa);
+  const A = C.MAPA_AGRUPAR || {}, celda = z <= (A.hasta || 14) ? (A.celda || 60) : z <= (A.medio || 15) ? (A.celdaMedia || 30) : 0;
+  if (!celda) return lista.map((c) => ({ uno: c }));
+  const grupos = new Map();
+  lista.forEach((c) => { const p = proyectar(c.lat, c.lng, z), k = `${Math.floor(p.x / celda)}:${Math.floor(p.y / celda)}`;
+    if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(c); });
+  return [...grupos.values()].map((g) => (g.length === 1 ? { uno: g[0] } : { varios: g }));
+}
+function burbuja(g) {
+  const cuenta = new Map(); g.forEach((c) => { const k = okColor(c.cat_color); cuenta.set(k, (cuenta.get(k) || 0) + 1); });
+  const color = [...cuenta.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  const lat = g.reduce((s, c) => s + c.lat, 0) / g.length, lng = g.reduce((s, c) => s + c.lng, 0) / g.length;
+  let top = null, corona = false;
+  g.forEach((c) => { const sie = S.top && S.top.siempre && S.top.siempre.get(c.id), sem = S.top && S.top.pines.get(c.id);
+    if (sie && (!corona || sie < top)) { top = sie; corona = true; } else if (!corona && sem && (!top || sem < top)) top = sem; });
+  const d = Math.round(Math.min(56, 28 + Math.sqrt(g.length) * 5));
+  const med = top ? `<svg class="burbuja-med" viewBox="${corona ? '-14 -25 28 59' : '-14 -14 28 48'}" width="18" height="${corona ? 38 : 31}" aria-hidden="true">${medallaTop(top, 0, 0, corona)}</svg>` : '';
+  const tip = esc(C.BURBUJA_TEXTO.replace('{n}', g.length));
+  return { lat, lng, icon: L.divIcon({ className: '', iconSize: [d, d], iconAnchor: [d / 2, d / 2],
+    html: `<div class="burbuja" style="--c:${color};width:${d}px;height:${d}px" role="button" aria-label="${tip}">${g.length}${med}</div>` }) };
+}
+function pintarPines(lista) {
+  if (!S.map || !S.capa) return;
+  S.capa.clearLayers();
+  const z = S.map.getZoom ? S.map.getZoom() : 16;
+  agrupar(lista || [], z == null ? 16 : z).forEach((x) => {
+    if (x.uno) return L.marker([x.uno.lat, x.uno.lng], { icon: pinIcono(x.uno, z) }).on('click', () => abrirFicha(x.uno.id)).addTo(S.capa);
+    const b = burbuja(x.varios);
+    L.marker([b.lat, b.lng], { icon: b.icon }).on('click', () => S.map.setView([b.lat, b.lng], Math.min((z || 14) + 2, C.MAPA_ADORNOS_DESDE || 16))).addTo(S.capa);
+  });
+}
+// Fila de filtros compartida por el mapa y el muro
+function chipsFiltro(f, act, conPropios) {
+  const on = (modo, id) => f.modo === modo && (id == null || f.id === id) ? 'on' : '';
+  const t = (k) => esc(C.AYUDA[k]);
+  return `<button class="chip ${on('todos')}" data-act="${act}" data-v="todos" data-tip="${t('filtro_todos')}" aria-label="${t('filtro_todos')}">${ic('world')}</button>
+    ${conPropios ? `<button class="chip ${on('mios')}" data-act="${act}" data-v="mios" data-tip="${t('filtro_mios')}" aria-label="${t('filtro_mios')}">${ic(S.me.avatar)}</button>` : ''}
+    <button class="chip ${on('siguiendo')}" data-act="${act}" data-v="siguiendo" data-tip="${t('filtro_siguiendo')}" aria-label="${t('filtro_siguiendo')}">${ic('user-check')}</button>
+    ${conPropios ? S.cats.map((c) => chipColor(act, 'cat:' + c.id, c.name, c.icon, c.color, !!on('cat', c.id))).join('') : ''}
+    ${gruposColeccion().map((g) => chipColor(act, 'grupo:' + g.id, g.name, g.icon, g.color, !!on('grupo', g.id), ic('users'))).join('')}`;
+}
+// Botón de colección o grupo: el ícono va en el color de su colección; elegido, el botón entero toma ese color
+function chipColor(act, v, nombre, icono, color, elegido, despues = '', attrs = '') {
+  return `<button type="button" class="chip cc ${elegido ? 'on' : ''}" style="--c:${okColor(color)}" data-act="${act}" data-v="${v}" ${attrs}>${ic(icono)}${esc(nombre)}${despues}</button>`;
+}
+/* Mapa: fila 1 se desliza (grupos de encuentro, que abren el modo grupo; colecciones y grupos); fila 2 fija (todo, lo mío, a quien sigo | buzón, ayuda, preguntas) */
+function chipsMapa() {
+  const f = S.filtro, on = (m, id) => f.modo === m && f.id === id;
+  return `${gruposEncuentro().map((g) => `<button type="button" class="chip cc capa" style="--c:${okColor(g.color)}" data-act="grupo_mapa" data-id="${g.id}"
+      data-tip="${esc(C.AYUDA.capa_encuentro)}">${ic('lifebuoy')}${esc(g.name)}</button>`).join('')}
+    ${S.cats.map((c) => chipColor('filtro', 'cat:' + c.id, c.name, c.icon, c.color, on('cat', c.id))).join('')}
+    ${gruposColeccion().map((g) => chipColor('filtro', 'grupo:' + g.id, g.name, g.icon, g.color, on('grupo', g.id), ic('users'))).join('')}
+    ${(S.sigoCols || []).map((c) => chipColor('filtro', 'sigcol:' + c.category_id, c.name, c.icon, c.color, on('sigcol', c.category_id), ic('user-check'), `data-tip="${esc(c.owner_name || '')}"`)).join('')}`;
+}
+function filtrosFijos() {
+  const b = (v, icono, k) => `<button class="ib sm ${S.filtro.modo === v ? 'sel' : ''}" data-act="filtro" data-v="${v}" data-tip="${esc(C.AYUDA[k])}" aria-label="${esc(C.AYUDA[k])}" aria-pressed="${S.filtro.modo === v}">${ic(icono)}</button>`;
+  return b('todos', 'world', 'filtro_todos') + b('mios', S.me.avatar, 'filtro_mios') + b('siguiendo', 'user-check', 'filtro_siguiendo');
+}
+function pintarFiltrosMapa() {
+  const a = $('#chips-mapa'), b = $('#filtros-fijos');
+  if (a) { const x = a.scrollLeft; a.innerHTML = chipsMapa(); a.scrollLeft = x; }
+  if (b) b.innerHTML = filtrosFijos();
+}
+function leerFiltro(v) {
+  if (v === 'todos' || v === 'mios' || v === 'siguiendo') return { modo: v, id: null };
+  const [modo, id] = v.split(':');
+  return { modo, id };
+}
+
+/* ---------------------------------------------------------------------
+   6. PANTALLAS
+   --------------------------------------------------------------------- */
+function pintarApp() {
+  $('#app').innerHTML = `
+    <section id="scr-map" class="screen map-screen">
+      <div id="map"></div>
+      <div class="map-top">
+        <div class="grupo-cab" id="grupo-cab" hidden></div>
+        <div class="chips" id="chips-mapa">${chipsMapa()}</div>
+        <div class="map-fila2"><span class="grupo-ib" id="filtros-fijos">${filtrosFijos()}</span>
+          <span class="grupo-ib">${ib('buscar_mapa', 'search', 'buscar_personas', '', 'sm')}${ib('tabla', 'trophy', 'tabla', '', 'sm')}${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}<span id="atajo-ayuda" class="atajo-ayuda">${gruposEncuentro().length ? botonAyuda() : ''}</span>${ib('dudas', 'help', 'dudas', '', 'sm')}</span></div>
+      </div>
+      <div class="map-side">${ib('ubicar', 'current-location', 'ubicar')}${ib('cerca', 'walk', 'cerca')}</div>
+      <div class="panel-grupo" id="panel-grupo" hidden></div>
+      <div id="guia-punto" class="guia-punto" hidden></div>
+      <div id="instalar-franja" class="instalar-franja" hidden><button class="row grow" data-act="instalar" style="text-align:left">${ic('device-mobile')}<span class="grow">${esc(C.INSTALAR_FRANJA)}</span></button>${ib('instalar_no', 'x', 'cerrar', '', 'sm ghost')}</div>
+    </section>
+    <main id="scr" class="screen" hidden></main>
+    <div id="franja-compartir" class="franja-compartir" hidden></div>
+    <nav class="nav">
+      <button data-act="tab" data-v="map" data-tip="${C.AYUDA.mapa}" aria-label="${C.AYUDA.mapa}">${ic('map-2')}</button>
+      <button data-act="tab" data-v="feed" data-tip="${C.AYUDA.muro}" aria-label="${C.AYUDA.muro}">${ic('layout-grid')}</button>
+      <button class="fab" data-act="nuevo" data-tip="${C.AYUDA.nuevo}" aria-label="${C.AYUDA.nuevo}">${ic('camera')}</button>
+      <button data-act="tab" data-v="coleccion" data-tip="${C.AYUDA.coleccion}" aria-label="${C.AYUDA.coleccion}">${ic('cards')}</button>
+      <button data-act="tab" data-v="perfil" data-tip="${C.AYUDA.perfil}" aria-label="${C.AYUDA.perfil}">${ic('user')}<span class="punto-pasos" hidden></span></button>
+    </nav>
+    <button class="inicio-pin" data-act="inicio_aqui" hidden><span class="cuerpo">${ic('map-pin')}${esc(C.INICIO_AQUI)}</span><span class="punta"></span></button>`;
+  crearMapa();
+  irA('map');
+  pintarCampana();
+  pintarInstalar();
+}
+function irA(tab) {
+  soltarFoco($('#app'));
+  if (tab !== 'map') terminarGuia();
+  S.tab = tab;
+  pintarFranjaCompartir();
+  $$('.nav [data-act="tab"]').forEach((b) => b.classList.toggle('on', b.dataset.v === tab));
+  if (tab === 'perfil') inicioVisto();
+  pintarBienvenida();
+  const esMapa = tab === 'map';
+  $('#scr-map').hidden = !esMapa; $('#scr').hidden = esMapa;
+  if (esMapa) { pintarFiltrosMapa(); setTimeout(() => { S.map.invalidateSize(); cargarPines(); if (S.grupo) S.grupo.cargar(); }, 30); return; }
+  $('#scr').scrollTop = 0;
+  ({ feed: pintarMuro, coleccion: pintarColeccion, perfil: pintarPerfil })[tab]();
+}
+function refrescarActual() { if (S.tab === 'map') cargarPines(); else if ($('#scr')) irA(S.tab); }
+
+/* Muro */
+function reaccionesHTML(c) {
+  const propio = c.user_id === S.user.id;
+  // En lo tuyo "No está" es solo un ícono, del tamaño de las reacciones
+  const noEsta = puedoMarcarAusencia(c) ? `<button class="react ${propio ? '' : 'con-texto'} ausencia ${atenuado(c) ? 'on' : ''}" data-act="ya_no_esta" data-id="${c.id}" data-tip="${esc(C.AYUDA.ausencia_ayuda)}" aria-label="${esc(C.AYUDA.ausencia_ayuda)}">${ic('map-pin-off')}${propio ? '' : `<span class="react-lbl">${esc(C.AYUDA.ausencia)}</span>`}${c.ausencias ? `<span class="n">${c.ausencias}</span>` : ''}</button>` : '';
+  // "Lo vi" confirma un lugar: en una foto sin mapa no aplica
+  return `<div class="reacts">${C.REACCIONES.filter((r) => r.tipo !== 'eye' || marcaMapa(c)).map((r) => {
+    const n = (c.reactions || {})[r.tipo] || 0, mia = (c.my_reactions || []).includes(r.tipo);
+    const cara = `${ic(r.icono)}${r.etiqueta ? `<span class="react-lbl">${esc(r.etiqueta)}</span>` : ''}${n ? `<span class="n">${n}</span>` : ''}`;
+    if (propio || c.is_private) return n ? `<span class="react ${r.etiqueta ? 'con-texto fija' : ''}" data-tip="${esc(r.ayuda)}">${cara}</span>` : '';
+    return `<button class="react ${r.etiqueta ? 'con-texto' : ''} ${mia ? 'on' : ''}" data-act="reaccion" data-id="${c.id}" data-v="${r.tipo}" data-tip="${esc(r.ayuda)}" aria-label="${esc(r.ayuda)}">${cara}</button>`;
+  }).join('')}${noEsta}</div>`;
+}
+// Foto del muro: la mediana del hallazgo; si no tiene (hallazgos anteriores), la grande. Con MURO_FOTO 'mini', la miniatura.
+function fotoMuro(c) {
+  if (C.MURO_FOTO === 'mini') return foto(c, true);
+  return c.media ? api.photoUrl(c.media) : foto(c);
+}
+function tarjeta(c) {
+  // 2.0.2 (diseño de Laura): lugar y hora junto al nombre; la colección junto al título; comentar y "Más acciones";
+  // las reacciones en una fila; si hay comentarios, el primero y cuántos más
+  const pc = S.primeros && S.primeros.get(c.id), n = c.comments_count || 0;
+  const franja = n ? `<button type="button" class="card-coms" data-act="comentar_ficha" data-id="${c.id}" data-ver="1">
+      ${pc ? `<span class="linea"><b>${esc(pc.name)}</b> ${esc(pc.body)}</span>` : ''}
+      ${!pc || n > 1 ? `<span class="cuenta">${esc(pc ? (n === 2 ? C.COMENTARIOS_MAS_1 : C.COMENTARIOS_MAS.replace('{n}', n - 1)) : (n === 1 ? C.COMENTARIOS_1 : C.COMENTARIOS_N.replace('{n}', n)))}${ic('chevron-right')}</span>` : ''}</button>` : '';
+  return `<article class="card" data-card="${c.id}">
+    <div class="body row card-cab"><button class="row grow" data-act="perfil" data-id="${c.user_id}" style="text-align:left;min-width:0">${avatar(c)}<b>${esc(c.user_name)}${medallaNombre(c.user_id)}</b></button>
+      <span class="tiny card-donde">${!marcaMapa(c) ? ic('map-pin-off') + ' ' + esc(C.SIN_MAPA_CORTO) + ' · ' : c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}${c.sightings_count ? ` · ${ic('repeat')} ${c.sightings_count}` : ''}</span></div>
+    ${c.photo || c.thumb ? `<img class="photo" src="${fotoMuro(c)}" alt="${esc(c.name)}" loading="lazy" data-act="ficha" data-id="${c.id}">` : `<div class="photo" data-act="ficha" data-id="${c.id}" style="display:grid;place-items:center;font-size:60px">${ic(c.cat_icon)}</div>`}
+    <div class="body"><div class="row between card-tit"><h3>${esc(c.name)}</h3>${etiquetaDe(c)}</div>
+      <div class="card-accion">${puedoComentar(c) ? `<button type="button" class="campo-falso" data-act="comentar_ficha" data-id="${c.id}" aria-label="${esc(C.COMENTAR_PISTA)}"><span>${esc(C.COMENTAR_PISTA)}</span><span class="env">${ic('send')}</span></button><span class="sep" aria-hidden="true"></span>` : '<span class="grow"></span>'}
+        <button type="button" class="ver-mas" data-act="ficha" data-id="${c.id}" aria-label="${esc(C.VER_MAS)}: ${esc(c.name)}">${esc(C.VER_MAS)}${ic('chevron-right')}</button></div>
+      <div class="card-reacts">${reaccionesHTML(c)}</div></div>${franja}</article>`;
+}
+// Novedad del Muro: un reencuentro con foto nueva
+function tarjetaReencuentro(it) {
+  const col = it.tipo === 'visto' && it.actor_id !== it.owner_id;
+  return `<article class="card novedad ${col ? 'colaboracion' : ''}" data-item="${it.item_id}">
+    <div class="body row"><button class="row grow" data-act="perfil" data-id="${it.actor_id}" style="text-align:left">${avatar({ avatar: it.actor_avatar, avatar_color: it.actor_color })}<b class="grow">${esc(it.actor_name)}${medallaNombre(it.actor_id)}</b></button>${col ? `<span class="catb col-chip">${ic('users')}${esc(C.COL_ETIQUETA)}</span>` : etiquetaDe(it)}</div>
+    <img class="photo" src="${api.photoUrl(C.MURO_FOTO === 'mini' ? (it.thumb || it.photo) : (it.photo || it.thumb))}" alt="${esc(it.name)}" loading="lazy" data-act="ficha" data-id="${it.find_id}" data-s="${it.item_id}">
+    <div class="body"><h3>${esc(it.name)}</h3>
+      <div class="tiny row">${col ? `${ic('eye-check')} ${esc(C.COL_MURO.replace('{n}', it.actor_name).replace('{d}', it.owner_name || ''))}` : `${ic('repeat')} Visto de nuevo · ${it.vez}ª vez`}${it.colonia ? ` · ${esc(it.colonia)}` : ''} · ${hace(it.at)}</div>
+      ${col && it.nota ? `<div class="nota-col">«${esc(it.nota)}»</div>` : ''}
+      ${reaccionesReencuentro(it)}</div></article>`;
+}
+// Las reacciones de un reencuentro son las del hallazgo: las mismas que en su tarjeta y en la ficha
+function reaccionesReencuentro(it) {
+  const c = S.cache.get(it.find_id);
+  return c ? `<div style="margin-top:8px" data-reacts-find="${it.find_id}">${reaccionesHTML(c)}</div>` : '';
+}
+// Convierte una novedad de tipo "hallazgo" en tarjeta (sin ubicación: la ficha la pide completa)
+function cartaDeNovedad(it) {
+  return { id: it.find_id, user_id: it.owner_id, user_name: it.actor_name, avatar: it.actor_avatar, avatar_color: it.actor_color,
+    name: it.name, cat_name: it.cat_name, cat_icon: it.cat_icon, cat_color: it.cat_color, category_id: it.category_id,
+    group_id: it.group_id, group_public: it.group_public, is_private: it.is_private, photo: it.photo, thumb: it.thumb, colonia: it.colonia,
+    created_at: it.at, reactions: it.reactions, my_reactions: it.my_reactions, sightings_count: it.sightings_count,
+    comments_count: it.comments_count, media: it.media || null, en_mapa: it.en_mapa !== false, parcial: true };
+}
+// Un reencuentro del muro sin el hallazgo en memoria: tarjeta parcial sin fotos (solo para reaccionar; la ficha pide la completa)
+function cartaDeReencuentro(it) {
+  return Object.assign(cartaDeNovedad(it), { user_name: it.owner_name || '', avatar: null, avatar_color: null,
+    photo: null, thumb: null, media: null, colonia: null, created_at: null, sinFotos: true });
+}
+// Una tarjeta guardada con sus fotos (las que vienen de un reencuentro del muro no las traen: se piden completas)
+const cartaConFotos = (id) => { const c = S.cache.get(id); return c && !c.sinFotos ? c : null; };
+// El Muro carga de 20 en 20: al llegar a la tarjeta 19 del último lote se pide el siguiente (sin botón)
+let vigiaMuro = null;
+const MURO_LOTE = 20;
+async function pintarMuro(masViejo) {
+  const scr = $('#scr');
+  if (!masViejo) {
+    scr.innerHTML = `<div class="row between" style="margin-bottom:10px"><h1 class="serif">Collector Go</h1>
+      <div class="row">${ib('tabla', 'trophy', 'tabla', '', 'dorado')}${ib('avisos', 'mail-heart', 'avisos', 'data-campana')}${ib('refrescar', 'refresh', 'Actualizar')}</div></div>
+      <div class="chips" id="chips-muro" style="margin-bottom:12px">${chipsFiltro(S.muro, 'muro_filtro', false)}</div>
+      <div class="feed" id="feed"><div class="empty"><span class="spin">${ic('loader-2')}</span></div></div>`;
+    S.feed = []; S.feedFin = false;
+    pintarCampana();
+  } else if (S.feedCargando || S.feedFin) return;
+  if (vigiaMuro) { vigiaMuro.disconnect(); vigiaMuro = null; }
+  const filtro = S.muro, pedido = (S.muroPedido || 0) + 1; S.muroPedido = pedido;
+  S.feedCargando = true;
+  const html = (l) => l.map((it) => (it.kind === 'find' ? tarjeta(S.cache.get(it.find_id)) : tarjetaReencuentro(it))).join('');
+  try {
+    const antes = S.feed.length ? S.feed[S.feed.length - 1].at : null;
+    const lote = await api.feed(antes, opcionesFiltro(filtro));
+    if (pedido !== S.muroPedido) return; // se cambió el filtro mientras cargaba
+    lote.forEach(sinColeccion);
+    lote.forEach((it) => {
+      const ya = S.cache.get(it.find_id);
+      // lo que cambia seguido (reacciones y cuentas) se toma del muro; el resto, de lo ya guardado
+      const al = { reactions: it.reactions, my_reactions: it.my_reactions };
+      if (it.comments_count != null) al.comments_count = it.comments_count;
+      if (it.sightings_count != null) al.sightings_count = it.sightings_count;
+      if (it.kind === 'find') S.cache.set(it.find_id, ya && !ya.parcial ? Object.assign({}, ya, al) : cartaDeNovedad(it));
+      else if (!ya) S.cache.set(it.find_id, cartaDeReencuentro(it));
+    });
+    S.feed = S.feed.concat(lote);
+    if (lote.length < MURO_LOTE) S.feedFin = true;
+    S.feedCargando = false;
+    const f = $('#feed'); if (!f) return;
+    const vacio = filtro.modo === 'siguiendo'
+      ? `<div class="empty">${ic('user-plus')}<p>${esc(C.MURO_SIN_SEGUIR)}</p><button class="btn" data-act="buscar_personas">${ic('search')} ${esc(C.BUSCAR_TITULO)}</button></div>`
+      : `<div class="empty">${ic('camera')}<p>Aún no hay hallazgos aquí</p><button class="btn" data-act="nuevo">${ic('camera')}</button></div>`;
+    const marca = $('.feed-mas', f);
+    if (masViejo && marca) marca.insertAdjacentHTML('beforebegin', html(lote));
+    else f.innerHTML = S.feed.length ? html(S.feed) + '<div class="feed-mas"></div>' : vacio;
+    vigilarMuro();
+    cargarPrimeros(lote.filter((it) => it.kind === 'find').map((it) => it.find_id));
+  } catch (e) {
+    if (pedido !== S.muroPedido) return;
+    S.feedCargando = false; fallo(e);
+    const m = $('#feed .feed-mas'); if (m) m.innerHTML = ib('mas', 'refresh', 'mas'); // si falla, se puede reintentar a mano
+    else if (!S.feed.length && $('#feed')) $('#feed').innerHTML = `<div class="empty">${ic('cloud-off')}<p>${esc(C.MURO_FALLO)}</p>${ib('refrescar', 'refresh', 'refrescar', '', 'on')}</div>`;
+  }
+}
+// El primer comentario de cada tarjeta (una sola consulta por lote)
+async function cargarPrimeros(ids) {
+  S.primeros = S.primeros || new Map();
+  const faltan = [...new Set(ids)].filter((id) => { const c = S.cache.get(id); return c && c.comments_count && !S.primeros.has(id); });
+  if (!faltan.length || !api.primerosComentarios) return;
+  try {
+    const l = await api.primerosComentarios(faltan) || [];
+    l.forEach((x) => S.primeros.set(x.find_id, x));
+    l.forEach((x) => { const c = S.cache.get(x.find_id); if (c) $$(`[data-card="${c.id}"]`).forEach((el) => { el.outerHTML = tarjeta(c); }); });
+  } catch (e) { /* sin primer comentario: la tarjeta muestra solo la cuenta */ }
+}
+function primeroDe(id, coms) {
+  S.primeros = S.primeros || new Map();
+  const l = (coms || []).slice().sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  if (!l.length) S.primeros.delete(id); else S.primeros.set(id, { find_id: id, user_id: l[0].user_id, name: l[0].user_name, body: l[0].body, total: l.length });
+}
+function vigilarMuro() {
+  const f = $('#feed'), marca = f && $('.feed-mas', f);
+  if (!marca) return;
+  if (S.feedFin) { marca.remove(); return; }
+  if (!('IntersectionObserver' in window)) { marca.innerHTML = ib('mas', 'plus', 'mas'); return; }
+  marca.innerHTML = `<span class="spin">${ic('loader-2')}</span>`;
+  const tarjetas = $$(':scope > article.card', f);
+  const objetivo = tarjetas[Math.max(0, tarjetas.length - 2)] || marca;
+  vigiaMuro = new IntersectionObserver((es, obs) => {
+    if (!es.some((x) => x.isIntersecting)) return;
+    obs.disconnect(); if (vigiaMuro === obs) vigiaMuro = null;
+    pintarMuro(true);
+  }, { root: null, threshold: 0 });
+  vigiaMuro.observe(objetivo);
+  if (objetivo !== marca) vigiaMuro.observe(marca); // por si la tarjeta vigilada se vuelve a dibujar
+}
+function actualizarTarjeta(c) {
+  $$(`[data-card="${c.id}"]`).forEach((el) => { el.outerHTML = tarjeta(c); });
+  $$(`[data-reacts-find="${c.id}"]`).forEach((el) => { el.innerHTML = reaccionesHTML(c); });
+}
+
+/* Colección: una fila de colecciones sin números; el mosaico la abre en su lugar con todas a la vista (solo íconos) */
+function filaColecciones(total, cuenta) {
+  const abierta = S.colAbierta, sel = S.coleccionCat, cat = S.cats.find((c) => c.id === sel);
+  const mosaico = `<button type="button" class="chip mosaico ${abierta ? 'abierto' : ''}" data-act="col_mosaico" aria-expanded="${abierta}" data-tip="${esc(C.AYUDA.col_mosaico)}" aria-label="${esc(C.AYUDA.col_mosaico)}">${ic('layout-grid')}</button>`;
+  const todas = (solo) => `<button type="button" class="chip ${solo ? 'ico' : ''} ${!sel ? 'on' : ''}" data-act="colcat" data-v="" data-tip="${esc(C.COL_TODAS)}" aria-label="${esc(C.COL_TODAS)}">${ic('cards')}${solo ? '' : esc(C.COL_TODAS)}</button>`;
+  const fila = abierta
+    ? `<div class="col-fila abierta">${mosaico}${todas(true)}${S.cats.map((c) => `<button type="button" class="chip cc ico ${sel === c.id ? 'on' : ''}" style="--c:${okColor(c.color)}" data-act="colcat" data-v="${c.id}" data-tip="${esc(c.name)}" aria-label="${esc(c.name)}">${ic(c.icon)}</button>`).join('')}</div>`
+    : `<div class="col-fila">${mosaico}<div class="chips una-fila">${todas(false)}${S.cats.map((c) => chipColor('colcat', c.id, c.name, c.icon, c.color, sel === c.id)).join('')}</div></div>`;
+  return `${fila}<div class="row between col-total-fila"><div class="tiny col-total">${esc(cat ? cat.name : C.COL_TODAS)} · ${cat ? cuenta(cat.id) : total} ${esc(C.COL_HALLAZGOS)}</div>
+    ${total ? ib('descargar_fichas', 'download', C.PDF_TITULO, `data-tipo="coleccion" data-id="${sel || ''}"`, 'sm') : ''}</div>`;
+}
+// "rapido": al elegir una colección o abrir el mosaico se usa lo ya cargado, sin volver a pedirlo ni parpadear
+async function pintarColeccion(rapido) {
+  const scr = $('#scr');
+  const arriba = rapido ? scr.scrollTop : 0;
+  if (!(rapido && S.colMias)) scr.innerHTML = `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  try {
+    const mias = rapido && S.colMias ? S.colMias : guarda(await api.userCards(S.user.id));
+    S.colMias = mias;
+    const cuenta = (id) => mias.filter((c) => c.category_id === id).length;
+    if (S.coleccionCat && !S.cats.some((c) => c.id === S.coleccionCat)) S.coleccionCat = null;
+    const vis = S.coleccionCat ? mias.filter((c) => c.category_id === S.coleccionCat) : mias;
+    if (S.tab !== 'coleccion') return;
+    scr.innerHTML = `<div class="row between" style="margin-bottom:12px"><h1 class="serif grow">${esc(C.TITULO_COLECCION)}</h1>${ib('categorias', 'pencil', 'categorias')}</div>
+      ${filaColecciones(mias.length, cuenta)}
+      ${vis.length ? rejilla(vis, true) : `<div class="empty">${ic('camera')}<p>Registra tu primer hallazgo</p><button class="btn" data-act="nuevo">${ic('camera')}</button></div>`}
+      <div class="sec"><div class="row between"><h3 class="row">${ic('users')} Grupos</h3>
+        <span class="row"><span class="tiny" data-tip="Grupos que creaste">${gruposCreados()} / ${maxGrupos()}</span>${ib('grupo_nuevo', 'plus', 'grupo_nuevo')}</span></div>
+        <div class="list" style="margin-top:10px">${S.groups.map((g) => esEncuentro(g)
+          // Grupo de encuentro: el nombre abre el grupo; el botón de ayuda abre el aviso rápido con ese grupo
+          ? `<div class="li grupo-enc"><button class="row grow" data-act="grupo" data-id="${g.id}" style="text-align:left;min-width:0">
+              <span class="avatar" style="background:${okColor(g.color)}">${ic(g.icon)}</span><b class="grow">${esc(g.name)}</b></button>${botonAyuda(`data-id="${g.id}"`)}</div>`
+          : `<button class="li" data-act="grupo" data-id="${g.id}" style="text-align:left">
+          <span class="avatar" style="background:${okColor(g.color)}">${ic(g.icon)}</span><b class="grow">${esc(g.name)}</b>
+          <span class="muted" data-tip="${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}">${ic(g.is_public ? 'world' : 'lock')}</span></button>`).join('')
+          || `<p class="muted">Crea un grupo para coleccionar con tus amigos en el mismo mapa.</p>`}</div></div>`;
+    if (rapido) scr.scrollTop = arriba;
+  } catch (e) { fallo(e); }
+}
+function rejilla(lista, mostrarPrivado) {
+  return `<div class="grid">${lista.map((c) => `<div class="tile" data-act="ficha" data-id="${c.id}" role="button" aria-label="${esc(c.name)}">
+    ${c.thumb || c.photo ? `<img src="${foto(c, true)}" alt="" loading="lazy">` : `<div class="noimg">${ic(c.cat_icon)}</div>`}
+    <span class="badge" style="background:${okColor(c.cat_color)}">${ic(c.cat_icon)}</span>
+    ${c.sightings_count ? `<span class="count">${ic('repeat')}${c.sightings_count}</span>` : ''}
+    ${mostrarPrivado && c.is_private ? `<span class="lock">${ic('lock')}</span>` : ''}
+    ${c.en_mapa === false ? `<span class="marca-sinmapa" data-tip="${esc(C.SIN_MAPA_CORTO)}" aria-label="${esc(C.SIN_MAPA_CORTO)}">${ic('map-pin-off')}</span>` : ''}</div>`).join('')}</div>`;
+}
+
+/* Perfil (propio en pestaña, ajeno en hoja) */
+// Amistad con otra persona: pedirla (si ya la sigues), ver que está enviada, o aceptarla
+function botonAmistad(uid, estado) {
+  if (estado === 'puede') return `<button class="btn sm" data-act="pedir_amistad" data-id="${uid}">${ic('heart-handshake')} ${esc(C.AMISTAD_PEDIR)}</button>`;
+  if (estado === 'enviada') return `<span class="estado-amistad tiny">${ic('clock')} ${esc(C.AMISTAD_ENVIADA)}</span>`;
+  if (estado === 'recibida') return `<button class="btn sm" data-act="amistad_aceptar" data-id="${uid}">${ic('user-check')} ${esc(C.AMISTAD_ACEPTAR_SUYA)}</button>`;
+  return '';
+}
+function hojaPedirAmistad(uid) {
+  const D = { texto: '' };
+  const hoja = { render: () => `${cabeza(`${ic('heart-handshake')} ${esc(C.AMISTAD_PEDIR)}`)}
+      <p class="tiny" style="margin:0 0 10px">${esc(C.AMISTAD_TEXTO)}</p>
+      <label class="tiny" for="amistad-in">${esc(C.AMISTAD_MENSAJE)}</label>
+      <textarea id="amistad-in" class="in" maxlength="${C.AMISTAD_MAX}" rows="3">${esc(D.texto)}</textarea>
+      <div class="tiny" style="text-align:right"><span id="amistad-n">${D.texto.length}</span>/${C.AMISTAD_MAX}</div>
+      <button class="btn block" data-act="enviar_amistad" data-id="${uid}" style="margin-top:8px">${ic('send')} ${esc(C.AMISTAD_ENVIAR)}</button>`,
+    after: (r) => { const t = $('#amistad-in', r); if (t) t.addEventListener('input', () => { D.texto = t.value; const n = $('#amistad-n'); if (n) n.textContent = t.value.length; }); },
+    tipo: 'pedir_amistad' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+}
+// Al cambiar una amistad se refresca lo que esté abierto (perfil o chat)
+function refrescarAmistad() {
+  const top = hojaArriba(); if (!top) return;
+  if (top.tipo === 'perfil') { const D = $('.sheet')._perfil; if (D) D.cargar(); }
+  if (top.tipo === 'chat' && top.datos) top.datos.cargar();
+  if (top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+}
+function perfilHTML(p, st, propio, tarjetas, o = {}) {
+  const ls = logros(st);
+  const porCat = (st.categorias || []).map((c) => `<div class="li" style="flex-direction:column;align-items:stretch">
+      <div class="row between">${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total} ${c.total === 1 ? 'hallazgo' : 'hallazgos'}</span></div>
+      <div class="medals">${ls.filter((l) => l.tipo === 'cat' && l.cat === c.id).map(medalla).join('')}</div></div>`).join('');
+  const grupo = (t) => ls.filter((l) => l.tipo === t).map(medalla).join('');
+  const md = st.mejor_dia;
+  const sigo = S.following.has(p.id);
+  const colecciones = (st.categorias || []).filter((c) => propio || c.total > 0);
+  const silencio = propio ? null : S.mutes.find((m) => m.target_user === p.id);
+  return `${propio ? pasosHTML(S.retos) : ''}<div class="row" style="gap:14px">${avatar(p, 'lg')}<div class="grow"><h2>${esc(p.name)}${medallaNombre(p.id)}</h2>${p.bio ? `<div class="muted">${esc(p.bio)}</div>` : ''}
+      ${colecciones.length ? `<div class="colicons">${colecciones.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}
+      <div class="tiny row" style="margin-top:4px"><span data-tip="Seguidores">${ic('users')} ${st.seguidores || 0}</span> · <span data-tip="Siguiendo">${ic('user-check')} ${st.siguiendo || 0}</span></div>
+      ${p.blocked ? `<div class="tiny row">${ic('ban')} bloqueada</div>` : ''}
+      ${silencio && o.comparte === false ? `<div class="tiny row">${ic('cg-silenciar')} ${esc(C.AYUDA.silenciado)}</div>` : ''}</div></div>
+    ${propio ? `<div class="perfil-botones">${ib('editar_perfil', 'pencil', 'editar')}${ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`)}
+      ${ib('buscar_personas', 'search', 'buscar_personas')}${ib('guardarropa', 'hanger', 'guardarropa')}${ib('chats', 'messages', 'chats')}${ib('silenciados', 'cg-silenciar', 'silenciados')}
+      ${ib('salir', 'logout', 'salir')}</div>
+      ${S.me.is_admin ? `<div class="row perfil-botones2">${ib('admin', 'shield', 'admin')}</div>` : ''}` : `<div class="row wrap" style="margin:14px 0">
+      ${ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? '' : 'on')}
+      ${!propio && o.comparte === false ? (silencio ? ib('quitar_silencio', 'cg-silenciar', 'quitar_silencio', `data-id="${silencio.id}"`, 'on') : ib('silenciar', 'cg-silenciar', 'silenciar', `data-user="${p.id}"`)) : ''}
+      ${!propio && o.puedeChat ? ib('chat', 'messages', 'mensaje', `data-id="${p.id}"`, 'on') : ''}
+      ${!propio && !p.blocked ? botonAmistad(p.id, o.amistad) : ''}
+      ${!propio && S.me.is_admin && !p.is_admin ? ib(p.blocked ? 'desbloquear' : 'bloquear', p.blocked ? 'lock-open' : 'ban', p.blocked ? 'desbloquear' : 'bloquear', `data-id="${p.id}"`) : ''}
+    </div>`}
+    ${propio ? '<div id="pines-revisar"></div>' : ''}
+    <div class="stats">
+      <div class="stat" data-tip="Hallazgos">${ic('photo')}<div class="v">${st.total || 0}</div><div class="lbl">hallazgos</div></div>
+      <div class="stat" data-tip="Colonias">${ic('map-pin')}<div class="v">${(st.colonias || []).length}</div><div class="lbl">colonias</div></div>
+      <div class="stat" data-tip="Racha de semanas (actual / mejor)">${ic('flame')}<div class="v">${st.racha_actual || 0}<span class="tiny">/${st.racha_mejor || 0}</span></div><div class="lbl">semanas</div></div>
+      <div class="stat" data-tip="${md ? 'Mejor día: ' + fecha(md.fecha) : 'Mejor día'}">${ic('calendar')}<div class="v">${md ? md.n : 0}</div><div class="lbl">mejor día</div></div>
+      <div class="stat" data-tip="Reencuentros">${ic('repeat')}<div class="v">${st.reencuentros || 0}</div><div class="lbl">reencuentros</div></div>
+      <div class="stat" data-tip="Reacciones recibidas">${ic('heart')}<div class="v">${st.reacciones || 0}</div><div class="lbl">reacciones</div></div>
+    </div>
+    ${!propio && tarjetas ? coleccionesPersona(p, st, tarjetas) : ''}
+    ${propio ? '<div class="sec" id="sec-favoritos"></div>' : ''}
+    <div class="sec"><h3>${ic('medal')} Medallas por categoría</h3><div class="list">${porCat || '<div class="muted">—</div>'}</div></div>
+    ${(st.premios_grupos || []).length ? `<div class="sec"><h3>${ic('users')} Medallas en grupos</h3><div class="list">${(st.premios_grupos || []).map((g) => `<div class="li" style="flex-direction:column;align-items:stretch">
+      <div class="row between">${catBadge(g.name, g.icon, g.color)}<span class="muted">${g.total} ${g.total === 1 ? 'hallazgo' : 'hallazgos'}</span></div>
+      <div class="medals">${ls.filter((l) => l.tipo === 'grupo' && l.grupo === g.id).map(medalla).join('')}</div></div>`).join('')}</div></div>` : ''}
+    ${propio ? `<div class="sec"><h3>${ic('map-pin')} ${esc(C.TITULOS_MEDALLAS.col)}</h3><div class="medals">${grupo('col')}</div>
+      <div class="chips" style="flex-wrap:wrap;margin-top:10px">${(st.colonias || []).map((c) => `<span class="chip" data-tip="${esc(fecha(c.first_at))}">${esc(c.colonia)} · ${c.n}</span>`).join('')}</div></div>
+    <div class="sec"><h3>${ic('flame')} ${esc(C.TITULOS_MEDALLAS.racha)}</h3><div class="medals">${grupo('racha')}</div></div>
+    <div class="sec"><h3>${ic('repeat')} ${esc(C.TITULOS_MEDALLAS.reen)}</h3><div class="medals">${grupo('reen')}</div></div>` : ''}
+    ${propio ? `<div class="sec" id="sec-notif"></div><div class="sec" id="sec-offline"></div>` : ''}
+    ${propio ? `<div style="text-align:center;margin-top:30px"><button class="linkbtn" data-act="borrar_cuenta">${ic('trash')} ${esc(C.AYUDA.borrar_cuenta)}</button>
+      <p class="tiny">Collector Go · v${esc(C.VERSION)}</p></div>` : ''}`;
+}
+let ultimaPersona = null;
+// 2.0.5: "Pines por revisar": solo aparece si alguien no encontró un pin tuyo o te propuso otro lugar
+async function pintarPinesRevisar() {
+  let l; try { l = await api.pinesPorRevisar(); } catch (e) { return; }
+  S.pinesRevisar = l || [];
+  const box = $('#pines-revisar'); if (!box) return;
+  box.innerHTML = S.pinesRevisar.length ? `<button class="banner revisar" data-act="pines_revisar">${ic('map-pin-off')}<span class="grow">${esc(C.REVISAR_LINEA.replace('{n}', S.pinesRevisar.length))}</span>${ic('chevron-right')}</button>` : '';
+}
+function hojaPinesRevisar() {
+  const l = S.pinesRevisar || [];
+  abrirHoja(() => `${cabeza(`${ic('map-pin-off')} ${esc(C.REVISAR_TITULO)}`)}
+    <p class="tiny" style="margin:0 0 10px">${esc(C.REVISAR_TEXTO)}</p>
+    <div class="list">${l.map((x) => `<div class="li revisar-fila">
+      <button class="row grow" data-act="ficha" data-id="${x.find_id}" style="text-align:left;min-width:0"><img class="thumb" src="${api.photoUrl(x.thumb)}" alt="" loading="lazy">
+        <div class="grow" style="min-width:0"><b>${esc(x.name)}</b><div class="tiny">${[x.ausencias ? (x.ausencias === 1 ? C.REVISAR_NO_1 : C.REVISAR_NO.replace('{n}', x.ausencias)) : '',
+          x.propuestas ? (x.propuestas === 1 ? C.REVISAR_PROP_1 : C.REVISAR_PROP.replace('{n}', x.propuestas)) : ''].filter(Boolean).map(esc).join(' · ')}</div></div></button>
+      <div class="row invit-botones">${x.propuestas ? `<button class="btn sm" data-act="avisos">${ic('map-pin')} ${esc(C.REVISAR_VER_PROP)}</button>` : ''}
+        <button class="btn alt sm" data-act="editar_lugar" data-id="${x.find_id}">${ic('pencil')} ${esc(C.AUSENCIA_EDITAR)}</button></div></div>`).join('')
+      || `<div class="empty">${ic('check')}<p>${esc(C.REVISAR_VACIO)}</p></div>`}</div>`, null, 'pines_revisar');
+}
+/* 2.0.6: Favoritos. Cada persona guarda hallazgos ajenos que puede ver; solo ella los ve.
+   A quien lo registró le llega un aviso sin nombre. Si el hallazgo se borra o se vuelve privado, deja de aparecer. */
+async function cargarFavoritos() { try { S.favs = new Set(await api.misFavIds()); } catch (e) { S.favs = S.favs || new Set(); } }
+async function alternarFavorito(b) {
+  const id = b.dataset.id; if (!id) return;
+  S.favs = S.favs || new Set();
+  const on = !S.favs.has(id);
+  ocupado(b, true);
+  try { await api.favorito(id, on); } catch (e) { ocupado(b, false); return fallo(e); }
+  if (on) S.favs.add(id); else S.favs.delete(id);
+  aviso(on ? C.FAVORITO_GUARDADO : C.FAVORITO_QUITADO, 'bookmark');
+  refrescarFicha(id);
+  if (S.tab === 'perfil') pintarFavoritosPerfil();
+}
+async function pintarFavoritosPerfil() {
+  if (!$('#sec-favoritos')) return;
+  let l; try { l = guarda(await api.misFavoritos()); } catch (e) { return; }
+  S.favoritos = l;
+  const box = $('#sec-favoritos'); if (!box) return;
+  const fotos = l.filter((c) => c.thumb || c.photo), ver = fotos.length >= 4 ? fotos.slice(0, 4) : fotos.slice(0, 1);
+  box.innerHTML = `<h3>${ic('bookmark')} ${esc(C.FAVORITOS)}</h3>${l.length
+    ? `<div class="colecciones-persona"><button class="col-portada" data-act="favoritos_ver" aria-label="${esc(C.FAVORITOS)}">
+        <span class="portada ${ver.length < 4 ? 'una' : ''}">${ver.map((c) => `<img src="${foto(c, true)}" alt="" loading="lazy">`).join('') || '<span></span>'}</span>
+        <span class="tiny">${l.length} ${l.length === 1 ? 'hallazgo' : 'hallazgos'}</span></button></div>`
+    : `<p class="tiny" style="margin:0">${esc(C.FAVORITOS_VACIO)}</p>`}`;
+}
+function hojaFavoritos() {
+  const l = S.favoritos || [];
+  abrirHoja(() => `${cabeza(`${ic('bookmark')} ${esc(C.FAVORITOS)}`)}${l.length ? rejilla(l, false) : `<div class="empty">${ic('bookmark')}<p>${esc(C.FAVORITOS_VACIO)}</p></div>`}`, null, 'favoritos');
+}
+
+/* 2.0.6: Bienvenida. Pin "Inicio aquí" sobre el botón del perfil hasta que la persona entra a su perfil;
+   después, un puntito mostaza en ese botón mientras el tutorial siga pendiente.
+   Al abrir la app desde la pantalla de inicio se cumple el paso "Instala Collector Go". */
+const claveInicio = () => 'cg_inicio_' + (S.user ? S.user.id : '');
+function inicioYaVisto() { try { return !!localStorage.getItem(claveInicio()); } catch (e) { return !!S.inicioVisto; } }
+function inicioVisto() { S.inicioVisto = true; try { localStorage.setItem(claveInicio(), '1'); } catch (e) { /* sin almacenamiento */ } }
+const pasosPendientes = () => !!(S.retos && C.PASOS.some((x) => !S.retos[x.k]));
+async function arrancarBienvenida() {
+  if (yaInstalada() && api.marcarInstalada) { try { await api.marcarInstalada(); } catch (e) { /* se intenta la próxima vez */ } }
+  try { S.retos = await api.misRetos(); } catch (e) { /* sin tutorial por ahora */ }
+  pintarBienvenida(); pintarInstalar();
+}
+function pintarBienvenida() {
+  const pend = pasosPendientes(), visto = inicioYaVisto() || S.tab === 'perfil';
+  const pin = $('.inicio-pin'), punto = $('.punto-pasos');
+  const verPin = pend && !visto;
+  if (pin) {
+    pin.hidden = !verPin;
+    if (verPin) {
+      const b = $('.nav [data-v="perfil"]');
+      if (b) {
+        const r = b.getBoundingClientRect(), n = $('.nav').getBoundingClientRect(), w = pin.offsetWidth || 130;
+        const cx = r.left + r.width / 2, left = Math.min(cx - w / 2, innerWidth - w - 8);
+        pin.style.left = left + 'px'; pin.style.bottom = (innerHeight - n.top - 10) + 'px';
+        pin.style.setProperty('--punta', (cx - left - w / 2) + 'px');
+      }
+    }
+  }
+  document.body.classList.toggle('con-inicio', verPin && S.tab === 'map');
+  if (punto) punto.hidden = !(pend && visto);
+}
+window.addEventListener('resize', () => { if (S.user && $('.inicio-pin')) pintarBienvenida(); });
+
+// Lo que una persona heredó sin colección ("?")
+function hojaSinColeccion(uid) {
+  const l = ultimaPersona && ultimaPersona.uid === uid ? ultimaPersona.cards.filter((x) => !x.category_id && !x.group_id) : [];
+  abrirHoja(() => `${cabeza(catBadge('?', 'question-mark', C.COLOR_SIN_COLECCION))}${l.length ? rejilla(l, false) : `<div class="empty">${ic('photo')}<p>${esc(C.GALERIA_VACIA)}</p></div>`}`, null, 'sin_coleccion');
+}
+// Perfil de otra persona: sus colecciones con sus fotos públicas más recientes; cada una abre su galería
+function coleccionesPersona(p, st, cards) {
+  const cols = (st.categorias || []).map((c) => {
+    const suyas = cards.filter((x) => x.category_id === c.id);
+    return { c, n: suyas.length, fotos: suyas.filter((x) => x.thumb || x.photo) };
+  }).filter((x) => x.n);
+  // Sus hallazgos en grupos que puedes ver y lo que heredó sin colección
+  const grupos = {};
+  cards.filter((x) => x.group_id).forEach((x) => { (grupos[x.group_id] = grupos[x.group_id] || { g: { id: x.group_id, name: x.cat_name, icon: x.cat_icon, color: x.cat_color }, l: [] }).l.push(x); });
+  Object.values(grupos).forEach(({ g, l }) => cols.push({ c: g, n: l.length, fotos: l.filter((x) => x.thumb || x.photo), grupo: true }));
+  const sin = cards.filter((x) => !x.category_id && !x.group_id);
+  if (sin.length) cols.push({ c: { id: '', name: '?', icon: 'question-mark', color: C.COLOR_SIN_COLECCION }, n: sin.length, fotos: sin.filter((x) => x.thumb || x.photo), sinCol: true });
+  ultimaPersona = { uid: p.id, cards };
+  if (!cols.length) return '';
+  return `<div class="sec"><h3>${ic('cards')} ${esc(C.PERFIL_COLECCIONES)}</h3><div class="colecciones-persona">${cols.map(({ c, n, fotos, grupo, sinCol }) => {
+    const ver = fotos.length >= 4 ? fotos.slice(0, 4) : fotos.slice(0, 1);
+    const destino = grupo ? `data-act="grupo" data-id="${c.id}"` : sinCol ? `data-act="persona_sin_col" data-id="${p.id}"` : `data-act="galeria_cat" data-id="${p.id}" data-cat="${c.id}"`;
+    return `<button class="col-portada" ${destino} aria-label="${esc(c.name)}">
+      <span class="portada ${ver.length < 4 ? 'una' : ''}">${ver.map((x) => `<img src="${foto(x, true)}" alt="" loading="lazy">`).join('') || '<span></span>'}</span>
+      ${catBadge(c.name, c.icon, c.color)}<span class="tiny">${n} ${n === 1 ? 'hallazgo' : 'hallazgos'}</span></button>`; }).join('')}</div></div>`;
+}
+async function pintarPerfil() {
+  const scr = $('#scr');
+  scr.innerHTML = `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  try {
+    const [me, st, retos] = await Promise.all([api.getProfile(S.user.id), api.stats(S.user.id), api.misRetos ? api.misRetos().catch(() => null) : null]);
+    S.me = me || S.me; S.stats = st; S.retos = retos;
+    if (S.tab === 'perfil') {
+      scr.innerHTML = perfilHTML(S.me, st, true, null); cuandoDesocupado(() => prepararMosaico(S.user.id));
+      pintarNotificaciones().catch(() => null); pintarSinConexion().catch(() => null); pintarPinesRevisar(); pintarFavoritosPerfil(); pintarBienvenida();
+    }
+    if (S.me.is_admin) avisoUsoPerfil();
+  } catch (e) { fallo(e); }
+}
+// En el perfil de la administradora: franja de aviso si el plan pasa del 60 %
+async function avisoUsoPerfil() {
+  let u; try { u = await api.usoPlan(); } catch (e) { return; }
+  const peor = (u.recursos || []).reduce((m, r) => (pctUso(r) > m.p ? { p: pctUso(r), r } : m), { p: 0, r: null });
+  const scr = $('#scr'); if (S.tab !== 'perfil' || !scr || !peor.r || !nivelUso(peor.p) || $('.banner.uso', scr)) return;
+  scr.insertAdjacentHTML('afterbegin', `<button class="banner uso ${nivelUso(peor.p)}" data-act="admin_uso" style="width:100%;margin-bottom:12px;text-align:left">${ic('gauge')}<span>Uso del plan: ${esc(RECURSOS[peor.r.recurso] || peor.r.recurso)} al ${peor.p} %</span></button>`);
+}
+async function abrirPerfil(uid) {
+  if (uid === S.user.id) { cerrarTodo(); irA('perfil'); return; }
+  const datos = { p: null, st: null, cards: null };
+  abrirHoja(() => datos.p ? cabeza('') + perfilHTML(datos.p, datos.st, false, datos.cards, { comparte: datos.comparte, puedeChat: datos.puedeChat, amistad: datos.amistad }) : cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`,
+    (r) => { r._perfil = datos; }, 'perfil');
+  datos.cargar = async () => {
+    try {
+      const [p, st, cards, comparte, puedeChat, amistad] = await Promise.all([api.getProfile(uid), api.stats(uid), api.userCards(uid),
+        api.comparteGrupo(uid).catch(() => null), api.puedoEscribir(uid).catch(() => false), api.estadoAmistad(uid).catch(() => null)]);
+      if (!p) { cerrarHoja(); return aviso('Perfil no disponible', 'alert-triangle'); }
+      Object.assign(datos, { p, st, cards: guarda(cards), comparte, puedeChat, amistad }); if (hojaArriba() && hojaArriba().tipo === 'perfil') dibujarHoja();
+    } catch (e) { fallo(e); }
+  };
+  datos.cargar();
+}
+
+/* Ayuda de uso (mapa) y privacidad (entrada) */
+function hojaDudas() {
+  abrirHoja(() => `${cabeza(`${ic('help')} ${esc(C.AYUDA.dudas)}`)}
+    <div class="admin-caja"><b>${esc(C.ADMIN_CAJA_TITULO)}</b><p class="tiny">${esc(C.ADMIN_CAJA_TEXTO)}</p>
+      <button class="btn alt block" data-act="buzon">${ic('mail')} ${esc(C.AYUDA.buzon)}</button></div>
+    <div class="dudas guia">${C.GUIA.map((d) => `<div class="duda"><h3 class="row"><span class="gicon">${ic(d.icono)}</span>${esc(d.titulo)}</h3>
+      ${d.texto ? `<p>${esc(d.texto)}</p>` : ''}${d.pasos ? `<ol>${d.pasos.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>` : ''}</div>`).join('')}
+    <div class="duda datos"><h3 class="row">${ic('lock')} ${esc(C.DATOS_TITULO)}</h3>${datosHTML(true)}</div></div>`, null, 'dudas');
+}
+function hojaPrivacidad() {
+  abrirHoja(() => `${cabeza(`${ic('lock')} ${esc(C.AYUDA.privacidad)}`)}
+    <div class="dudas"><div class="duda datos"><h3>${esc(C.DATOS_TITULO)}</h3>${datosHTML(false)}</div></div>`, null, 'privacidad');
+}
+/* Ubicación exacta: si el teléfono da una aproximada, explica cómo activarla */
+const esAproximada = (p) => p && p.acc != null && p.acc > C.GPS_PRECISION_MAX;
+let precisionAvisada = false;
+function avisarPrecision(p, forzar) {
+  if (!esAproximada(p) || (precisionAvisada && !forzar)) return;
+  precisionAvisada = true;
+  abrirHoja(() => `${cabeza(`${ic('current-location')} ${esc(C.PRECISION_TITULO)}`)}
+    <p>${esc(C.PRECISION_TEXTO)}</p>
+    <p class="banner" style="margin:12px 0">${ic('alert-triangle')} Precisión actual: ±${metros(p.acc)}</p>
+    <div class="dudas">${C.PRECISION_PASOS.map((x) => `<div class="duda"><h3>${esc(x.so)}</h3><p>${esc(x.paso)}</p></div>`).join('')}
+    <p class="muted">${esc(C.PRECISION_MANUAL)}</p></div>
+    <button class="btn block" data-act="cerrar" style="margin-top:14px">${ic('check')} Entendido</button>`, null, 'precision');
+}
+
+/* ---------------------------------------------------------------------
+   7. HOJAS
+   --------------------------------------------------------------------- */
+/* Ficha de un hallazgo con su historia */
+let fichaH = null; // historia de la ficha abierta (para la galería)
+async function abrirFicha(id, op) {
+  let c = S.cache.get(id);
+  if (!c || c.parcial) {
+    try { c = await api.card(id); } catch (e) { return fallo(e); }
+    if (!c) return aviso('Este hallazgo no está disponible', 'alert-triangle');
+    guarda([c]);
+  }
+  const H = { id, lista: null, i: 0, foto: op && op.foto, modo: op && op.modo };
+  fichaH = H;
+  abrirHoja(() => fichaHTML(S.cache.get(id) || c, H), (raiz) => montarFicha(raiz, S.cache.get(id) || c, H), 'ficha');
+  H.cargar = async () => {
+    const cc = S.cache.get(id) || c;
+    try {
+      const [lista, coms, aus, calif] = await Promise.all([api.history(id), cc.is_private ? Promise.resolve([]) : api.comments(id),
+        api.historiaAusencias(id).catch(() => []), cc.group_calificacion && !cc.is_private && api.calificacion ? api.calificacion(id).catch(() => null) : null]);
+      H.lista = lista; H.coms = coms; H.aus = aus || []; H.calif = calif;
+      if (H.foto) { const i = galeria(S.cache.get(id) || cc, H).filter((h) => h.photo || h.thumb).findIndex((h) => h.id === H.foto); if (i > 0) H.i = i; H.foto = null; }
+    } catch (e) { H.lista = H.lista || []; H.coms = H.coms || []; H.aus = H.aus || []; }
+    const top = hojaArriba(); if (top && top.tipo === 'ficha' && pila.includes(top)) dibujarHoja();
+    if (H.modo && fichaH === H) { const m = H.modo; H.modo = null; enfocarFicha(H, m); }
+  };
+  H.cargar();
+  return H;
+}
+// Calificación con estrellas (grupos que la activan): promedio con 3 o más; se califica solo estando ahí
+// 2.0.5: cada grupo puede calificar con su propio símbolo (ícono o emoji) en vez de estrellas
+const simboloCalif = (s) => (s && esIcono(s) ? ic(s) : '★');
+const estrellas = (n, s) => `<span class="estrellas" aria-label="${n} de 3">${[1, 2, 3].map((i) => `<span class="${i <= n ? '' : 'no'}">${simboloCalif(s)}</span>`).join('')}</span>`;
+function califHTML(c, H) {
+  const k = H.calif; if (k === undefined) return '';
+  const n = k ? k.n || 0 : 0, prom = k && k.promedio, mia = k && k.mia;
+  return `<div class="calif-caja">
+    <div class="row between">${prom ? estrellas(prom, k.simbolo) : `<span class="tiny">${esc(C.CALIF_POCAS)}</span>`}<span class="tiny">${esc(C.CALIF_N.replace('{n}', n))}</span></div>
+    ${(c.user_id === S.user.id && !S.me.blocked) || puedoMarcarAusencia(c) ? `<div class="tiny" style="margin-top:6px">${esc(C.CALIF_TU)}</div>
+    <div class="calif-botones">${[1, 2, 3].map((e) => `<button type="button" class="${mia === e ? 'on' : ''}" data-act="calificar" data-id="${c.id}" data-v="${e}" aria-pressed="${mia === e}" aria-label="${e} de 3">${simboloCalif(k && k.simbolo).repeat(e)}</button>`).join('')}</div>
+    ${c.user_id === S.user.id ? '' : `<div class="tiny">${esc(C.CALIF_SOLO_AHI)}</div>`}` : ''}</div>`;
+}
+// "¡Ya no está!": en todo lo que puedes ver (en lo secreto, solo quien lo registró)
+const puedoMarcarAusencia = (c) => marcaMapa(c) && !S.me.blocked && (!c.is_private || c.user_id === S.user.id) && (!c.group_id || c.group_public || !!miGrupo(c.group_id));
+// Comentarios de la ficha
+const puedoComentar = (c) => !c.is_private && !S.me.blocked && (!c.group_id || c.group_public || !!miGrupo(c.group_id));
+function comentariosHTML(c, H) {
+  const coms = H.coms;
+  const mios = (coms || []).filter((k) => k.user_id === S.user.id).length;
+  const puedoBorrar = (k) => k.user_id === S.user.id || c.user_id === S.user.id || S.me.is_admin;
+  // Sin título ni contador: los comentarios se ven directo
+  return `<div class="coms-caja" id="comentarios">
+    ${coms === undefined ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>` : `
+    <div class="coms">${coms.map((k) => `<div class="com">
+      <button data-act="perfil" data-id="${k.user_id}" aria-label="${esc(k.user_name)}">${avatar(k)}</button>
+      <div class="grow"><div><b>${esc(k.user_name)}${medallaNombre(k.user_id)}</b> <span class="tiny">${hace(k.created_at)}</span></div><p>${esc(k.body)}</p></div>
+      ${puedoBorrar(k) ? ib('borrar_comentario', 'trash', 'borrar_comentario', `data-id="${k.id}" data-find="${c.id}"`, 'sm ghost') : ''}</div>`).join('')}</div>
+    ${puedoComentar(c) ? (mios < C.COMENTARIOS_POR_PERSONA ? `<div class="coment-campo">
+      <input id="coment-in" class="in compacto" maxlength="${C.COMENTARIO_MAX}" placeholder="Escribe un comentario" aria-label="Comentario" value="${esc(H.borrador || '')}" autocomplete="off">
+      ${ib('comentar', 'send', 'comentar', `data-id="${c.id}"`, 'sm on')}</div>
+      <div class="tiny coment-n"><span id="coment-n">${(H.borrador || '').length}</span>/${C.COMENTARIO_MAX}</div>`
+      : `<p class="tiny">Ya dejaste ${C.COMENTARIOS_POR_PERSONA} comentarios aquí.</p>`) : ''}`}</div>`;
+}
+
+// Todas las fotos del sujeto: la más reciente primero
+function galeria(c, H) {
+  const inicial = { photo: c.photo, thumb: c.thumb, created_at: c.created_at, colonia: c.colonia, lat: c.lat, lng: c.lng, user_name: c.user_name, user_id: c.user_id, inicial: true };
+  const resto = (H.lista || []).slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  return [inicial].concat(resto);
+}
+// Debajo de una foto que no es la original: de quién es, cuándo, su nota y qué se puede hacer con ella
+function pieFoto(c, h) {
+  if (!h || h.inicial) return '';
+  const quien = h.tipo === 'no_esta' ? `${ic('map-pin-off')} ${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}`
+    : h.tipo === 'visto' ? `${ic('users')} ${esc(C.COL_DE.replace('{n}', h.user_name || ''))}`
+    : `${ic('repeat')} ${esc(c.group_id && h.user_name ? h.user_name : C.AYUDA.reencuentro)}`;
+  // tu foto de la comunidad (y en lo tuyo, tu propia foto de "No está") se puede borrar
+  const mia = h.user_id === S.user.id && (c.user_id !== S.user.id || h.tipo === 'no_esta');
+  const ajenaEnLoMio = c.user_id === S.user.id && h.user_id && h.user_id !== S.user.id;
+  return `<div class="foto-pie"><span class="grow">${quien} · ${esc(fecha(h.created_at))}${h.note ? ` · «${esc(h.note)}»` : ''}</span>
+    ${mia ? `<button class="linkbtn" data-act="col_borrar" data-id="${h.id}" data-f="${c.id}">${ic('trash')} ${esc(C.COL_BORRAR)}</button>` : ''}
+    ${ajenaEnLoMio ? `<button class="linkbtn" data-act="col_reportar" data-id="${h.id}">${ic('flag')} ${esc(C.COL_REPORTAR)}</button>` : ''}</div>`;
+}
+const marcaFoto = (f) => (f.tipo === 'visto' ? `<span class="marca-col" aria-hidden="true">${ic('users')}</span>`
+  : f.tipo === 'no_esta' ? `<span class="marca-col no-esta" aria-hidden="true">${ic('map-pin-off')}</span>` : '');
+// La foto de un hallazgo no se quita sola: para eso se borra el hallazgo completo (ninguna ficha queda sin imagen)
+function fichaHTML(c, H) {
+  const propio = c.user_id === S.user.id;
+  const hist = galeria(c, H);
+  const fotos = hist.filter((h) => h.photo || h.thumb);
+  if (H.i >= fotos.length) H.i = 0;
+  const actual = fotos[H.i];
+  const puntos = hist.filter((h) => h.lat != null && h.lng != null);
+  return `${cabeza(esc(c.name), c.is_private ? `<span class="ib ghost" data-tip="${C.AYUDA.privado}">${ic('lock')}</span>` : '')}
+    ${actual ? `<div class="foto-grande"><img class="big" src="${api.photoUrl(actual.photo || actual.thumb)}" alt="${esc(c.name)}"></div>${pieFoto(c, actual)}` : ''}
+    ${fotos.length > 1 ? `<div class="strip">${fotos.map((f, i) => `<button class="${i === H.i ? 'on' : ''}" data-act="galeria" data-i="${i}" aria-label="Foto ${i + 1}">
+      <img src="${api.photoUrl(f.thumb || f.photo)}" alt="" loading="lazy">${marcaFoto(f)}</button>`).join('')}</div>` : ''}
+    ${c.user_id === S.user.id && !c.category_id && !c.group_id ? `<button class="banner sin-col" data-act="editar_hallazgo" data-id="${c.id}">${ic('question-mark')}<span class="grow">${esc(C.SIN_COLECCION_ELEGIR)}</span>${ic('chevron-right')}</button>` : ''}
+    <div class="row between ficha-dueno" style="margin:12px 0">
+      <button class="row" data-act="perfil" data-id="${c.user_id}" style="text-align:left;min-width:0">${avatar(c)}<span><b>${esc(c.user_name)}${medallaNombre(c.user_id)}</b>
+        <span class="lugar">${!enMapa(c) ? ic('map-pin-off') + ' ' + esc(C.SIN_MAPA_CORTO) + ' · ' : c.colonia ? ic('map-pin') + ' ' + esc(c.colonia) + ' · ' : ''}${hace(c.created_at)}</span></span></button>
+      ${etiquetaDe(c)}</div>
+    ${c.note ? `<p style="margin:6px 0 12px">${esc(c.note)}</p>` : ''}
+    ${c.group_calificacion && !c.is_private ? califHTML(c, H) : ''}
+    ${esAproximada({ acc: c.accuracy }) ? `<button class="linkbtn tiny" data-act="info_precision" data-acc="${c.accuracy}" style="padding:0;color:var(--tinta2)">${ic('alert-triangle')} Ubicación aproximada ±${metros(c.accuracy)}</button>` : ''}
+    ${!c.is_private || propio ? `<div class="ficha-reacts" style="margin:12px 0 8px">${reaccionesHTML(c)}</div>` : ''}
+    ${atenuado(c) ? `<p class="tiny ausencia-tenue">${ic('map-pin-off')} ${esc(C.AUSENCIA_TENUE)}</p>` : ''}
+    ${atenuado(c) && c.user_id === S.user.id ? `<div class="ausencia-autora"><p class="tiny">${esc(C.AUSENCIA_AUTORA)}</p>
+      <button class="btn alt sm" data-act="editar_lugar" data-id="${c.id}">${ic('map-pin')} ${esc(C.AUSENCIA_EDITAR)}</button></div>` : ''}
+    <div class="row wrap ficha-botones ${H.destello ? 'destello' : ''}">
+      ${enMapa(c) ? ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'on') : ''}
+      ${compartible(c) ? ib('whatsapp', 'brand-whatsapp', 'whatsapp', `data-id="${c.id}"`) : ''}
+      ${!propio && !c.is_private ? (S.favs && S.favs.has(c.id) ? ib('favorito', 'bookmark', C.FAVORITO_QUITAR, `data-id="${c.id}" aria-pressed="true"`, 'on')
+        : ib('favorito', 'bookmark', C.FAVORITO_GUARDAR, `data-id="${c.id}" aria-pressed="false"`)) : ''}
+      ${puedoReencontrar(c) ? ib('reencuentro', 'repeat', 'reencuentro', `data-id="${c.id}"`) : ''}
+      ${!c.is_private ? ib('enviar_ficha', 'mail-forward', 'enviar_ficha', `data-id="${c.id}"`) : ''}
+      ${!c.is_private ? ib('etiquetar', 'tag', 'etiquetar', `data-id="${c.id}"`) : ''}
+      ${propio ? ib('editar_hallazgo', 'pencil', 'editar', `data-id="${c.id}"`) : ''}
+      <span class="grow"></span>
+      ${!propio ? ib('avisar', 'flag', 'avisar', `data-id="${c.id}"`) : ''}
+      ${propio || S.me.is_admin ? ib('borrar_hallazgo', 'trash', 'borrar', `data-id="${c.id}"`) : ''}
+    </div>
+    ${!c.is_private ? comentariosHTML(c, H) : ''}
+    ${(() => {
+      // Historia: registro, reencuentros y "ya no está", del más reciente al más antiguo
+      const items = hist.concat((H.aus || []).map((a) => ({ created_at: a.created_at, user_name: a.user_name, ausencia: true })))
+        .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      // 2.0.2: con un solo momento (el registro) repetiría lo de arriba; aparece desde 2
+      if (H.lista === null || items.length < 2) return '';
+      return `<div class="sec"><h3>${ic('history')} Historia · ${items.length}</h3>
+      ${H.lista === null ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>` : `
+      ${puntos.length > 1 && enMapa(c) ? '<div class="minimap" id="mapa-historia" style="height:170px;margin-bottom:10px"></div>' : ''}
+      <div class="hist">${items.map((h) => h.ausencia ? `<div class="row hist-i ausente">
+        <span class="dotline">${ic('map-pin-off')}</span>
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}</div></div></div>`
+        : h.tipo === 'no_esta' ? `<div class="row hist-i ausente">
+        <span class="dotline">${ic('map-pin-off')}</span>
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.AUSENCIA_HISTORIA)}${h.user_name ? ` · ${esc(h.user_name)}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</div></div>
+        ${h.photo || h.thumb ? `<span class="tiny">${ic('photo')}</span>` : ''}</div>`
+        : h.tipo === 'visto' ? `<div class="row hist-i colaboracion">
+        <span class="dotline">${ic('eye-check')}</span>
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${esc(C.COL_HISTORIA_VISTO.replace('{n}', h.user_name || ''))}${h.note ? ` · ${esc(h.note)}` : ''}</div></div>
+        ${h.photo || h.thumb ? `<span class="tiny">${ic('photo')}</span>` : ''}</div>` : `<div class="row hist-i">
+        <span class="dotline">${ic(h.inicial ? 'star' : 'repeat')}</span>
+        <div class="grow"><b>${fecha(h.created_at)}</b><div class="tiny">${h.colonia ? esc(h.colonia) : '—'}${c.group_id ? ` · ${esc(h.user_name || '')}` : ''}${h.note ? ` · ${esc(h.note)}` : ''}</div></div>
+        ${h.photo || h.thumb ? `<span class="tiny">${ic('photo')}</span>` : ''}</div>`).join('')}</div>`}
+    </div>`; })()}`;
+}
+// 2.0.2: desde "Escribe un comentario…" la ficha se abre ya bajada: reacciones y botones arriba (con un destello),
+// los comentarios y el campo listo; desde la franja de comentarios, en los comentarios
+function enfocarFicha(H, modo) {
+  const hoja = $('.sheet'); if (!hoja) return;
+  const destino = modo === 'comentar' || modo === 'arriba' ? ($('.ficha-reacts', hoja) || $('.ficha-botones', hoja)) : $('#comentarios', hoja);
+  if (destino) hoja.scrollTop += destino.getBoundingClientRect().top - hoja.getBoundingClientRect().top - 8;
+  if (modo !== 'comentar') return;
+  const b = $('.ficha-botones', hoja); if (b) { b.classList.add('destello'); setTimeout(() => b.classList.remove('destello'), 1600); }
+  const t = $('#coment-in', hoja); if (t) { try { t.focus({ preventScroll: true }); } catch (e) { t.focus(); } }
+}
+function montarFicha(raiz, c, H) {
+  if (H.modo && H.lista === null) { const m = H.modo; requestAnimationFrame(() => { if (fichaH === H && H.modo) enfocarFicha(H, m === 'comentar' ? 'arriba' : m); }); }
+  const el = $('#mapa-historia', raiz);
+  if (el && enMapa(c)) mapaPuntos(el, galeria(c, H).filter((h) => h.lat != null && h.lng != null), c.cat_color, c.cat_icon);
+}
+function refrescarFicha(id) {
+  const top = hojaArriba();
+  if (top && top.tipo === 'ficha') dibujarHoja();
+  const c = S.cache.get(id); if (c) actualizarTarjeta(c);
+}
+
+/* Registrar hallazgo o reencuentro */
+const R = {};
+function nuevoRegistro(destino) {
+  const viejo = R.enc;
+  if (S.me.blocked) return aviso('Tu cuenta está bloqueada', 'ban');
+  const destIni = S.filtro.modo === 'grupo' && S.tab === 'map' ? 'g:' + S.filtro.id
+    : (S.coleccionCat ? 'c:' + S.coleccionCat : (S.cats[0] ? 'c:' + S.cats[0].id : MIS_HALLAZGOS));
+  Object.assign(R, { original: null, recorte: null, usarRecorte: false, sinFoto: false, pos: null, gps: 'buscando', vistaUrl: null,
+    candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false, etiquetas: [], etiquetasNombres: [], enc: null, encPromesa: null, encModo: 'mira',
+    sinMapa: !destino && sinMapaRecordado(destIni) && !destEncuentro(destIni) });
+  abrirHoja(registroHTML, montarRegistro, 'registro');
+  if (!R.sinMapa && !(destino && !enMapa(destino))) leerGPS();   // sin mapa no hace falta pedir la ubicación
+  if (viejo) soltarLienzo(viejo.img);
+}
+function registroHTML() {
+  const titulo = R.destino ? `${ic('repeat')} ${esc(R.destino.name)}` : ic('camera');
+  if (!R.original && !R.sinFoto) return `${cabeza(titulo)}
+    <div class="row" style="gap:14px;margin:30px 0">
+      <label class="btn block" style="min-height:120px;font-size:44px" data-tip="${C.AYUDA.camara}" aria-label="${C.AYUDA.camara}">${ic('camera')}<input type="file" accept="image/*" capture="environment" hidden data-in="foto"></label>
+      <label class="btn alt block" style="min-height:120px;font-size:44px" data-tip="${C.AYUDA.galeria}" aria-label="${C.AYUDA.galeria}">${ic('upload')}<input type="file" accept="image/*" hidden data-in="foto"></label>
+    </div>
+    ${R.destino ? `<div class="row" style="justify-content:center;margin-bottom:12px">${ib('sin_foto', 'map-pin', 'sin_foto')}</div>` : ''}
+    <div class="tiny row" id="gps-estado">${gpsTexto()}</div>`;
+  const esGrupo = (R.dest || '').startsWith('g:'), enc = !R.destino && destEncuentro(), punto = enc && R.encModo === 'punto';
+  // Sobre la foto: original o sin fondo, público o secreto y etiquetar, en botones pequeños
+  const herr = `<div class="foto-herr">
+      <div class="toggle mini">
+        <button type="button" class="${!R.usarRecorte ? 'on' : ''}" data-act="usar_original" data-tip="${C.AYUDA.original}" aria-label="${C.AYUDA.original}">${ic('photo')}</button>
+        <button type="button" class="${R.usarRecorte ? 'on' : ''}" data-act="recortar" data-tip="${C.AYUDA.recortar}" aria-label="${C.AYUDA.recortar}">${ic('scissors')}</button></div>
+      ${R.usarRecorte ? '' : `<button type="button" class="ib mini" data-act="pista_encuadre" data-tip="${esc(C.AYUDA.encuadrar)}" aria-label="${esc(C.AYUDA.encuadrar)}">${ic('arrows-move')}</button>`}
+      ${R.destino || enc ? '' : `<div class="toggle mini" data-pick="priv" id="campo-priv" ${esGrupo ? 'hidden' : ''}>
+        <button type="button" data-act="elegir" data-v="0" class="${R.priv ? '' : 'on'}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button><button type="button" data-act="elegir" data-v="1" class="${R.priv ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div>
+      <button type="button" class="ib mini ${R.etiquetas.length ? 'on' : ''}" id="campo-etiquetas" ${R.priv ? 'hidden' : ''} data-act="etiquetar_registro" data-tip="${esc(R.etiquetas.length ? (R.etiquetasNombres.join(', ') || R.etiquetas.length + ' personas') : C.AYUDA.etiquetar)}" aria-label="${esc(C.AYUDA.etiquetar)}">${ic('tag')}${R.etiquetas.length ? `<b class="cuenta">${R.etiquetas.length}</b>` : ''}</button>
+      <div class="toggle mini" data-pick="mapa" id="campo-mapa">
+        <button type="button" data-act="elegir" data-v="1" class="${R.sinMapa ? '' : 'on'}" data-tip="${esc(C.AYUDA.en_mapa)}" aria-label="${esc(C.AYUDA.en_mapa)}" aria-pressed="${!R.sinMapa}">${ic('map-pin')}</button><button type="button" data-act="elegir" data-v="0" class="${R.sinMapa ? 'on' : ''}" data-tip="${esc(C.AYUDA.sin_mapa)}" aria-label="${esc(C.AYUDA.sin_mapa)}" aria-pressed="${R.sinMapa}">${ic('map-pin-off')}</button></div>`}
+    </div>`;
+  return `${cabeza(titulo)}
+    ${R.original ? `<div class="foto-caja">${R.usarRecorte ? `<img class="big" id="vista" src="${R.vistaUrl}" alt="">`
+      : `<canvas class="encuadre" id="encuadre" aria-label="${esc(C.AYUDA.encuadrar)}"></canvas>`}
+      <div class="progress foto-prog" id="prog" hidden><div></div></div>${herr}</div>` : ''}
+    ${R.destino ? '' : `<div class="campo-fila">${selectorDestino(R.dest)}</div>
+    ${enc ? `<div class="toggle mini enc-modo" role="group">
+      <button type="button" class="${punto ? '' : 'on'}" data-act="reg_enc_modo" data-v="mira" aria-pressed="${!punto}">${ic('eye')} ${esc(C.ENC_MODO_MIRA)}</button>
+      <button type="button" class="${punto ? 'on' : ''}" data-act="reg_enc_modo" data-v="punto" aria-pressed="${punto}">${ic('flag')} ${esc(C.ENC_MODO_PUNTO)}</button></div>` : ''}
+    ${enc && !punto ? '' : `<label class="campo-ic">${ic(punto ? 'flag' : 'pencil')}<input id="f-nombre" class="in compacto" maxlength="${punto ? 40 : 60}" placeholder="${esc(punto ? C.PUNTO_PISTA : C.NOMBRE_PISTA)}" aria-label="Nombre" autocomplete="off" value="${esc(R.nombre)}"></label>`}`}
+    <label class="campo-ic">${ic('info-circle')}<textarea id="f-nota" class="in compacto crece" rows="1" maxlength="140" placeholder="${esc(enc && !punto ? C.MIRA_PISTA : C.NOTA_PISTA)}" aria-label="Nota">${esc(R.nota)}</textarea></label>
+    <div id="candidatos"></div>
+    ${sinMapaReg() || (R.destino && !enMapa(R.destino)) ? `${filaGuardar('guardar_hallazgo', null)}<p class="tiny sin-mapa-nota">${ic('map-pin-off')} ${esc(C.SIN_MAPA_NOTA)}</p>`
+      : `${filaGuardar('guardar_hallazgo', R, 'gps-estado')}
+    <div class="mapa-caja"><div class="minimap" id="mini-reg"></div><div class="mapa-lado">${ib('releer_gps', 'current-location', 'gps', '', 'sm')}</div></div>`}`;
+}
+// Solo aplica a hallazgos nuevos fuera de los grupos de encuentro (ahí todo es ubicación)
+const sinMapaReg = () => !!R.sinMapa && !R.destino && !destEncuentro();
+// Guardar va antes del mapa, junto a la precisión del GPS
+function filaGuardar(act, X, idGps, attrs = '') {
+  return `<div class="guardar-fila">${X ? `<button type="button" class="gps-chip ${X.pos && esAproximada(X.pos) ? 'alerta' : ''}" id="${idGps}" data-act="gps_chip" data-tip="${esc(C.AYUDA.gps_estado)}">${gpsCorto(X)}</button>` : ''}
+    <button class="btn guardar" data-act="${act}" ${attrs}>${ic('check')} Guardar</button></div>`;
+}
+function gpsCorto(X) {
+  if (X.gps === 'buscando') return `<span class="spin">${ic('loader-2')}</span><span>GPS</span>`;
+  if (X.pos) return X.pos.acc == null ? `${ic('hand-finger')}<span>${esc(C.GPS_A_MANO)}</span>`
+    : `${ic(esAproximada(X.pos) ? 'alert-triangle' : 'map-pin')}<span>±${metros(X.pos.acc)}</span>`;
+  if (X.gps === 'error') return `${ic('map-pin-off')}<span>${esc(C.GPS_SIN)}</span>`;
+  return `${ic('map-pin')}<span>GPS</span>`;
+}
+function gpsTexto(X = R) {
+  if (X.gps === 'buscando') return `<span class="spin">${ic('loader-2')}</span> GPS`;
+  if (X.gps === 'error') return 'Sin GPS: toca el mapa para marcar';
+  if (X.pos) return X.pos.acc == null ? 'Marcado a mano'
+    : esAproximada(X.pos) ? `${ic('alert-triangle')} ±${metros(X.pos.acc)} · aproximada <button type="button" class="linkbtn" data-act="info_precision" data-acc="${X.pos.acc}" style="padding:0 4px">¿Cómo activar la exacta?</button>` : `±${X.pos.acc} m`;
+  return '';
+}
+// Guarda lo escrito antes de volver a dibujar el formulario
+function recordarFormulario() {
+  const raiz = $('.sheet'); if (!raiz) return;
+  const n = $('#f-nombre', raiz), t = $('#f-nota', raiz);
+  if (n) R.nombre = n.value; if (t) R.nota = t.value;
+  const d = valor(raiz, 'dest'); if (d) R.dest = d;
+  const p = valor(raiz, 'priv'); if (p) R.priv = p === '1';
+}
+function montarRegistro(raiz) {
+  $$('[data-in="foto"]', raiz).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && tomarFoto(inp.files[0])));
+  const cv = $('#encuadre', raiz);
+  if (cv && R.enc) montarEncuadre(cv, R.enc, () => { R.recorte = null; generarCuadro(); });
+  const el = $('#mini-reg', raiz);
+  if (el) {
+    const mm = miniMapa(el, R.pos, (p) => { R.pos = p; R.gps = 'ok'; pintarGPS(); buscarCandidatos(); });
+    R.moverMini = mm.mover;
+    buscarCandidatos();
+  }
+}
+function pintarGPS() {
+  const e = $('#gps-estado'); if (!e) return;
+  if (e.classList.contains('gps-chip')) { e.innerHTML = gpsCorto(R); e.classList.toggle('alerta', !!(R.pos && esAproximada(R.pos))); }
+  else e.innerHTML = gpsTexto();
+}
+function leerGPS() {
+  R.gps = 'buscando'; pintarGPS();
+  getPos().then((p) => { R.pos = p; R.gps = 'ok'; pintarGPS(); if (R.moverMini) R.moverMini(p); buscarCandidatos(); })
+    .catch(() => { R.gps = R.pos ? 'ok' : 'error'; pintarGPS(); });
+}
+// Sugerencia: algo tuyo registrado muy cerca de aquí
+async function buscarCandidatos() {
+  const box = $('#candidatos'); if (!box || !R.pos || R.destino) return;
+  if (sinMapaReg()) { box.innerHTML = ''; return; }
+  if (destEncuentro()) { box.innerHTML = ''; return; }
+  const dest = valor($('.sheet'), 'dest') || R.dest || '';
+  if (!dest || dest === MIS_HALLAZGOS) { box.innerHTML = ''; return; }
+  // Solo lo registrado en la misma categoría (propia) o en el mismo grupo
+  const filtro = dest.startsWith('g:') ? { group: dest.slice(2), limit: 5 } : { uid: S.user.id, cat: dest.slice(2), limit: 5 };
+  try {
+    const cerca = guarda(await api.cardsInBox(cajaAlrededor(R.pos, C.REENCUENTRO_METROS), filtro));
+    if ((valor($('.sheet'), 'dest') || R.dest) !== dest) return;
+    R.candidatos = cerca.filter((c) => distancia(R.pos, c) <= C.REENCUENTRO_METROS);
+    // Una sola fila que se desliza: así Guardar no se va hacia abajo
+    box.innerHTML = R.candidatos.length ? `<div class="cand-titulo tiny">${ic('repeat')} ${esc(C.CANDIDATO_PREGUNTA)}</div><div class="cand-fila">${R.candidatos.map((c) => `<button type="button" class="banner cand" data-act="usar_candidato" data-id="${c.id}" aria-label="${esc(C.AYUDA.reencuentro)}: ${esc(c.name)}">
+      ${c.thumb ? `<img src="${foto(c, true)}" alt="">` : ic(c.cat_icon)}<b>${esc(c.name)}</b>${ic('repeat')}</button>`).join('')}</div>` : '';
+  } catch (e) { /* sin sugerencias, no pasa nada */ }
+}
+async function tomarFoto(file) {
+  try {
+    recordarFormulario();
+    const img = await cargarImagen(file);
+    if (R.enc) soltarLienzo(R.enc.img);
+    R.enc = nuevoEncuadre(escalar(img, C.ENCUADRE_FUENTE));
+    R.recorte = null; R.usarRecorte = false; R.sinFoto = false;
+    await generarCuadro();
+    dibujarHoja(); leerGPSsiFalta();
+  } catch (e) { fallo(e); }
+}
+function leerGPSsiFalta() { if (!R.pos && R.gps !== 'buscando') leerGPS(); }
+function ponerVista(blob) { if (R.vistaUrl) URL.revokeObjectURL(R.vistaUrl); R.vistaUrl = URL.createObjectURL(blob); const v = $('#vista'); if (v) v.src = R.vistaUrl; }
+// La foto encuadrada (cuadrada) es la que se guarda; se rehace al soltar el dedo
+function generarCuadro() {
+  const E = R.enc; if (!E) return Promise.resolve(R.original);
+  E.sucio = false;
+  const cv = cuadroDe(E, C.FOTO_LADO), ver = E.ver || 0;
+  R.encPromesa = lienzoABlob(cv, C.FOTO_CALIDAD, false).then((b) => {
+    soltarLienzo(cv);
+    if (R.enc !== E || (E.ver || 0) !== ver) return b;
+    R.original = b; if (!R.usarRecorte) ponerVista(b); return b;
+  });
+  return R.encPromesa;
+}
+// Si el encuadre cambió y aún no se rehízo la foto (por ejemplo, Guardar justo al soltar), se rehace ahora
+async function cuadroAlDia() {
+  if (R.enc && R.enc.sucio) return generarCuadro();
+  return R.encPromesa || R.original;
+}
+// En iPhone los lienzos ocupan memoria aparte: se liberan en cuanto ya no hacen falta
+function soltarLienzo(cv) { try { if (cv) { cv.width = 0; cv.height = 0; } } catch (e) { /* nada */ } }
+
+/* Encuadre cuadrado: arrastrar para mover, pellizcar (o la rueda del ratón) para acercar.
+   El cuadro siempre queda lleno de foto: no hay bandas vacías. */
+function nuevoEncuadre(img) { const w = img.width, h = img.height; return { img, w, h, z: 1, cx: w / 2, cy: h / 2 }; }
+const ladoVisible = (E) => Math.min(E.w, E.h) / E.z;
+// Se puede alejar hasta ver la foto completa (el espacio que sobra queda transparente y se ve el fondo beige); nunca se gira
+const zoomMinimo = (E) => Math.min(E.w, E.h) / Math.max(E.w, E.h);
+function limitarEncuadre(E) {
+  E.z = Math.min(C.ENCUADRE_ZOOM_MAX, Math.max(zoomMinimo(E), E.z));
+  const l = ladoVisible(E) / 2;
+  // Si la foto es más chica que el cuadro en un sentido, se mueve sin salirse del cuadro
+  const ent = (c, t) => Math.min(Math.max(l, t - l), Math.max(Math.min(l, t - l), c));
+  E.cx = ent(E.cx, E.w); E.cy = ent(E.cy, E.h);
+}
+function pintarEncuadre(cv, E) {
+  const l = ladoVisible(E), cx = cv.getContext('2d'), k = cv.width / l;
+  cx.clearRect(0, 0, cv.width, cv.height);
+  cx.imageSmoothingQuality = 'high';
+  // La foto completa, colocada y escalada; lo que queda fuera del cuadro no se dibuja
+  cx.drawImage(E.img, (l / 2 - E.cx) * k, (l / 2 - E.cy) * k, E.w * k, E.h * k);
+}
+function cuadroDe(E, lado) {
+  limitarEncuadre(E);
+  const n = Math.max(1, Math.round(Math.min(lado, ladoVisible(E))));   // resolución real del recorte; al alejar incluye el margen
+  const cv = document.createElement('canvas'); cv.width = n; cv.height = n;
+  pintarEncuadre(cv, E);
+  return cv;
+}
+function montarEncuadre(cv, E, alSoltar) {
+  const ancho = () => cv.getBoundingClientRect().width || 300;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = cv.height = Math.max(1, Math.round(ancho() * dpr));
+  limitarEncuadre(E); pintarEncuadre(cv, E);
+  const dedos = new Map();
+  let base = null, cuadro = 0, tSoltar = 0, toque = null, ultimoToque = 0;
+  // En iPhone, Safari toma el pellizco y el arrastre como zoom o desplazamiento de la página y corta los dedos a medias:
+  // sobre la foto se bloquean esos gestos del navegador para que todo el movimiento llegue al encuadre
+  const bloquear = (ev) => { if (ev.cancelable) ev.preventDefault(); };
+  ['touchstart', 'touchmove', 'gesturestart', 'gesturechange', 'gestureend'].forEach((t) => cv.addEventListener(t, bloquear, { passive: false }));
+  const repintar = () => { E.sucio = true; E.ver = (E.ver || 0) + 1; if (cuadro) return; cuadro = requestAnimationFrame(() => { cuadro = 0; pintarEncuadre(cv, E); }); };
+  const soltar = () => { clearTimeout(tSoltar); tSoltar = setTimeout(alSoltar, 120); };
+  const estado = () => {
+    const p = [...dedos.values()], k = ladoVisible(E) / ancho();
+    const mx = p.reduce((a, q) => a + q.x, 0) / p.length, my = p.reduce((a, q) => a + q.y, 0) / p.length;
+    const d = p.length > 1 ? Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) : 0;
+    return { mx, my, d, k, z: E.z, cx: E.cx, cy: E.cy };
+  };
+  cv.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    if (E.ocupado) return;
+    // Un dedo nuevo que empieza el gesto: se olvidan dedos viejos cuyo "soltar" se perdió
+    // (en iPhone pasa; si no, al arrastrar con un dedo el encuadre se acercaba de golpe)
+    if (ev.isPrimary) dedos.clear();
+    try { cv.setPointerCapture(ev.pointerId); } catch (e) { /* nada */ }
+    dedos.set(ev.pointerId, { x: ev.clientX, y: ev.clientY }); base = estado();
+    toque = dedos.size === 1 ? { x: ev.clientX, y: ev.clientY, t: Date.now() } : null;
+  });
+  cv.addEventListener('pointermove', (ev) => {
+    if (!dedos.has(ev.pointerId) || !base) return;
+    dedos.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    const ahora = estado();
+    // Pellizco solo con dos dedos reales y separados; se mide paso a paso, así un salto raro no dispara el acercamiento
+    if (dedos.size === 2 && base.d >= C.ENCUADRE_PELLIZCO_MIN) E.z = base.z * Math.min(1.6, Math.max(0.6, ahora.d / base.d));
+    const k = ladoVisible(E) / ancho();
+    E.cx = base.cx - (ahora.mx - base.mx) * k; E.cy = base.cy - (ahora.my - base.my) * k;
+    limitarEncuadre(E); repintar();
+    if (dedos.size === 2) base = estado();
+  });
+  const fin = (ev) => {
+    if (!dedos.has(ev.pointerId)) return;
+    dedos.delete(ev.pointerId);
+    // Doble toque: vuelve al encuadre inicial
+    if (toque && ev.type === 'pointerup' && !dedos.size && Date.now() - toque.t < 300 && Math.hypot(ev.clientX - toque.x, ev.clientY - toque.y) < 10) {
+      if (Date.now() - ultimoToque < 350) { E.z = 1; E.cx = E.w / 2; E.cy = E.h / 2; limitarEncuadre(E); repintar(); ultimoToque = 0; }
+      else ultimoToque = Date.now();
+    }
+    toque = null;
+    base = dedos.size ? estado() : null;
+    if (!dedos.size) soltar();
+  };
+  cv.addEventListener('pointerup', fin); cv.addEventListener('pointercancel', fin);
+  cv.addEventListener('lostpointercapture', (ev) => { if (dedos.has(ev.pointerId)) fin(ev); });
+  cv.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    if (E.ocupado) return;
+    E.z = E.z * Math.exp(-ev.deltaY * 0.0015); limitarEncuadre(E); repintar(); soltar();
+  }, { passive: false });
+
+}
+
+
+/* Fotos: redimensionar, recortar y comprimir en el teléfono */
+function cargarImagen(blob) {
+  return new Promise((res, rej) => {
+    const u = URL.createObjectURL(blob), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(u); res(img); };
+    img.onerror = () => { URL.revokeObjectURL(u); rej(new Error('IMAGEN')); };
+    img.src = u;
+  });
+}
+function escalar(img, lado) {
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  const k = Math.min(1, lado / Math.max(w, h));
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(w * k)); cv.height = Math.max(1, Math.round(h * k));
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  return cv;
+}
+function lienzoABlob(cv, calidad, alfa) {
+  const a = (l, tipo) => new Promise((res) => l.toBlob((b) => res(b), tipo, calidad));
+  return a(cv, 'image/webp').then((b) => {
+    if (b && b.type === 'image/webp') return b;
+    if (alfa) return a(cv, 'image/png');
+    // Sin WebP (algunos iPhone) la foto va en JPEG, que no guarda transparencia: el margen se pinta del beige de la app
+    const f = document.createElement('canvas'); f.width = cv.width; f.height = cv.height;
+    const x = f.getContext('2d'); x.fillStyle = C.FONDO_FOTO; x.fillRect(0, 0, f.width, f.height); x.drawImage(cv, 0, 0);
+    return a(f, 'image/jpeg').then((j) => { soltarLienzo(f); return j; });
+  });
+}
+// Quita el espacio transparente y centra el objeto en un cuadro: ocupa el 90 %, con el mismo margen alrededor
+async function recortarVacio(blob) {
+  const img = await cargarImagen(blob);
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d'); cx.drawImage(img, 0, 0);
+  const d = cx.getImageData(0, 0, w, h).data;
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (d[(y * w + x) * 4 + 3] > 12) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  }
+  if (x1 < 0) return blob;
+  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  const lado = Math.max(1, Math.round(Math.max(bw, bh) / C.RECORTE_OCUPA));
+  const out = document.createElement('canvas'); out.width = lado; out.height = lado;
+  out.getContext('2d').drawImage(cv, x0, y0, bw, bh, Math.round((lado - bw) / 2), Math.round((lado - bh) / 2), bw, bh);
+  return new Promise((res) => out.toBlob((b) => res(b || blob), 'image/png'));
+}
+async function recortarFondo(blob, alProgreso) {
+  const mod = await import(C.RECORTE_URL);
+  const fn = mod.removeBackground || mod.default;
+  const base = { output: { format: 'image/png' }, progress: (k, a, t) => alProgreso(t ? a / t : 0) };
+  let r;
+  try { r = await fn(blob, Object.assign({ model: 'isnet_quint8' }, base)); }
+  catch (e) { r = await fn(blob, base); }
+  return recortarVacio(r);
+}
+// conMedia: también la foto mediana del muro (solo hallazgos públicos nuevos; si lo recortado cae en PNG, el muro usa la grande)
+async function prepararFotos(conMedia) {
+  await cuadroAlDia();
+  const alfa = R.usarRecorte && R.recorte;
+  const fuente = alfa ? R.recorte : R.original;
+  const img = await cargarImagen(fuente);
+  let grande = await lienzoABlob(escalar(img, alfa ? Math.min(C.FOTO_LADO, C.FOTO_LADO_RECORTE) : C.FOTO_LADO), C.FOTO_CALIDAD, alfa);
+  // Sin WebP (algunos iPhone) lo recortado va en PNG, que pesa mucho: si pasa del límite del almacén se hace más chico
+  if (alfa && grande && grande.type === 'image/png' && grande.size > C.FOTO_PNG_MAX) grande = await lienzoABlob(escalar(img, 900), C.FOTO_CALIDAD, alfa);
+  const mini = await lienzoABlob(escalar(img, C.MINIATURA_LADO), C.MINIATURA_CALIDAD, alfa);
+  let media = null;
+  if (conMedia && C.FOTO_LADO_MEDIA && grande && grande.type !== 'image/png') {
+    media = await lienzoABlob(escalar(img, C.FOTO_LADO_MEDIA), C.FOTO_CALIDAD_MEDIA, alfa);
+    if (!media || media.type === 'image/png' || media.size >= grande.size) media = null; // si no ahorra nada, no se guarda
+  }
+  return { grande, mini, media };
+}
+const ext = (b) => ({ 'image/webp': 'webp', 'image/png': 'png', 'image/jpeg': 'jpg' }[b.type] || 'jpg');
+// Las fotos de hallazgos privados van al almacén cerrado (ruta "priv:…")
+async function subirFotos(privado, conMedia) {
+  if (!R.original) return { pFoto: null, pMini: null, pMedia: null };
+  const { grande, mini, media } = await prepararFotos(conMedia && !privado);
+  const id = uuid(), pre = privado ? 'priv:' : '';
+  const pFoto = `${pre}${S.user.id}/${id}.${ext(grande)}`, pMini = `${pre}${S.user.id}/${id}_t.${ext(mini)}`;
+  const pMedia = media && !privado ? `${S.user.id}/${id}_m.${ext(media)}` : null;
+  await api.upload(pFoto, grande);
+  try {
+    await api.upload(pMini, mini);
+    if (pMedia) await api.upload(pMedia, media);
+  } catch (e) { api.removeFiles([pFoto, pMini, pMedia].filter(Boolean)).catch(() => null); throw e; }
+  return { pFoto, pMini, pMedia };
+}
+
+// Con un grupo de encuentro como destino: "Mira esto" (nota obligatoria) o punto de encuentro (con nombre), dentro del grupo
+async function guardarEnEncuentro(btn) {
+  const gid = R.dest.slice(2), punto = R.encModo === 'punto', nombre = (R.nombre || '').trim(), nota = (R.nota || '').trim();
+  if (punto && !nombre) { const n = $('#f-nombre'); if (n) n.focus(); return aviso('Ponle un nombre', 'pencil'); }
+  if (!punto && !nota) { const t = $('#f-nota'); if (t) t.focus(); return aviso('Escribe una nota corta', 'pencil'); }
+  if (!R.pos) return aviso('Falta la ubicación: toca el mapa', 'map-pin');
+  ocupado(btn, true);
+  const fila = punto ? { group_id: gid, name: nombre.slice(0, 40), note: nota || null, lat: R.pos.lat, lng: R.pos.lng }
+    : { group_id: gid, note: nota.slice(0, C.ENCUENTRO_NOTA_MAX), lat: R.pos.lat, lng: R.pos.lng, created_at: new Date().toISOString() };
+  let fotos = null, subidas = null;
+  try {
+    fotos = R.original ? await prepararFotos() : null;
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    subidas = await subirFotosDe(fotos, carpetaEncuentro(gid));
+    Object.assign(fila, { photo: subidas.pFoto, thumb: subidas.pMini });
+    if (punto) await api.addPunto(fila); else { await api.addMira(fila); api.dispararPush(); }
+    cerrarHoja(); aviso(punto ? 'Punto propuesto' : 'Marcado en el mapa del grupo', punto ? 'flag' : 'eye');
+    const D = encuentroActual(); if (D) D.cargar();
+  } catch (err) {
+    if (subidas && subidas.pFoto) api.removeFiles([subidas.pFoto, subidas.pMini]).catch(() => null);
+    if (!esErrorRed(err)) { ocupado(btn, false); return fallo(err); }
+    delete fila.photo; delete fila.thumb;
+    try { await guardarPendiente({ tipo: punto ? 'punto' : 'mira', datos: fila, fotos }); }
+    catch (err2) { ocupado(btn, false); return fallo(err); }
+    cerrarHoja(); aviso(C.PENDIENTE_GUARDADO, 'cloud-off');
+  }
+}
+async function guardarHallazgo(btn) {
+  const raiz = $('.sheet');
+  recordarFormulario();
+  if (R.destino) return guardarReencuentro(btn, R.destino);
+  if (destEncuentro()) return guardarEnEncuentro(btn);
+  const nombre = R.nombre.trim(), nota = R.nota.trim();
+  const dest = R.dest || '';
+  let cat = dest.startsWith('c:') ? dest.slice(2) : null;
+  const grupo = dest.startsWith('g:') ? dest.slice(2) : null;
+  if (!cat && !grupo) return aviso('Elige una categoría', 'cards');
+  if (!nombre) { $('#f-nombre', raiz).focus(); return aviso('Ponle un nombre', 'pencil'); }
+  const sinMapa = sinMapaReg();
+  if (!sinMapa && !R.pos) return aviso('Falta la ubicación: toca el mapa', 'map-pin');
+  ocupado(btn, true);
+  // Sin señal: se guarda en el teléfono y se sube solo al volver la conexión
+  if (!navigator.onLine) return guardarHallazgoSinConexion(btn, { cat, grupo, nombre, nota, sinMapa });
+  let guardado = false;
+  try {
+    if (cat === 'auto') { cat = await asegurarMisHallazgos(); R.dest = 'c:' + cat; }
+    // ¿Ya existe con ese nombre en esta categoría o grupo?
+    const existente = await api.findByName(nombre, cat, grupo);
+    if (existente) {
+      let c = cartaConFotos(existente); if (!c) { c = await api.card(existente); if (c) guarda([c]); }
+      ocupado(btn, false);
+      if (!c) return aviso('Ese nombre ya existe aquí', 'alert-triangle');
+      const donde = grupo ? 'en este grupo' : `en ${(S.cats.find((x) => x.id === cat) || {}).name || 'esta categoría'}`;
+      const quien = grupo && c.user_id !== S.user.id ? `${c.user_name} ya registró` : 'Ya tienes';
+      const mismo = await confirmar(`${quien} "${c.name}" ${donde}. ¿Es el mismo?`, 'repeat', c.thumb || c.photo ? foto(c, true) : '', 'repeat');
+      if (mismo) { R.destino = c; return guardarReencuentro(btn, c); }
+      const n = $('#f-nombre'); if (n) { n.focus(); n.select(); }
+      return aviso('Cambia el nombre para registrarlo como nuevo', 'pencil');
+    }
+    const antes = S.stats || await api.stats(S.user.id);
+    const { pFoto, pMini, pMedia } = await subirFotos(!grupo && R.priv, true);
+    const colonia = sinMapa ? null : await api.colonia(R.pos.lat, R.pos.lng);
+    let nuevoId;
+    try {
+      const fila = { category_id: cat, group_id: grupo, name: nombre, note: nota || null, is_private: grupo ? false : R.priv, photo: pFoto, thumb: pMini };
+      if (sinMapa) fila.en_mapa = false; else Object.assign(fila, { lat: R.pos.lat, lng: R.pos.lng, accuracy: R.pos.acc, colonia });
+      if (pMedia) fila.media = pMedia;
+      nuevoId = await api.addFind(fila);
+      guardado = true;
+    } catch (e) { api.removeFiles([pFoto, pMini, pMedia].filter(Boolean)).catch(() => null); throw e; }
+    if (R.etiquetas.length && !(grupo ? false : R.priv)) await api.etiquetar(nuevoId, R.etiquetas).catch((e) => fallo(e));
+    const despues = await api.stats(S.user.id);
+    S.stats = despues;
+    cerrarTodo();
+    S.nuevoId = nuevoId; setTimeout(() => { if (S.nuevoId === nuevoId) S.nuevoId = null; }, 4000);
+    if (!sinMapa && S.tab === 'map' && S.map && !S.grupo) S.map.setView([R.pos.lat, R.pos.lng], Math.max(16, (S.map.getZoom && S.map.getZoom()) || 16));
+    const g = grupo ? miGrupo(grupo) : null, ct = cat ? (despues.categorias || []).find((x) => x.id === cat) : null;
+    celebrarHallazgo({ icono: (ct || g || {}).icon, color: (ct || g || {}).color, titulo: nombre,
+      detalle: ct ? `${ct.name} · ${ct.total}` : (g ? g.name : ''), foto: R.vistaUrl }, () => celebrar(novedades(antes, despues)));
+    refrescarActual();
+  } catch (e) {
+    if (!guardado && esErrorRed(e)) return guardarHallazgoSinConexion(btn, { cat, grupo, nombre, nota, sinMapa });
+    ocupado(btn, false); fallo(e);
+  }
+}
+async function guardarReencuentro(btn, c) {
+  const nota = (R.nota || '').trim();
+  ocupado(btn, true);
+  if (!navigator.onLine) return guardarReencuentroSinConexion(btn, c);
+  let guardado = false;
+  try {
+    const antes = S.stats || await api.stats(S.user.id);
+    const { pFoto, pMini } = await subirFotos(!!c.is_private);
+    const pos = enMapa(c) ? R.pos || null : null;   // en una foto sin mapa tampoco se guarda dónde la volviste a ver
+    const colonia = pos ? await api.colonia(pos.lat, pos.lng) : null;
+    try {
+      await api.addSighting({ find_id: c.id, lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, photo: pFoto, thumb: pMini, colonia, note: nota || null });
+      guardado = true;
+    } catch (e) { api.removeFiles([pFoto, pMini]).catch(() => null); throw e; }
+    const nueva = await api.card(c.id); if (nueva) guarda([nueva]);
+    const despues = await api.stats(S.user.id); S.stats = despues;
+    // Volver a la ficha (con la historia actualizada) si se abrió desde ahí
+    const habiaFicha = pila.some((h) => h.tipo === 'ficha');
+    cerrarTodo();
+    if (habiaFicha) abrirFicha(c.id);
+    celebrarHallazgo({ icono: 'repeat', color: c.cat_color, titulo: c.name, detalle: 'Reencuentro · ' + ((nueva && nueva.sightings_count) || ''), foto: R.original ? R.vistaUrl : '' },
+      () => celebrar(novedades(antes, despues)));
+    refrescarActual();
+  } catch (e) {
+    if (!guardado && esErrorRed(e)) return guardarReencuentroSinConexion(btn, c);
+    ocupado(btn, false); fallo(e);
+  }
+}
+/* Celebraciones (solo visuales: sin sonido ni vibración) */
+const menosMovimiento = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+function confeti(cantidad, duracion) {
+  if (menosMovimiento()) return;
+  const cv = document.createElement('canvas'); cv.className = 'confeti';
+  const W = cv.width = innerWidth, H = cv.height = innerHeight; document.body.appendChild(cv);
+  const x = cv.getContext('2d'), cols = C.CONFETI_COLORES;
+  const ps = Array.from({ length: cantidad }, () => ({
+    x: W / 2 + (Math.random() - 0.5) * W * 0.3, y: H * 0.45, vx: (Math.random() - 0.5) * 14, vy: -8 - Math.random() * 10,
+    w: 6 + Math.random() * 7, h: 9 + Math.random() * 9, r: Math.random() * 6, vr: (Math.random() - 0.5) * 0.4, c: cols[Math.floor(Math.random() * cols.length)] }));
+  const t0 = performance.now();
+  (function paso(t) {
+    const k = (t - t0) / duracion; x.clearRect(0, 0, W, H);
+    ps.forEach((p) => { p.vy += 0.45; p.vx *= 0.99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+      x.save(); x.globalAlpha = Math.max(0, 1 - Math.max(0, k - 0.6) / 0.4); x.translate(p.x, p.y); x.rotate(p.r);
+      x.fillStyle = p.c; x.strokeStyle = '#2E2A26'; x.lineWidth = 1; x.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); x.strokeRect(-p.w / 2, -p.h / 2, p.w, p.h); x.restore(); });
+    if (k < 1) requestAnimationFrame(paso); else cv.remove();
+  })(t0);
+}
+// Tarjeta "+1" al guardar un hallazgo o reencuentro; luego sigue con las medallas
+function celebrarHallazgo(d, luego) {
+  const el = document.createElement('div'); el.className = 'celebra'; el.setAttribute('role', 'status');
+  el.innerHTML = `<div class="celebra-card">
+    ${d.foto ? `<img src="${esc(d.foto)}" alt="">` : `<span class="celebra-icono" style="background:${okColor(d.color)}">${ic(d.icono)}</span>`}
+    <div class="mas1">+1</div><h2>${esc(d.titulo)}</h2>${d.detalle ? `<p class="row" style="justify-content:center">${ic(d.icono)} ${esc(d.detalle)}</p>` : ''}</div>`;
+  document.body.appendChild(el);
+  confeti(90, C.CELEBRACION_MS);
+  let hecho = false;
+  const fin = () => { if (hecho) return; hecho = true; el.classList.add('sale'); setTimeout(() => { el.remove(); if (luego) luego(); premiosDespues(); }, 250); };
+  el.addEventListener('click', fin);
+  setTimeout(fin, menosMovimiento() ? 900 : C.CELEBRACION_MS);
+}
+// Siguiente meta de la misma serie de una medalla
+function siguienteMeta(l) {
+  const serie = { cat: C.METAS_CATEGORIA, grupo: C.METAS_CATEGORIA, col: C.METAS_COLONIAS, racha: C.METAS_RACHA_SEMANAS, reen: C.METAS_REENCUENTROS }[l.tipo] || [];
+  return serie.find((m) => m > l.m) || null;
+}
+function celebrar(n, textoBase) {
+  const hay = n.nuevos.length || n.colonias.length || n.records.length || n.colecciones;
+  if (!hay) { if (textoBase) aviso(textoBase); return; }
+  // Si una serie ganó varias metas a la vez, se muestra la más alta
+  const mejores = Object.values(n.nuevos.reduce((a, l) => { const k = l.tipo + (l.cat || l.grupo || ''); if (!a[k] || a[k].m < l.m) a[k] = l; return a; }, {}));
+  const titulo = n.nuevos.length > 1 ? `¡${n.nuevos.length} nuevas medallas!` : n.nuevos.length ? '¡Nueva medalla!' : '¡Nuevo récord!';
+  abrirHoja(() => `${cabeza('')}<div class="unlock">
+    <div class="burst" aria-hidden="true"></div>
+    <h1 class="serif unlock-t">${titulo}</h1>
+    ${n.colonias.map((c) => `<div class="banner" style="margin-bottom:10px;justify-content:center">${ic('map-pin')} Nueva colonia: <b>${esc(c)}</b></div>`).join('')}
+    <div class="medals nuevas">${n.nuevos.map(medalla).join('')}</div>
+    ${n.colecciones ? `<div class="banner coleccion-nueva">${ic('cards')}<span>${esc(n.colecciones >= C.COLECCIONES_MAX ? C.COLECCION_MAXIMO : C.COLECCION_NUEVA.replace('{n}', n.colecciones))}</span></div>` : ''}
+    ${mejores.map((l) => { const sig = siguienteMeta(l); return `<div class="meta-sig"><div class="row between tiny"><span>${esc(l.titulo)}</span>
+      <span>${sig ? `${l.v} / ${sig}` : 'meta máxima'}</span></div><div class="progress"><div style="width:${sig ? Math.min(100, Math.round(l.v / sig * 100)) : 100}%"></div></div></div>`; }).join('')}
+    ${n.records.map((r) => `<p class="row" style="justify-content:center">${ic(r.icon)} ${esc(r.texto)}</p>`).join('')}
+    <button class="btn block" data-act="cerrar" style="margin-top:18px">${ic('check')}</button></div>`, null, 'logro');
+  confeti(160, 2200);
+}
+
+// Bloque de la celebración: el pin con su premio nuevo y, desde la corona, el color a elegir
+function colorPremioActual(tipo, id) {
+  if (tipo === 'cat') { const c = S.cats.find((x) => x.id === id); return (c && c.premio_color) || 'oro'; }
+  const g = ((S.stats && S.stats.premios_grupos) || []).find((x) => x.id === id); return (g && g.premio_color) || 'oro';
+}
+function selectorColorPremio(tipo, id, actual) {
+  return `<div class="swatches premio-colores" role="group" aria-label="${esc(C.AYUDA.color_premio)}">${Object.keys(C.COLORES_PREMIO).map((k) =>
+    `<button type="button" data-act="color_premio" data-tipo="${tipo}" data-id="${id}" data-v="${k}" class="${k === actual ? 'on' : ''}" style="background:${C.COLORES_PREMIO[k]}" aria-label="${esc(C.NOMBRES_PREMIO[k])}" data-tip="${esc(C.NOMBRES_PREMIO[k])}"></button>`).join('')}</div>`;
+}
+
+/* ---------------------------------------------------------------------
+   Premios nuevos (1.9.8): la base decide qué se ganó y lo guarda para siempre.
+   Cada premio sale con su celebración y su confeti, uno tras otro.
+   --------------------------------------------------------------------- */
+let revisandoPremios = false, tPremios = null;
+function revisarPremiosPronto(ms) { clearTimeout(tPremios); tPremios = setTimeout(revisarPremios, ms == null ? 2500 : ms); }
+const claveInaugura = () => 'cg_guardarropa_' + (S.user ? S.user.id : '');
+function inauguracionVista() { if (S.inauguroGuardarropa) return true; if (S.me && S.me.created_at && S.me.created_at >= C.INAUGURA_HASTA) return true; try { return !!localStorage.getItem(claveInaugura()); } catch (e) { return false; } }
+async function revisarPremios() {
+  if (!S.user || !S.me || S.me.blocked || revisandoPremios || !navigator.onLine || !api.revisarPremios) return;
+  revisandoPremios = true;
+  try {
+    const l = await api.revisarPremios();
+    const ya = new Set(S.colaPremios.map((p) => p.clave));
+    (l || []).forEach((p) => { const clave = `${p.premio}:${p.ambito || ''}`; if (!ya.has(clave) && C.PREMIOS_PIN[p.premio]) S.colaPremios.push(Object.assign({ clave }, p)); });
+    // la primera vez: la inauguración del guardarropa va antes (con el sombrero de bruja, si llegó)
+    if (!inauguracionVista() && !S.colaPremios.some((p) => p.inaugura)) S.colaPremios.unshift({ clave: 'inaugura', inaugura: true });
+  } catch (e) { /* si falla, se revisa la próxima vez */ }
+  revisandoPremios = false;
+  siguientePremio();
+}
+function siguientePremio() {
+  if (!S.colaPremios.length || pila.length || document.hidden || $('.celebra') || !$('#app .nav')) return;
+  const p = S.colaPremios.shift();
+  if (p.inaugura) mostrarInauguracion(); else mostrarPremio(p);
+}
+// Un solo premio puesto en su espacio (para la muestra)
+function adornoSolo(id) { const e = (C.PREMIOS_PIN[id] || {}).espacio; return e === 'cabeza' ? { c: id } : e === 'cuerpo' ? { b: id } : e === 'espalda' ? { e: id } : e === 'aro' ? { a: true } : null; }
+const coleccionDe = (amb) => (amb ? S.cats.find((c) => c.id === amb) || miGrupo(amb) || null : null);
+function muestraPin(amb) { const c = coleccionDe(amb) || S.cats[0] || {}; return { color: c.color || C.COLORES.terracota, icon: c.icon || 'star' }; }
+// Por qué se ganó: descripción simple (larga al ganarlo, corta en el guardarropa)
+function motivoPremio(id, col, corto) {
+  const m = (C.PREMIO_MOTIVO || {})[id]; if (!m) return '';
+  return (corto ? m[1] : m[0]).replace('{c}', col ? col.name : 'una colección');
+}
+function mostrarPremio(p) {
+  api.premiosVistos([p.clave]).catch(() => null);
+  const info = C.PREMIOS_PIN[p.premio], amb = p.ambito || null, col = coleccionDe(amb), m = muestraPin(amb);
+  const tipo = amb && S.cats.some((c) => c.id === amb) ? 'cat' : 'grupo';
+  abrirHoja(() => { const k = amb ? colorPremioActual(tipo, amb) : 'oro';
+    return `${cabeza('')}<div class="unlock premio-cel">
+      <div class="burst" aria-hidden="true"></div>
+      <h1 class="serif unlock-t">${esc(C.PREMIO_NUEVO)}</h1>
+      <div class="pin-muestra-grande">${pinGrande(m.color, m.icon, amb ? adornoSolo(p.premio) : adornoSolo(p.premio), k, 150)}</div>
+      <h2>${esc(info.nombre)}</h2>
+      <p class="premio-motivo">${esc(motivoPremio(p.premio, col))}</p>
+      ${col ? `<p>${catBadge(col.name, col.icon, col.color)}</p>` : ''}
+      <p class="muted">${esc(C.PREMIO_GUARDADO)}</p>
+      ${amb && (p.premio === 'corona' || p.premio === 'corona2') ? `<p class="tiny">${esc(C.AYUDA.color_premio)}</p>${selectorColorPremio(tipo, amb, k)}` : ''}
+      ${!amb ? `<button class="btn block" data-act="premio_poner" data-p="${esc(p.premio)}">${ic('hanger')} ${esc(C.PREMIO_PONER)}</button>` : ''}
+      <button class="btn alt block" data-act="premio_seguir" style="margin-top:8px">${ic('check')} ${esc(C.PREMIO_SEGUIR)}</button></div>`; }, null, 'premio');
+  confeti(160, 2200);
+}
+function mostrarInauguracion() {
+  S.inauguroGuardarropa = true;
+  try { localStorage.setItem(claveInaugura(), '1'); } catch (e) { /* sin almacenamiento */ }
+  const bruja = S.colaPremios.find((x) => x.premio === 'bruja');
+  if (bruja) { S.colaPremios = S.colaPremios.filter((x) => x !== bruja); api.premiosVistos([bruja.clave]).catch(() => null); }
+  const m = muestraPin(null);
+  abrirHoja(() => `${cabeza('')}<div class="unlock premio-cel">
+    <div class="burst" aria-hidden="true"></div>
+    <h1 class="serif unlock-t">${esc(bruja ? C.BRUJA_TITULO : C.INAUGURA_TITULO)}</h1>
+    <div class="pin-muestra-grande">${pinGrande(m.color, m.icon, bruja ? { c: 'bruja' } : null, 'oro', 150)}</div>
+    ${bruja ? `<h2>${esc(C.BRUJA_TEXTO)}</h2><p class="premio-motivo">${esc(motivoPremio('bruja'))}</p>` : ''}
+    <p>${esc(C.GUARDARROPA_INAUGURA)}</p>
+    ${bruja ? `<button class="btn block" data-act="premio_poner" data-p="bruja">${ic('hanger')} ${esc(C.PREMIO_PONER)}</button>` : ''}
+    <button class="btn alt block" data-act="guardarropa" style="margin-top:8px">${ic('hanger')} ${esc(C.GUARDARROPA_ABRIR)}</button>
+    <button class="btn alt block" data-act="premio_seguir" style="margin-top:8px">${ic('check')} ${esc(C.PREMIO_SEGUIR)}</button></div>`, null, 'premio');
+  confeti(180, 2400);
+}
+// "Ponérmelo": un premio personal pasa al guardarropa de todas las colecciones
+async function ponerPremio(id, btn) {
+  const esp = (C.PREMIOS_PIN[id] || {}).espacio; if (!esp || esp === 'aro') return;
+  ocupado(btn, true);
+  try {
+    const filas = await api.misEstilos();
+    const t = (filas || []).find((f) => !f.ambito) || {};
+    const e = { cabeza: t.cabeza || null, cuerpo: t.cuerpo || null, espalda: t.espalda || null, aro: t.aro == null ? null : !!t.aro };
+    e[esp] = id;
+    await api.guardarEstilo(null, e);
+    if (btn && btn.isConnected) { btn.innerHTML = `${ic('check')} ${esc(C.PREMIO_PUESTO)}`; btn.disabled = true; }
+    aviso(C.PREMIO_PUESTO, 'hanger');
+    pinesAlDia();
+  } catch (err) { ocupado(btn, false); fallo(err); }
+}
+// Los pines vuelven a pedirse para verse con lo nuevo
+function pinesAlDia() { S.cache.forEach((c, k) => { if (c && c.user_id === S.user.id) S.cache.delete(k); }); if (S.map) cargarPines(); }
+
+/* Top de la semana: la medalla con el lugar va junto al nombre y en el pin, solo mientras siga en el top */
+async function cargarTop() {
+  if (!S.user || !api.topActual) return;
+  try {
+    const [l, ls] = await Promise.all([api.topActual(), api.topSiempre ? api.topSiempre().catch(() => []) : []]);
+    const mapas = (lista) => { const pines = new Map(), personas = new Map();
+      (lista || []).forEach((t) => { pines.set(t.find_id, t.puesto); if (!personas.has(t.user_id) || personas.get(t.user_id) > t.puesto) personas.set(t.user_id, t.puesto); });
+      return { pines, personas }; };
+    const sem = mapas(l), sie = mapas(ls);
+    const firma = (t) => (t ? [...t.pines.entries(), ['|'], ...(t.siempre ? t.siempre.entries() : [])].join() : null);
+    const antes = firma(S.top);
+    S.top = { pines: sem.pines, personas: sem.personas, siempre: sie.pines, personasSiempre: sie.personas, lista: ls || [], at: Date.now() };
+    if (antes !== null && antes !== firma(S.top) && S.tab === 'map') cargarPines();
+  } catch (e) { /* sin top si falla */ }
+}
+// Colecciones de otras personas que sigo (salen en "a quien sigo" y en la fila del mapa)
+async function cargarSigoCols() {
+  if (!S.user || !api.coleccionesQueSigo) return;
+  try { S.sigoCols = await api.coleccionesQueSigo() || []; } catch (e) { S.sigoCols = S.sigoCols || []; }
+  pintarFiltrosMapa();
+}
+
+/* Guardarropa: qué lleva el pin en cada espacio, para todas las colecciones o para una */
+function hojaGuardarropa() {
+  // Un solo guardarropa: lo que se elige va en todos los pines. Sin elegir (cabeza y aro), cada colección lleva su propio premio.
+  const D = { premios: null, estilos: null, sel: null };
+  const COL_CABEZA = ['copa', 'corona2', 'corona', 'brote', 'patito'];
+  const elegir = () => { const f = (D.estilos || []).find((x) => !x.ambito) || {};
+    D.sel = { cabeza: f.cabeza || null, cuerpo: f.cuerpo || null, espalda: f.espalda || null, aro: f.aro == null ? null : !!f.aro }; };
+  const de = (id) => (D.premios || []).filter((p) => p.premio === id);
+  // cada premio una vez, con las colecciones donde se ganó
+  const ganados = (esp) => [...new Set((D.premios || []).filter((p) => C.PREMIOS_PIN[p.premio] && C.PREMIOS_PIN[p.premio].espacio === esp).map((p) => p.premio))];
+  const dondeSeGano = (id) => { const n = de(id).map((p) => coleccionDe(p.ambito)).filter(Boolean).map((c) => c.name); return n.length ? { name: [...new Set(n)].join(', ') } : null; };
+  const corto = (id) => motivoPremio(id, dondeSeGano(id), true);
+  const hayAuto = (esp) => (esp === 'cabeza' ? COL_CABEZA.some((x) => de(x).some((p) => p.ambito)) : esp === 'aro' ? de('aro').length > 0 : false);
+  // la muestra: la colección con el mejor premio propio
+  const muestraAmb = () => { for (const x of COL_CABEZA) { const p = de(x).find((y) => y.ambito && coleccionDe(y.ambito)); if (p) return p.ambito; }
+    const a = de('aro').find((y) => y.ambito && coleccionDe(y.ambito)); return a ? a.ambito : null; };
+  const autoDe = (amb) => (amb ? COL_CABEZA.find((x) => de(x).some((p) => p.ambito === amb)) || null : null);
+  const render = () => {
+    if (!D.premios) return `${cabeza(`${ic('hanger')} ${esc(C.GUARDARROPA)}`)}<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+    const amb = muestraAmb(), m = muestraPin(amb), k = amb ? colorPremioActual(S.cats.some((c) => c.id === amb) ? 'cat' : 'grupo', amb) : 'oro';
+    const sel = D.sel, val = (v) => (v === 'nada' ? null : v);
+    const ad = { c: sel.cabeza == null ? autoDe(amb) : val(sel.cabeza), b: val(sel.cuerpo), e: val(sel.espalda),
+      a: sel.aro == null ? !!amb && de('aro').some((p) => p.ambito === amb) : sel.aro && de('aro').length > 0 };
+    const espacios = C.ESPACIOS_PIN.map(([e, nombre]) => {
+      const ops = ganados(e); if (!ops.length) return '';
+      const auto = hayAuto(e);
+      const v = e === 'aro' ? (sel.aro == null ? null : sel.aro ? 'aro' : 'nada') : sel[e];
+      const enAuto = auto && v == null, enNada = !enAuto && (v == null || v === 'nada');
+      const btnTexto = (x, t, on) => `<button type="button" class="op ninguno ${on ? 'on' : ''}" data-act="gr_elegir" data-esp="${e}" data-v="${x}" aria-pressed="${on}">${esc(t)}</button>`;
+      return `<div class="ranura"><h4>${esc(nombre)}</h4><div class="opciones">
+        ${auto ? btnTexto('auto', C.GUARDARROPA_AUTO, enAuto) : ''}${btnTexto('nada', C.GUARDARROPA_NADA, enNada)}
+        ${ops.map((id) => { const on = !enAuto && v === id, t = C.PREMIOS_PIN[id].nombre + ' · ' + corto(id);
+          return `<button type="button" class="op ${on ? 'on' : ''}" data-act="gr_elegir" data-esp="${e}" data-v="${esc(id)}" aria-pressed="${on}" data-tip="${esc(t)}" aria-label="${esc(t)}">${pinGrande(m.color, m.icon, adornoSolo(id), k, 40)}</button>`; }).join('')}
+      </div></div>`; }).join('');
+    return `${cabeza(`${ic('hanger')} ${esc(C.GUARDARROPA)}`)}
+      <div class="pin-muestra-grande gr-muestra">${pinGrande(m.color, m.icon, ad, k, 130)}</div>
+      ${D.ultimo && C.PREMIOS_PIN[D.ultimo] ? `<p class="gr-motivo"><b>${esc(C.PREMIOS_PIN[D.ultimo].nombre)}</b> · ${esc(corto(D.ultimo))}</p>`
+        : D.ultimo === 'auto' ? `<p class="gr-motivo">${esc(C.GUARDARROPA_AUTO_TEXTO)}</p>` : ''}
+      ${espacios || `<div class="empty">${ic('hanger')}<p>${esc(C.GUARDARROPA_VACIO)}</p></div>`}
+      ${espacios ? `<button class="btn block" data-act="gr_guardar" style="margin-top:14px">${ic('check')} Guardar</button>` : ''}`;
+  };
+  abrirHoja(render, null, 'guardarropa');
+  const hoja = hojaArriba(); hoja.datos = D;
+  D.cargar = async () => {
+    try { const [p, e] = await Promise.all([api.misPremios(), api.misEstilos()]); D.premios = p || []; D.estilos = e || []; elegir(); }
+    catch (err) { D.premios = D.premios || []; D.estilos = D.estilos || []; elegir(); fallo(err); }
+    if (hojaArriba() === hoja) dibujarHoja();
+  };
+  D.cargar();
+}
+
+/* Primeros pasos: un tutorial corto; se marca solo con lo que cada persona ya hizo */
+function pasosHTML(r) {
+  if (!r) return '';
+  const hechos = C.PASOS.filter((x) => r[x.k]).length;
+  if (hechos >= C.PASOS.length) return '';
+  const actual = C.PASOS.find((x) => !r[x.k]);
+  return `<div class="pasos">
+    <div class="row between"><b>${esc(C.PASOS_TITULO)}</b><span class="tiny">${hechos} de ${C.PASOS.length}</span></div>
+    <div class="row pasos-barra"><div class="progress grow"><div style="width:${Math.round(hechos / C.PASOS.length * 100)}%"></div></div>
+      <span class="pasos-regalo" data-tip="${esc(C.PASOS_PREMIO)}" aria-label="${esc(C.PASOS_PREMIO)}">${ic('gift')}</span></div>
+    ${C.PASOS.map((x, i) => `<div class="reto ${r[x.k] ? 'hecho' : ''} ${x === actual ? 'actual' : ''}">
+      <span class="ck">${r[x.k] ? ic('check') : i + 1}</span><span class="tx">${esc(x.texto)}</span>
+      ${r[x.k] ? '' : `<button class="btn sm alt" data-act="reto_ir" data-v="${x.k}">${esc(C.PASOS_IR)}</button>`}</div>`).join('')}</div>`;
+}
+const limiteCategorias = () => (S.stats && S.stats.limite_categorias) || C.MAX_CATEGORIAS;
+const nivelDe = (tipo, id) => {
+  const lista = tipo === 'cat' ? ((S.stats && S.stats.categorias) || []) : ((S.stats && S.stats.premios_grupos) || []);
+  const x = lista.find((y) => y.id === id); return x ? x.total : 0;
+};
+
+/* Editar hallazgo (si el nombre ya existe, ofrece juntarlos) */
+function editarHallazgo(id) {
+  const c = S.cache.get(id); if (!c) return;
+  const origen = c.group_id ? 'g:' + c.group_id : 'c:' + c.category_id;
+  // 2.0.4: se puede mover entre colecciones y grupos de colección (los de encuentro se quedan donde están)
+  const fijo = !!c.group_id && (esEncuentro(miGrupo(c.group_id)) || !miGrupo(c.group_id));
+  const E = { pos: enMapa(c) ? { lat: c.lat, lng: c.lng, acc: c.accuracy } : null, movido: false, sinMapa: !enMapa(c), sinMapaAntes: !enMapa(c),
+    dest: origen, priv: !!c.is_private, nombre: c.name, nota: c.note || '', origen, fijo, cid: c.id };
+  abrirHoja(() => `${cabeza(ic('pencil'))}
+    ${fijo ? `<div class="campo-fila">${catBadge(c.cat_name, c.cat_icon, c.cat_color)} ${ic('users')}</div>` : `<div class="campo-fila">${selectorEdicion(E)}</div>`}
+    <div id="ed-mover">${notaMover(c, E)}</div>
+    <div class="row" style="gap:8px;align-items:stretch">
+      <label class="campo-ic grow">${ic('pencil')}<input id="e-nombre" class="in compacto" maxlength="60" value="${esc(E.nombre)}" aria-label="Nombre"></label>
+      <div class="toggle mini" data-pick="priv" id="ed-priv" ${E.dest.startsWith('g:') ? 'hidden' : ''}>
+        <button type="button" data-act="elegir" data-v="0" class="${!E.priv ? 'on' : ''}" data-tip="${C.AYUDA.publico}" aria-label="${C.AYUDA.publico}">${ic('eye')}</button>
+        <button type="button" data-act="elegir" data-v="1" class="${E.priv ? 'on' : ''}" data-tip="${C.AYUDA.privado}" aria-label="${C.AYUDA.privado}">${ic('lock')}</button></div>
+      <div class="toggle mini" data-pick="mapa_ed">
+        <button type="button" data-act="ed_mapa" data-v="1" class="${E.sinMapa ? '' : 'on'}" data-tip="${esc(C.AYUDA.en_mapa)}" aria-label="${esc(C.AYUDA.en_mapa)}" aria-pressed="${!E.sinMapa}">${ic('map-pin')}</button><button type="button" data-act="ed_mapa" data-v="0" class="${E.sinMapa ? 'on' : ''}" data-tip="${esc(C.AYUDA.sin_mapa)}" aria-label="${esc(C.AYUDA.sin_mapa)}" aria-pressed="${E.sinMapa}">${ic('map-pin-off')}</button></div>
+    </div>
+    <label class="campo-ic">${ic('info-circle')}<textarea id="e-nota" class="in compacto crece" rows="1" maxlength="140" placeholder="${esc(C.NOTA_PISTA)}" aria-label="Nota">${esc(E.nota)}</textarea></label>
+    ${filaGuardar('guardar_edicion', null, '', `data-id="${c.id}"`)}
+    <div id="ed-lugar"></div>`,
+  (raiz) => {
+    raiz._edicion = E; pintarLugarEdicion(raiz, E);
+    const n = $('#e-nombre', raiz), t = $('#e-nota', raiz);
+    if (n) n.addEventListener('input', () => { E.nombre = n.value; });
+    if (t) t.addEventListener('input', () => { E.nota = t.value; });
+  }, 'editar');
+}
+// Dos renglones como al registrar: tus colecciones (con "+ Nueva colección") y tus grupos de colección
+function selectorEdicion(E) {
+  const chip = (v, color, icon, nombre, despues = '') => `<button type="button" class="chip cc ${v === E.dest ? 'on' : ''}" style="--c:${okColor(color)}" data-act="elegir" data-v="${v}">${ic(icon)}${esc(nombre)}${despues}</button>`;
+  const grupos = gruposColeccion().map((g) => chip('g:' + g.id, g.color, g.icon, g.name, ic('users')));
+  return `<div class="dest-filas" data-pick="dest_ed">
+    <div class="dest-fila"><span class="dest-et" data-tip="${esc(C.DEST_COLECCIONES)}" aria-label="${esc(C.DEST_COLECCIONES)}">${ic('cards')}</span>
+      <div class="chips una-fila">${S.cats.map((x) => chip('c:' + x.id, x.color, x.icon, x.name)).join('')}
+        <button type="button" class="chip nueva-col" data-act="ed_nueva_col" aria-label="${esc(C.NUEVA_COLECCION)}">${ic('plus')}${esc(C.NUEVA_COLECCION)}</button></div></div>
+    ${grupos.length ? `<div class="dest-fila"><span class="dest-et" data-tip="${esc(C.DEST_GRUPOS)}" aria-label="${esc(C.DEST_GRUPOS)}">${ic('users')}</span>
+      <div class="chips una-fila">${grupos.join('')}</div></div>` : ''}</div>`;
+}
+// Qué va a pasar al mover: sale de un grupo, entra a uno (si era secreto, lo verán sus integrantes)
+function nombreDestino(d) {
+  if (d.startsWith('g:')) { const g = miGrupo(d.slice(2)); return g ? g.name : ''; }
+  const x = S.cats.find((y) => y.id === d.slice(2)); return x ? x.name : '';
+}
+function notaMover(c, E) {
+  if (E.dest === E.origen) return '';
+  const de = c.group_id ? c.cat_name : nombreDestino(E.origen), a = nombreDestino(E.dest);
+  let t = E.dest.startsWith('g:')
+    ? ((miGrupo(E.dest.slice(2)) || {}).is_public ? C.MOVER_A_GRUPO_PUBLICO : C.MOVER_A_GRUPO).replace('{g}', a)
+    : (c.group_id ? C.MOVER_SALE_GRUPO : C.MOVER_A_COLECCION).replace('{g}', de || '').replace('{c}', a);
+  if (E.dest.startsWith('g:') && c.is_private) t += ' ' + C.MOVER_SECRETO;
+  if (E.dest.startsWith('c:') && c.group_id && !c.group_public) t += ' ' + C.MOVER_SALE_PRIVADO;
+  return `<p class="tiny mover-nota">${ic(E.dest.startsWith('g:') ? 'users' : 'cards')} ${esc(t)}</p>`;
+}
+// El mapa de la edición: con "Sin mapa" se quita; al volver al mapa hay que elegir el lugar (tocando el mapa o con tu ubicación)
+function pintarLugarEdicion(raiz, E) {
+  const box = $('#ed-lugar', raiz); if (!box) return;
+  if (E.sinMapa) { box.innerHTML = `<p class="tiny sin-mapa-nota">${ic('map-pin-off')} ${esc(C.SIN_MAPA_NOTA)}</p>`; return; }
+  box.innerHTML = `${E.sinMapaAntes && !E.movido ? `<p class="tiny sin-mapa-nota">${ic('hand-finger')} ${esc(C.SIN_MAPA_ELEGIR_LUGAR)}</p>` : ''}
+    <div class="mapa-caja"><div class="minimap" id="mini-ed"></div><div class="mapa-lado">${ib('ed_mi_ubicacion', 'current-location', 'gps', '', 'sm')}</div></div>`;
+  const mm = miniMapa($('#mini-ed', box), E.pos, (p) => { E.pos = p; E.movido = true; });
+  E.mover = mm.mover;
+}
+async function guardarEdicion(btn, id) {
+  const raiz = $('.sheet'), E = raiz._edicion, c = S.cache.get(id);
+  const nombre = $('#e-nombre', raiz).value.trim();
+  if (!nombre) return aviso('Ponle un nombre', 'pencil');
+  const cambios = { name: nombre, note: $('#e-nota', raiz).value.trim() || null };
+  const dest = E.fijo ? E.origen : (valor(raiz, 'dest_ed') || E.dest);
+  if (dest.startsWith('g:')) { cambios.group_id = dest.slice(2); cambios.category_id = null; cambios.is_private = false; }
+  else { cambios.category_id = dest.slice(2); cambios.group_id = null; cambios.is_private = valor(raiz, 'priv') === '1'; }
+  if (dest.startsWith('g:') && c.is_private && dest !== E.origen && !(await confirmar(C.MOVER_SECRETO_CONFIRMAR.replace('{g}', nombreDestino(dest)), 'users'))) return;
+  if (!E.sinMapa && E.sinMapaAntes && !(E.movido && E.pos)) return aviso(C.SIN_MAPA_ELEGIR_LUGAR, 'map-pin');
+  ocupado(btn, true);
+  try {
+    if (E.sinMapa) { if (!E.sinMapaAntes) cambios.en_mapa = false; }
+    else if (E.sinMapaAntes) {
+      Object.assign(cambios, { en_mapa: true, lat: E.pos.lat, lng: E.pos.lng, accuracy: E.pos.acc == null ? null : E.pos.acc });
+      cambios.colonia = await api.colonia(E.pos.lat, E.pos.lng);
+    } else if (E.movido && distancia(E.pos, c) > 5) {
+      Object.assign(cambios, { lat: E.pos.lat, lng: E.pos.lng, accuracy: null });
+      cambios.colonia = await api.colonia(E.pos.lat, E.pos.lng);
+    }
+    try { await api.updateFind(id, cambios); }
+    catch (e) {
+      if (!errTexto(e).includes('NOMBRE_REPETIDO')) throw e;
+      ocupado(btn, false);
+      return ofrecerJuntar(c, nombre, cambios.category_id || null, cambios.group_id || null);
+    }
+    // Si cambió entre privado y público (o entre grupo y colección), sus fotos cambian de almacén
+    await moverFotosHallazgo(id, cambios.is_private);
+    procesarFotosPorBorrar(); // al volverse secreto, su foto mediana del muro se quita del almacén público
+    const nueva = await api.card(id); if (nueva) guarda([nueva]);
+    S.stats = null;
+    cerrarHoja(); refrescarFicha(id); refrescarActual(); aviso('Guardado');
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+async function moverFotosHallazgo(id, aPrivado) {
+  const f = await api.card(id); if (!f) return;
+  const esPriv = (x) => String(x || '').startsWith('priv:');
+  if ([f.photo, f.thumb].some((x) => x && esPriv(x) !== aPrivado)) {
+    const photo = await api.moverFoto(f.photo, aPrivado), thumb = await api.moverFoto(f.thumb, aPrivado);
+    await api.updateFind(id, { photo, thumb });
+  }
+  const hist = await api.history(id);
+  for (const h of hist.filter((x) => x.user_id === S.user.id)) {
+    if ([h.photo, h.thumb].some((x) => x && esPriv(x) !== aPrivado)) {
+      const photo = await api.moverFoto(h.photo, aPrivado), thumb = await api.moverFoto(h.thumb, aPrivado);
+      await api.updateSighting(h.id, { photo, thumb });
+    }
+  }
+}
+async function ofrecerJuntar(c, nombre, cat, grupo) {
+  try {
+    const otroId = await api.findByName(nombre, cat, grupo);
+    let otro = otroId && (cartaConFotos(otroId) || await api.card(otroId));
+    if (!otro) return aviso('Ese nombre ya existe aquí', 'alert-triangle');
+    guarda([otro]);
+    if (otro.user_id !== S.user.id) return aviso(`"${otro.name}" ya existe en el grupo. Usa otro nombre`, 'alert-triangle');
+    const cambia = !!c.is_private !== !!otro.is_private;
+    const si = await confirmar(`Ya existe "${otro.name}". ¿Juntarlos en uno solo? Sus fotos quedan en la misma historia.${cambia ? (otro.is_private ? ' Todo quedará privado.' : ' Todo quedará público, con su ubicación.') : ''}`, 'git-merge', otro.thumb || otro.photo ? foto(otro, true) : '', 'git-merge');
+    if (!si) return aviso('Cambia el nombre', 'pencil');
+    await api.merge(c.id, otro.id);
+    await moverFotosHallazgo(otro.id, !!otro.is_private).catch((e) => console.error(e));
+    S.cache.delete(c.id); S.stats = null;
+    const nueva = await api.card(otro.id); if (nueva) guarda([nueva]);
+    cerrarTodo(); aviso('Juntados en uno solo', 'git-merge');
+    abrirFicha(otro.id); refrescarActual();
+  } catch (e) { fallo(e); }
+}
+
+/* Cerca de mí */
+function cercaDeMi() {
+  const D = { estado: 'buscando', lista: [], mios: false, pos: null };
+  const render = () => `${cabeza(ic('walk'))}
+    <div class="toggle" style="margin-bottom:12px">
+      <button type="button" data-act="cerca_filtro" data-v="0" class="${!D.mios ? 'on' : ''}" aria-label="${C.AYUDA.filtro_todos}">${ic('world')}</button>
+      <button type="button" data-act="cerca_filtro" data-v="1" class="${D.mios ? 'on' : ''}" aria-label="${C.AYUDA.filtro_mios}">${ic(S.me.avatar)}</button></div>
+    ${D.estado === 'buscando' ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : ''}
+    ${D.estado === 'error' ? `<div class="empty">${ic('current-location')}<p>Activa el GPS para ver lo que hay cerca</p></div>` : ''}
+    ${D.estado === 'ok' ? (D.lista.filter((c) => !D.mios || c.user_id === S.user.id).map((c) => `<div class="li" style="margin-bottom:10px">
+        ${c.thumb ? `<img class="thumb" src="${foto(c, true)}" alt="" data-act="ficha" data-id="${c.id}">` : `<span class="thumb" data-act="ficha" data-id="${c.id}">${ic(c.cat_icon)}</span>`}
+        <div class="grow" data-act="ficha" data-id="${c.id}"><b>${esc(c.name)}</b><div class="tiny">${ic(c.cat_icon)} ${metros(c.dist)} · ${esc(c.user_name)}</div></div>
+        ${ib('ir_al_punto', 'navigation', 'ir_al_punto', `data-id="${c.id}"`, 'sm')}</div>`).join('') || `<div class="empty">${ic('walk')}<p>Nada registrado a menos de ${metros(C.CERCA_METROS)}</p></div>`) : ''}`;
+  const hoja = { render, after: (r) => { r._cerca = D; }, tipo: 'cerca' };
+  pila.push(hoja); dibujarHoja();
+  getPos().then(async (p) => {
+    D.pos = p; ponerYo(p);
+    const l = guarda(await api.cardsInBox(cajaAlrededor(p, C.CERCA_METROS), { limit: 300, sinSilenciados: true }));
+    D.lista = l.map((c) => Object.assign({}, c, { dist: distancia(p, c) })).filter((c) => c.dist <= C.CERCA_METROS).sort((a, b) => a.dist - b.dist);
+    D.estado = 'ok';
+  }).catch((e) => { D.estado = 'error'; if (!(e && typeof e.code === 'number') && !(e && e.message === 'NO_GPS')) fallo(e); })
+    .finally(() => { if (pila.includes(hoja) && hojaArriba() === hoja) dibujarHoja(); });
+}
+
+/* Campeones (de toda la comunidad o de un grupo): arriba el top de fotos de 7 días, abajo la tabla con podio */
+function tablaGeneral(grupo, metrica) {
+  const g = grupo ? miGrupo(grupo) : null;
+  const D = { metric: metrica === 'colonias' ? 'colonias' : 'total', filas: {}, fotos: null, grupo };
+  const hoja = { render: () => `${cabeza(`${ic('trophy')} ${esc(g ? g.name : C.CAMPEONES_TITULO)}`)}
+    <div class="sec campeones-fotos"><h3>${ic('sparkles')} ${esc(C.TOP_FOTOS)}</h3>
+      <p class="tiny top-nota">${esc(C.TOP_TEXTO)}</p>${topFotosHTML(D)}</div>
+    ${grupo ? '' : `<div class="sec campeones-siempre"><h3>${ic('crown')} ${esc(C.TOP_SIEMPRE)}</h3>
+      <p class="tiny top-nota">${esc(C.TOP_SIEMPRE_TEXTO)}</p>${topFotosHTML(D, true)}</div>`}
+    <div class="sec"><div class="row between campeones-tabla-cab"><h3>${ic('trophy')} ${esc(C.CAMPEONES_TABLA)}</h3>
+      <div class="toggle mini campeones-metrica">
+        <button type="button" data-act="tabla_metrica" data-v="total" class="${D.metric === 'total' ? 'on' : ''}" aria-pressed="${D.metric === 'total'}">${ic('photo')} ${esc(C.CAMPEONES_HALLAZGOS)}</button>
+        <button type="button" data-act="tabla_metrica" data-v="colonias" class="${D.metric === 'colonias' ? 'on' : ''}" aria-pressed="${D.metric === 'colonias'}">${ic('map-pin')} ${esc(C.CAMPEONES_COLONIAS)}</button></div></div>
+      ${podioHTML(D)}</div>`,
+    after: (r) => { r._tabla = D; }, tipo: 'tabla' };
+  pila.push(hoja); dibujarHoja();
+  const pintar = () => { if (hojaArriba() === hoja) dibujarHoja(); };
+  // La tabla de cada métrica se pide una vez (colonias solo al tocarla)
+  D.cargar = async () => {
+    const m = D.metric;
+    if (D.filas[m]) return pintar();
+    pintar();
+    try { D.filas[m] = await api.leaderboard(m, D.grupo); } catch (e) { D.filas[m] = []; fallo(e); }
+    pintar();
+  };
+  (async () => {
+    try {
+      const top = await api.topFotos(D.grupo);
+      const cards = top.length ? guarda(await api.cardsByIds(top.map((t) => t.find_id))) : [];
+      D.fotos = top.map((t, i) => ({ c: cards.find((x) => x.id === t.find_id), puntos: t.puntos, puesto: t.puesto || i + 1 })).filter((x) => x.c);
+    } catch (e) { D.fotos = []; fallo(e); }
+    pintar();
+  })();
+  // Top de todos los tiempos (solo en los campeones de toda la comunidad)
+  if (!grupo) (async () => {
+    try {
+      const top = await api.topSiempre() || [];
+      const cards = top.length ? guarda(await api.cardsByIds(top.map((t) => t.find_id))) : [];
+      D.siempre = top.map((t, i) => ({ c: cards.find((x) => x.id === t.find_id), puntos: t.puntos, puesto: t.puesto || i + 1 })).filter((x) => x.c);
+    } catch (e) { D.siempre = []; fallo(e); }
+    pintar();
+  })();
+  D.cargar();
+}
+// Top de los 7 días: las 5 fotos públicas con más reacciones y comentarios (cada uno vale 1); se desliza de lado
+function topFotosHTML(D, siempre) {
+  const l = siempre ? D.siempre : D.fotos;
+  if (!l) return `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!l.length) return `<div class="empty" style="padding:10px">${ic(siempre ? 'crown' : 'sparkles')}<p>${esc(siempre ? C.TOP_SIEMPRE_VACIO : C.TOP_VACIO)}</p></div>`;
+  // 2.0.2: los empates comparten lugar (1, 2, 2, 3)
+  return `<div class="top-carrusel">${l.map(({ c, puntos, puesto }, i) => `
+    <button type="button" class="top-ft ${(puesto || i + 1) === 1 ? 'primera' : ''}" data-act="ficha" data-id="${c.id}" aria-label="${esc(c.name)}">
+      <span class="top-img"><img src="${foto(c, true)}" alt="" loading="lazy">
+        <span class="top-med">${medallaSvg(puesto || i + 1, !!siempre, 22)}</span><span class="top-pts">${ic('heart')}${puntos}</span></span>
+      <b>${esc(c.name)}</b><span class="tiny">${esc(c.user_name)}</span></button>`).join('')}</div>`;
+}
+// Podio de las tres primeras (la primera al centro) y la lista desde el 4.º lugar
+function podioHTML(D) {
+  const filas = D.filas[D.metric];
+  if (!filas) return `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!filas.length) return `<div class="empty">${ic('trophy')}<p>Todavía no hay nadie en la tabla</p></div>`;
+  const valor = (f) => (D.metric === 'colonias' ? f.colonias : f.total);
+  const unidad = (n) => (D.metric === 'colonias' ? (n === 1 ? 'colonia' : 'colonias') : (n === 1 ? 'hallazgo' : 'hallazgos'));
+  const escalon = (f, k) => (f ? `<button type="button" class="podio-p p${k} ${f.user_id === S.user.id ? 'yo' : ''}" data-act="perfil" data-id="${f.user_id}" aria-label="${k}. ${esc(f.name)}">
+      ${avatar(f, k === 1 ? 'lg' : '')}<span class="podio-nom">${esc(f.name)}${medallaNombre(f.user_id)}</span>
+      <span class="podio-esc">${ic(k === 1 ? 'crown' : 'medal')}<b>${valor(f)}</b><span>${unidad(valor(f))}</span></span></button>` : '<span></span>');
+  // 2.0.2: solo los primeros 6 (sin bajar); si tú vas más abajo, tu fila aparece al final
+  const N = C.TABLA_LUGARES || 6, mio = filas.findIndex((f) => f.user_id === S.user.id);
+  const fila = (f, k) => `<button class="li ${f.user_id === S.user.id ? 'yo' : ''}" data-act="perfil" data-id="${f.user_id}">
+        <span class="rank">${k}</span>${avatar(f)}<b class="grow" style="text-align:left">${esc(f.name)}${medallaNombre(f.user_id)}</b><b>${valor(f)}</b></button>`;
+  return `<div class="podio">${escalon(filas[1], 2)}${escalon(filas[0], 1)}${escalon(filas[2], 3)}</div><div class="podio-base"></div>
+    ${filas.length > 3 ? `<div class="list">${filas.slice(3, N).map((f, i) => fila(f, i + 4)).join('')}
+      ${mio >= N ? `<div class="tabla-sep" aria-hidden="true">· · ·</div>${fila(filas[mio], mio + 1)}` : ''}</div>` : ''}`;
+}
+
+/* Invitar a un grupo: amigas dentro de la app, WhatsApp o enlace, y readmitir (esto último solo administradoras).
+   En un grupo normal invita cualquier miembro; en uno de encuentro, quien lo creó y sus coadministradoras. */
+function datosGrupo(gid) {
+  const h = pila.slice().reverse().find((x) => x.tipo === 'grupo' && x.datos && x.datos.g && x.datos.g.id === gid);
+  const E = encuentroActual(), ge = E && E.e && E.e.grupo && E.e.grupo.id === gid ? E.e.grupo : null;
+  const g = ge || (h && h.datos.g) || miGrupo(gid);
+  return { g, recargar: () => { if (h) h.datos.cargar(); if (ge) E.cargar(); } };
+}
+function enlaceGrupo(g) { return g && g.invite_code ? `${location.origin + location.pathname}#g=${g.invite_code}` : ''; }
+function hojaInvitar(gid) {
+  const { g } = datosGrupo(gid); if (!g) return;
+  const D = { gid, amigas: null, vetados: [] };
+  const fila = (a) => {
+    const estado = a.estado === 'pendiente' ? `<span class="tiny invit-estado">${ic('clock')} ${esc(C.INVITAR_ENVIADA)}</span>`
+      : a.estado === 'rechazada' ? `<span class="tiny invit-estado">${esc(C.INVITAR_RECHAZADA)}</span>` : '';
+    return `<div class="li"><button class="row grow" data-act="perfil" data-id="${a.user_id}" style="text-align:left;min-width:0">${avatar(a)}
+        <div class="grow" style="min-width:0"><b>${esc(a.name)}</b>${estado ? `<div>${estado}</div>` : ''}</div></button>
+      ${a.estado === 'pendiente' ? '' : `<button class="btn sm" data-act="invitar_amiga" data-g="${gid}" data-id="${a.user_id}">${ic(a.estado === 'rechazada' ? 'refresh' : 'user-plus')} ${esc(a.estado === 'rechazada' ? C.INVITAR_DE_NUEVO : C.INVITAR_BOTON)}</button>`}</div>`;
+  };
+  const hoja = { render: () => {
+      const enlace = enlaceGrupo(datosGrupo(gid).g);
+      return `${cabeza(`${ic('user-plus')} ${esc(C.INVITAR_A.replace('{g}', g.name))}`)}
+      <div class="sec"><h3>${ic('users')} ${esc(C.INVITAR_AMIGAS)}</h3>
+        ${D.amigas === null ? `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>`
+          : D.amigas.length ? `<div class="list">${D.amigas.map(fila).join('')}</div>` : `<p class="tiny">${esc(C.INVITAR_SIN_AMIGAS)}</p>`}</div>
+      ${enlace ? `<div class="sec"><h3>${ic('link')} ${esc(C.INVITAR_FUERA)}</h3><div class="row wrap">
+        <button class="btn alt sm" data-act="invitar_whatsapp" data-g="${gid}">${ic('brand-whatsapp')} WhatsApp</button>
+        <button class="btn alt sm" data-act="copiar_invitacion" data-g="${gid}">${ic('copy')} ${esc(C.INVITAR_COPIAR)}</button></div></div>` : ''}
+      ${D.vetados.length ? `<div class="sec"><h3>${ic('user-minus')} ${esc(C.VETADOS_TITULO)}</h3><p class="tiny">${esc(C.VETADOS_TEXTO)}</p>
+        <div class="list">${D.vetados.map((v) => `<div class="li">${avatar(v)}<b class="grow">${esc(v.name)}</b>
+          <button class="btn alt sm" data-act="readmitir_persona" data-g="${gid}" data-id="${v.user_id}">${ic('user-check')} ${esc(C.READMITIR)}</button></div>`).join('')}</div></div>` : ''}`;
+    }, tipo: 'invitar' };
+  hoja.datos = D;
+  D.cargar = async () => {
+    try { [D.amigas, D.vetados] = await Promise.all([api.amigasParaInvitar(gid), api.vetadosDeGrupo(gid)]); }
+    catch (e) { D.amigas = D.amigas || []; D.vetados = D.vetados || []; fallo(e); }
+    if (pila.includes(hoja) && hojaArriba() === hoja) dibujarHoja();
+  };
+  pila.push(hoja); dibujarHoja();
+  D.cargar();
+}
+// Menú de una persona en un grupo normal (en los de encuentro está hojaMiembroEncuentro)
+function hojaMiembroGrupo(gid, uid) {
+  const h = pila.slice().reverse().find((x) => x.tipo === 'grupo' && x.datos && x.datos.g && x.datos.g.id === gid);
+  const m = h && (h.datos.miembros || []).find((x) => x.user_id === uid); if (!m) return;
+  const soyDuena = h.datos.g.owner === S.user.id;
+  abrirHoja(() => `${cabeza(`<span class="row">${avatar(m)} ${esc(m.name)}</span>`)}
+    <div class="list">
+      ${soyDuena ? `<button class="li" data-act="coadmin_grupo" data-g="${gid}" data-id="${uid}" data-v="${m.coadmin ? '0' : '1'}">${ic('shield')}<b class="grow" style="text-align:left">${m.coadmin ? 'Quitar cargo de coadministradora' : 'Nombrar coadministradora'}</b></button>` : ''}
+      <button class="li" data-act="sacar_grupo" data-g="${gid}" data-id="${uid}">${ic('user-minus')}<b class="grow" style="text-align:left">Sacar del grupo</b></button>
+    </div>`, null, 'miembro_grupo');
+}
+
+/* Buscar personas por nombre: 1 o 2 letras = nombre exacto; desde 3, nombres que lo contienen (máx. 10) */
+// 2.0.4: el buscador tiene tres pestañas: personas, colecciones públicas y grupos públicos de colección
+function hojaBuscarPersonas(pestana) {
+  const D = { q: '', res: null, pedido: 0, espera: null, tab: pestana || 'personas' };
+  const TABS = [['personas', 'users', C.BUSCAR_TAB_PERSONAS], ['colecciones', 'cards', C.BUSCAR_TAB_COLECCIONES], ['grupos', 'users-group', C.BUSCAR_TAB_GRUPOS], ['hallazgos', 'photo', C.BUSCAR_TAB_HALLAZGOS]];
+  const TXT = {
+    campo: { personas: C.BUSCAR_CAMPO, colecciones: C.BUSCAR_CAMPO_COL, grupos: C.BUSCAR_CAMPO_GRUPO, hallazgos: C.BUSCAR_CAMPO_HALLAZGO },
+    pista: { personas: C.BUSCAR_PISTA, colecciones: C.BUSCAR_PISTA_COL, grupos: C.BUSCAR_PISTA_GRUPO, hallazgos: C.BUSCAR_PISTA_HALLAZGO },
+    nada: { personas: C.BUSCAR_NADA, colecciones: C.BUSCAR_NADA_COL, grupos: C.BUSCAR_NADA_GRUPO, hallazgos: C.BUSCAR_NADA_HALLAZGO } };
+  // 2.0.5: desde dónde busca (si el mapa ya conoce tu ubicación), para poner primero lo cercano
+  const aqui = () => { try { const p = S.yo && S.yo.getLatLng(); return p ? { lat: p.lat, lng: p.lng } : null; } catch (e) { return null; } };
+  const filaHallazgo = (c) => { const p = aqui(), d = p && enMapa(c) ? distancia(p, c) : null;
+    return `<div class="li persona-res">
+      <button class="row grow" data-act="buscar_ir" data-id="${c.id}" style="text-align:left;min-width:0"><img class="thumb" src="${api.photoUrl(c.thumb || c.photo)}" alt="" loading="lazy">
+        <div class="grow" style="min-width:0"><b>${esc(c.name)}</b><div class="tiny">${[C.BUSCAR_DE.replace('{n}', c.user_name || ''), enMapa(c) ? c.colonia : C.SIN_MAPA_CORTO, d != null ? metros(d) : ''].filter(Boolean).map(esc).join(' · ')}</div></div>
+        ${ic(enMapa(c) ? 'navigation' : 'cards')}</button></div>`; };
+  const nada = (t) => `<div class="empty" style="padding:10px">${ic(D.tab === 'personas' ? 'user-search' : 'search')}<p>${esc(t.length < 3 ? C.BUSCAR_NADA_CORTO : TXT.nada[D.tab])}</p></div>`;
+  const filaPersona = (p) => { const sigo = S.following.has(p.id);
+    return `<div class="li persona-res">
+      <button class="row grow" data-act="perfil" data-id="${p.id}" style="text-align:left;min-width:0">${avatar(p)}
+        <div class="grow" style="min-width:0"><b>${esc(p.name)}</b><div class="tiny">${p.bio ? esc(p.bio) + ' · ' : ''}${p.hallazgos} ${p.hallazgos === 1 ? 'hallazgo' : 'hallazgos'}</div></div></button>
+      ${ib('seguir', sigo ? 'user-check' : 'user-plus', sigo ? 'dejar_seguir' : 'seguir', `data-id="${p.id}"`, sigo ? 'sm' : 'sm on')}</div>`; };
+  const filaColeccion = (c) => { const sigo = (S.sigoCols || []).some((x) => x.category_id === c.id);
+    return `<div class="li persona-res">
+      <button class="row grow" data-act="galeria_cat" data-id="${c.user_id}" data-cat="${c.id}" style="text-align:left;min-width:0"><span class="avatar" style="background:${okColor(c.color)}">${ic(c.icon)}</span>
+        <div class="grow" style="min-width:0"><b>${esc(c.name)}</b><div class="tiny">${esc(C.BUSCAR_DE.replace('{n}', c.user_name || ''))} · ${c.hallazgos} ${c.hallazgos === 1 ? 'hallazgo' : 'hallazgos'}</div></div></button>
+      ${ib('seguir_coleccion', sigo ? 'user-check' : 'user-plus', sigo ? C.SIGUIENDO_COLECCION : C.SEGUIR_COLECCION, `data-id="${c.id}"`, sigo ? 'sm' : 'sm on')}</div>`; };
+  const filaGrupo = (g) => `<div class="li persona-res">
+      <button class="row grow" data-act="grupo" data-id="${g.id}" style="text-align:left;min-width:0"><span class="avatar" style="background:${okColor(g.color)}">${ic(g.icon)}</span>
+        <div class="grow" style="min-width:0"><b>${esc(g.name)}</b><div class="tiny">${g.miembros} ${g.miembros === 1 ? 'integrante' : 'integrantes'} · ${g.hallazgos} ${g.hallazgos === 1 ? 'hallazgo' : 'hallazgos'}</div></div></button>
+      ${botonSolicitud(g.id, g.mi_estado)}</div>`;
+  const resHTML = () => {
+    const t = D.q.trim();
+    if (!t) return `<p class="tiny buscar-pista">${esc(TXT.pista[D.tab])}</p>`;
+    if (D.res === null) return `<div class="empty" style="padding:10px"><span class="spin">${ic('loader-2')}</span></div>`;
+    if (!D.res.length) return nada(t);
+    const fila = D.tab === 'personas' ? filaPersona : D.tab === 'colecciones' ? filaColeccion : D.tab === 'grupos' ? filaGrupo : filaHallazgo;
+    return `<div class="list">${D.res.map(fila).join('')}</div>`;
+  };
+  D.pintarRes = () => { const el = $('#buscar-res'); if (el) el.innerHTML = resHTML(); };
+  D.buscar = async () => {
+    const t = D.q.trim(), n = ++D.pedido, tab = D.tab;
+    if (!t) { D.res = null; return D.pintarRes(); }
+    D.res = null; D.pintarRes();
+    try {
+      const p = aqui();
+      const r = await (tab === 'personas' ? api.buscarPersonas(t) : tab === 'colecciones' ? api.buscarColecciones(t)
+        : tab === 'grupos' ? api.buscarGrupos(t) : api.buscarHallazgos(t, p && p.lat, p && p.lng).then(guarda));
+      if (n === D.pedido && tab === D.tab) { D.res = r || []; D.pintarRes(); }
+    } catch (e) { if (n === D.pedido) { D.res = []; D.pintarRes(); fallo(e); } }
+  };
+  // al pedir unirse desde la lista, el botón cambia sin volver a buscar
+  D.marcar = (gid, estado) => { (D.res || []).forEach((g) => { if (g.id === gid) g.mi_estado = estado; }); D.pintarRes(); };
+  const hoja = { render: () => `${cabeza(`${ic('search')} ${esc(C.BUSCAR_TITULO)}`)}
+      <div class="toggle buscar-tabs" role="tablist">${TABS.map(([k, i, t]) => `<button type="button" role="tab" data-act="buscar_tab" data-v="${k}" class="${D.tab === k ? 'on' : ''}" aria-selected="${D.tab === k}">${ic(i)} ${esc(t)}</button>`).join('')}</div>
+      <label class="campo-ic" style="margin-top:10px">${ic('search')}<input id="buscar-q" class="in" type="search" maxlength="40" autocomplete="off" enterkeyhint="search"
+        placeholder="${esc(TXT.campo[D.tab])}" aria-label="${esc(C.BUSCAR_TITULO)}" value="${esc(D.q)}"></label>
+      <div id="buscar-res" style="margin-top:12px">${resHTML()}</div>`,
+    after: (raiz) => {
+      const inp = $('#buscar-q', raiz); if (!inp) return;
+      inp.addEventListener('input', () => { D.q = inp.value; clearTimeout(D.espera); D.espera = setTimeout(D.buscar, 400); });
+      inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); clearTimeout(D.espera); D.buscar(); } });
+      if (!D.q) setTimeout(() => inp.focus(), 60);
+    }, tipo: 'buscar' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+}
+// Botón para pedir unirse a un grupo público de colección: Pedir unirme · Solicitud enviada · Ya eres parte
+function botonSolicitud(gid, estado) {
+  if (estado === 'miembro') return `<button class="btn alt sm" data-act="grupo" data-id="${gid}">${ic('user-check')} ${esc(C.SOLICITUD_MIEMBRO)}</button>`;
+  if (estado === 'pendiente') return `<button class="btn alt sm" disabled aria-disabled="true">${ic('clock')} ${esc(C.SOLICITUD_ENVIADA)}</button>`;
+  return `<button class="btn sm" data-act="pedir_grupo" data-id="${gid}">${ic('user-plus')} ${esc(C.SOLICITUD_PEDIR)}</button>`;
+}
+
+/* Categorías */
+function hojaCategorias(alTerminar) {
+  const render = () => `${cabeza(ic('cards'))}
+    <div class="instruccion"><p>${esc(C.TEXTO_CATEGORIAS)}</p>
+      <div class="tiny row wrap"><span class="row">${ic('pencil')} editar</span><span class="row">${ic('trash')} borrar</span><span class="row">${ic('plus')} nueva categoría</span></div></div>
+    <div class="list">${S.cats.map((c) => `<div class="li"><span class="avatar" style="background:${okColor(c.color)}">${ic(c.icon)}</span>
+      <b class="grow">${esc(c.name)}</b>${ib('editar_categoria', 'pencil', 'editar', `data-id="${c.id}"`, 'sm')}${ib('borrar_categoria', 'trash', 'borrar', `data-id="${c.id}"`, 'sm')}</div>`).join('')}</div>
+    <p class="tiny" style="margin:10px 0">${S.cats.length} / ${limiteCategorias()}${S.cats.length >= C.COLECCIONES_MAX ? ` · ${esc(C.COLECCION_MAXIMO_CORTO)}` : ''}</p>
+    ${S.cats.length < limiteCategorias() ? `<button class="btn alt block" data-act="editar_categoria" data-id="" aria-label="${esc(C.AYUDA.nueva_categoria)}" data-tip="${esc(C.AYUDA.nueva_categoria)}">${ic('plus')}</button>` : ''}
+    ${alTerminar ? `<button class="btn block" data-act="listo_categorias" style="margin-top:12px" ${S.cats.length ? '' : 'disabled'}>${ic('check')} Listo</button>` : ''}`;
+  abrirHoja(render, null, 'categorias', !!alTerminar);
+  const hoja = hojaArriba(); hoja.listo = alTerminar;
+  if (!S.stats && S.user && S.me) api.stats(S.user.id).then((st) => { S.stats = st; if (hojaArriba() === hoja) dibujarHoja(); }).catch(() => null);
+}
+function editarCategoria(id) {
+  const c = S.cats.find((x) => x.id === id) || { id: '', name: '', icon: C.ICONOS_GRUPOS[0].iconos[0], color: C.COLORES_CATEGORIA[S.cats.length % C.COLORES_CATEGORIA.length] };
+  abrirHoja(() => `${cabeza(ic(c.id ? 'pencil' : 'plus'))}
+    <div class="field"><label for="c-nombre">${ic('pencil')} Nombre</label><input id="c-nombre" class="in" maxlength="30" value="${esc(c.name)}" placeholder="Gatos, puertas, autos…"></div>
+    <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, c.color, 'color')}</div>
+    <div class="field"><label>${ic('sparkles')}</label>${iconPicker(c.icon)}</div>
+    ${c.id && nivelDe('cat', c.id) >= 100 ? `<div class="field"><label>${ic('crown')} ${esc(C.AYUDA.color_premio)}</label>
+      <div class="swatches" data-pick="premio">${Object.keys(C.COLORES_PREMIO).map((k) => `<button type="button" data-act="elegir" data-v="${k}" class="${k === (c.premio_color || 'oro') ? 'on' : ''}" style="background:${C.COLORES_PREMIO[k]}" aria-label="${esc(C.NOMBRES_PREMIO[k])}"></button>`).join('')}</div></div>` : ''}
+    <button class="btn block" data-act="guardar_categoria" data-id="${c.id}">${ic('check')} Guardar</button>`, null, 'categoria');
+}
+async function guardarCategoria(btn, id) {
+  const raiz = $('.sheet');
+  // "Mis hallazgos" viene en un gris fuera de la paleta: si no eligen color nuevo, se queda el que tenía
+  const d = { name: $('#c-nombre', raiz).value.trim(), icon: iconoElegido(raiz), color: valor(raiz, 'color') || (id && (S.cats.find((x) => x.id === id) || {}).color) || null };
+  const pc = valor(raiz, 'premio'); if (pc) d.premio_color = pc;
+  if (!d.name) return aviso('Ponle un nombre', 'pencil');
+  if (!esIcono(d.icon) || !d.color) return aviso('Elige ícono y color', 'palette');
+  ocupado(btn, true);
+  try {
+    let nueva = null;
+    if (id) await api.updateCat(id, d); else nueva = await api.addCat(d);
+    S.cats = await api.listCats(S.user.id);
+    if (nueva && S.trasNuevaCat) { const f = S.trasNuevaCat; S.trasNuevaCat = null; f(nueva.id); }
+    S.stats = await api.stats(S.user.id).catch(() => null);
+    cerrarHoja(); aviso('Guardado'); revisarPremiosPronto(1200);
+    if (!$('#scr-map')) return;
+    if (S.tab !== 'map') irA(S.tab); else pintarFiltrosMapa();
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+
+/* Grupos */
+async function recargarGrupos() { S.groups = await api.myGroups(S.user.id); pintarAtajoMapa(); revisarGrupoMapa(); revisarCompartir(); }
+// Si el grupo con el que compartes ya no es tuyo (se borró o saliste), ya no hay a quién enviarle la ubicación
+function revisarCompartir() { if (S.comparte && !miGrupo(S.comparte.gid)) pararCompartir(false); }
+const gruposCreados = () => S.groups.filter((g) => g.owner === S.user.id).length;
+// 2.0.5: 3 grupos propios (10 la administradora) y hasta 2 más que se ganan jugando; lo calcula la base
+const maxGrupos = () => (S.limiteGrupos && S.limiteGrupos.maximo) || (S.me && S.me.is_admin ? 10 : 3);
+async function cargarLimiteGrupos() { try { S.limiteGrupos = await api.miLimiteGrupos(); } catch (e) { /* se queda el de siempre */ } return S.limiteGrupos; }
+async function hojaLimiteGrupos() {
+  await cargarLimiteGrupos();
+  if (gruposCreados() < maxGrupos()) return editarGrupo('');
+  abrirHoja(() => `${cabeza(`${ic('users')} ${esc(C.GRUPOS_LIMITE_TITULO)}`)}
+    <p>${esc(C.GRUPOS_LIMITE_TEXTO.replace('{n}', maxGrupos()))}</p>
+    <p class="tiny">${esc(C.GRUPOS_LIMITE_CUENTA.replace('{a}', gruposCreados()).replace('{b}', maxGrupos()))}</p>
+    <button class="btn block" data-act="cerrar" style="margin-top:12px">${ic('check')} ${esc(C.ENTENDIDO)}</button>`, null, 'limite_grupos');
+}
+function abrirGrupo(gid) {
+  if (esEncuentro(miGrupo(gid))) return abrirEncuentro(gid);
+  const D = { g: miGrupo(gid) || null, miembros: null, cards: null };
+  const render = () => {
+    const g = D.g;
+    if (!g) return cabeza('') + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+    const soyDuena = g.owner === S.user.id, soyMiembro = !!miGrupo(g.id);
+    const yoM = (D.miembros || []).find((m) => m.user_id === S.user.id), soyAdmin = soyDuena || !!(yoM && yoM.coadmin);
+    return `${cabeza(`<span class="row">${ic(g.icon)} ${esc(g.name)}</span>`)}
+      <div class="row wrap" style="margin-bottom:12px">
+        <span class="catb" style="background:${okColor(g.color)}">${ic(g.is_public ? 'world' : 'lock')}${esc(g.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}</span>
+        <span class="muted row">${ic('users')} ${D.miembros ? D.miembros.length : '…'}</span></div>
+      <div class="row wrap" style="margin-bottom:14px">
+        ${soyMiembro ? `<button class="btn sm" data-act="invitar_grupo" data-id="${g.id}">${ic('user-plus')} ${esc(C.INVITAR_BOTON)}</button>`
+          : g.is_public && g.tipo !== 'encuentro' && D.solicitud !== undefined ? botonSolicitud(g.id, D.solicitud) : ''}
+        ${ib('ver_grupo_mapa', 'map-2', 'ver_mapa', `data-id="${g.id}"`)}
+        ${ib('tabla_grupo', 'trophy', 'tabla', `data-id="${g.id}"`)}
+        ${soyMiembro ? ib('descargar_fichas', 'download', C.PDF_TITULO, `data-tipo="grupo" data-id="${g.id}"`) : ''}
+        ${soyMiembro && g.tipo !== 'encuentro' && (D.cards || []).some((x) => x.user_id === S.user.id) ? ib('mover_mis_hallazgos', 'folder-symlink', C.MOVER_TODOS, `data-id="${g.id}"`) : ''}
+        ${soyDuena ? ib('editar_grupo', 'pencil', 'editar', `data-id="${g.id}"`) : ''}
+        ${g.is_public && !soyMiembro ? (() => { const m = S.mutes.find((x) => x.target_group === g.id);
+          return m ? ib('quitar_silencio', 'cg-silenciar', 'quitar_silencio', `data-id="${m.id}"`, 'on') : ib('silenciar', 'cg-silenciar', 'silenciar', `data-group="${g.id}"`); })() : ''}
+        <span class="grow"></span>
+        ${soyMiembro && !soyDuena ? ib('salir_grupo', 'door-exit', 'salir_grupo', `data-id="${g.id}"`) : ''}
+      </div>
+      ${soyMiembro && nivelDe('grupo', g.id) >= 100 ? `<div class="field"><label>${ic('crown')} ${esc(C.AYUDA.color_premio)}</label>${selectorColorPremio('grupo', g.id, colorPremioActual('grupo', g.id))}</div>` : ''}
+      ${D.miembros ? (soyAdmin ? `<div class="list miembros-grupo" style="margin-bottom:14px">${D.miembros.map((m) => {
+          const duena = m.user_id === g.owner, gestionar = m.user_id !== S.user.id && !duena && (soyDuena || !m.coadmin);
+          return `<div class="li"><button class="row grow" data-act="perfil" data-id="${m.user_id}" style="text-align:left;min-width:0">${avatar(m)}<b class="grow">${esc(m.name || '')}</b>
+            ${duena ? `<span data-tip="${esc(C.AYUDA.duena)}">${ic('crown')}</span>` : m.coadmin ? `<span data-tip="${esc(C.AYUDA.coadmin)}">${ic('shield')}</span>` : ''}</button>
+            ${gestionar ? ib('miembro_grupo', 'dots-vertical', 'miembro', `data-id="${m.user_id}" data-g="${g.id}"`, 'sm') : ''}</div>`; }).join('')}</div>`
+        : `<div class="chips" style="flex-wrap:wrap;margin-bottom:14px">${D.miembros.map((m) => `<button class="chip" data-act="perfil" data-id="${m.user_id}">${avatar(m)}${esc(m.name || '')}${m.user_id === g.owner ? ic('crown') : m.coadmin ? ic('shield') : ''}</button>`).join('')}</div>`) : ''}
+      ${D.cards === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.cards.length ? rejilla(D.cards, false)
+        : `<div class="empty">${ic('camera')}<p>Aún no hay hallazgos en este grupo</p></div>`}`;
+  };
+  abrirHoja(render, null, 'grupo');
+  const hoja = hojaArriba();
+  D.cargar = async () => {
+    try {
+      const [g, miembros, cards] = await Promise.all([api.getGroup(gid), api.groupMembers(gid), api.groupCards(gid)]);
+      if (g && g.is_public && !miGrupo(gid)) D.solicitud = await api.miSolicitud(gid).catch(() => null);
+      if (!S.stats) S.stats = await api.stats(S.user.id).catch(() => null);
+      if (!g) { if (hojaArriba() === hoja) cerrarHoja(); return aviso('Este grupo ya no está disponible', 'alert-triangle'); }
+      if (esEncuentro(g)) { if (hojaArriba() === hoja) pila.pop(); return abrirEncuentro(g.id); }
+      Object.assign(D, { g, miembros, cards: guarda(cards) });
+    } catch (e) { fallo(e); D.cards = D.cards || []; }
+    if (hojaArriba() === hoja) dibujarHoja();
+  };
+  hoja.datos = D;
+  D.cargar();
+}
+// 2.0.5: la creadora elige con qué se califica su grupo: estrellas, un ícono o un emoji
+function hojaSimbolo(gid) {
+  const g = miGrupo(gid); if (!g || g.owner !== S.user.id) return;
+  abrirHoja(() => `${cabeza(`${simboloCalif(g.calif_simbolo)} ${esc(C.CALIF_CON)}`)}
+    <p class="tiny" style="margin:0 0 10px">${esc(C.CALIF_SIMBOLO_TEXTO)}</p>
+    <button class="btn alt block" data-act="calif_simbolo_guardar" data-id="${gid}" data-v="estrellas" style="margin-bottom:12px">★ ${esc(C.CALIF_ESTRELLAS)}</button>
+    ${iconPicker(g.calif_simbolo || 'trompo')}
+    <button class="btn block" data-act="calif_simbolo_guardar" data-id="${gid}" style="margin-top:12px">${ic('check')} ${esc(C.CALIF_USAR)}</button>`, null, 'calif_simbolo');
+}
+async function guardarSimbolo(b, gid) {
+  const raiz = $('.sheet'), s = b.dataset.v === 'estrellas' ? null : iconoElegido(raiz);
+  if (s !== null && !esIcono(s)) return aviso(C.CALIF_ELIGE, 'alert-triangle');
+  ocupado(b, true);
+  try {
+    const g = await api.updateGroup(gid, { calif_simbolo: s });
+    S.groups = S.groups.map((x) => (x.id === gid ? Object.assign({}, x, g) : x));
+  } catch (e) { ocupado(b, false); return fallo(e); }
+  cerrarHoja(); aviso('Guardado');
+  if (fichaH && fichaH.calif) fichaH.calif.simbolo = s;
+}
+// 2.0.4: pasar todos mis hallazgos de un grupo de colección a una colección mía (nueva con el nombre del grupo, o una que ya tengo).
+// Solo los míos; de un grupo privado quedan secretos. Si el nombre ya existe en la colección, se le agrega " (2)", " (3)"…
+function hojaMoverTodos(gid) {
+  const g = miGrupo(gid); if (!g) return;
+  const top = pila.find((h) => h.tipo === 'grupo' && h.datos && h.datos.g && h.datos.g.id === gid);
+  const mios = ((top && top.datos.cards) || []).filter((x) => x.user_id === S.user.id);
+  const existente = S.cats.find((x) => sinAcentos(x.name) === sinAcentos(g.name));
+  const D = { dest: existente ? existente.id : 'nueva', hecho: 0, total: mios.length };
+  const chip = (v, color, icon, nombre) => `<button type="button" class="chip cc ${v === D.dest ? 'on' : ''}" style="--c:${okColor(color)}" data-act="elegir" data-v="${v}">${ic(icon)}${esc(nombre)}</button>`;
+  abrirHoja(() => `${cabeza(`${ic('folder-symlink')} ${esc(C.MOVER_TODOS)}`)}
+    <p>${esc((D.total === 1 ? C.MOVER_TODOS_TEXTO_1 : C.MOVER_TODOS_TEXTO).replace('{n}', D.total).replace('{g}', g.name))}</p>
+    <div class="campo-fila"><div class="chips" data-pick="mover_dest" style="flex-wrap:wrap">
+      ${existente ? '' : chip('nueva', g.color, g.icon, C.MOVER_NUEVA.replace('{g}', g.name))}
+      ${S.cats.map((x) => chip(x.id, x.color, x.icon, x.name)).join('')}</div></div>
+    <p class="tiny mover-nota">${ic(g.is_public ? 'world' : 'lock')} ${esc(g.is_public ? C.MOVER_TODOS_PUBLICO : C.MOVER_TODOS_PRIVADO)}</p>
+    <button class="btn block" data-act="mover_mis_hallazgos_si" data-id="${gid}" style="margin-top:12px">${ic('folder-symlink')} ${esc(D.total === 1 ? C.MOVER_TODOS_BOTON_1 : C.MOVER_TODOS_BOTON.replace('{n}', D.total))}</button>`, null, 'mover_todos');
+  hojaArriba().datos = D;
+}
+async function moverTodos(btn, gid) {
+  const g = miGrupo(gid), H = hojaArriba(), D = H && H.datos; if (!g || !D) return;
+  const elegido = valor($('.sheet'), 'mover_dest') || D.dest;
+  ocupado(btn, true);
+  let movidos = 0, renombrados = 0;
+  try {
+    let cat = elegido;
+    if (cat === 'nueva') {
+      if (S.cats.length >= limiteCategorias()) { ocupado(btn, false); return aviso(C.COLECCION_MAXIMO_CORTO, 'alert-triangle'); }
+      const nueva = await api.addCat({ name: g.name.slice(0, 30), icon: g.icon, color: okColor(g.color) });
+      S.cats = await api.listCats(S.user.id); cat = nueva.id;
+    }
+    const privado = !g.is_public;
+    const mios = guarda(await api.groupCards(gid)).filter((x) => x.user_id === S.user.id);
+    for (const c of mios) {
+      let nombre = c.name, n = 1;
+      for (;;) {
+        try { await api.updateFind(c.id, { group_id: null, category_id: cat, is_private: privado, name: nombre }); break; }
+        catch (e) {
+          if (!errTexto(e).includes('NOMBRE_REPETIDO') || n > 20) throw e;
+          n += 1; nombre = `${c.name.slice(0, 54)} (${n})`;
+        }
+      }
+      if (nombre !== c.name) renombrados += 1;
+      await moverFotosHallazgo(c.id, privado).catch((e) => console.error(e));
+      movidos += 1; btn.innerHTML = `<span class="spin">${ic('loader-2')}</span> ${movidos} / ${mios.length}`;
+    }
+  } catch (e) { ocupado(btn, false); S.cache.clear(); return fallo(e); }
+  S.cache.clear(); S.stats = null; S.colMias = null;
+  cerrarHoja();
+  const gs = hojaArriba(); if (gs && gs.tipo === 'grupo' && gs.datos && gs.datos.cargar) gs.datos.cargar();
+  aviso((movidos === 1 ? C.MOVER_TODOS_LISTO_1 : C.MOVER_TODOS_LISTO.replace('{n}', movidos))
+    + (renombrados ? ' ' + (renombrados === 1 ? C.MOVER_RENOMBRADOS_1 : C.MOVER_RENOMBRADOS.replace('{n}', renombrados)) : ''), 'folder-symlink');
+  refrescarActual();
+}
+// Al crear se elige el tipo (queda fijo): grupo de colección o grupo de encuentro (privado y oculto)
+function editarGrupo(gid, tipoInicial) {
+  const g = miGrupo(gid) || { id: '', name: '', icon: 'users', color: C.COLORES_CATEGORIA[1], is_public: false, tipo: tipoInicial === 'encuentro' ? 'encuentro' : 'coleccion' };
+  const E = { tipo: g.tipo || 'coleccion', uso: g.uso || C.ENCUENTRO_USOS[0].id };
+  const render = () => {
+    const enc = E.tipo === 'encuentro';
+    return `${cabeza(ic(g.id ? 'pencil' : (enc ? 'lifebuoy' : 'users')))}
+    ${g.id ? '' : `<div class="field"><div class="toggle tipo-grupo">
+      <button type="button" data-act="tipo_grupo" data-v="coleccion" class="${!enc ? 'on' : ''}">${ic('users')} Grupo</button>
+      <button type="button" data-act="tipo_grupo" data-v="encuentro" class="${enc ? 'on' : ''}">${ic('lifebuoy')} Grupo de encuentro</button></div>
+      ${enc ? `<p class="tiny">${esc(C.ENCUENTRO_TIPO_TEXTO)}</p>` : ''}</div>`}
+    ${!g.id && enc ? `<div class="field"><label>${ic('map-pin')} ¿Para qué es?</label><div class="chips" data-pick="uso" style="flex-wrap:wrap">${C.ENCUENTRO_USOS.map((u) =>
+      `<button type="button" class="chip ${u.id === E.uso ? 'on' : ''}" data-act="elegir" data-v="${u.id}">${ic(u.icono)}${esc(u.nombre)}</button>`).join('')}</div></div>` : ''}
+    <div class="field"><label for="g-nombre">${ic('pencil')} Nombre</label><input id="g-nombre" class="in" maxlength="40" value="${esc(E.nombre != null ? E.nombre : g.name)}" placeholder="${enc ? 'Viaje a Oaxaca' : 'Gatos de San Rafael'}"></div>
+    ${enc ? '' : `<div class="field"><label>${ic('eye')}</label><div class="toggle" data-pick="publico">
+      <button type="button" data-act="elegir" data-v="0" class="${g.is_public ? '' : 'on'}" data-tip="${esc(C.AYUDA.grupo_privado)}" aria-label="${esc(C.AYUDA.grupo_privado)}">${ic('lock')} Privado</button>
+      <button type="button" data-act="elegir" data-v="1" class="${g.is_public ? 'on' : ''}" data-tip="${esc(C.AYUDA.grupo_publico)}" aria-label="${esc(C.AYUDA.grupo_publico)}">${ic('world')} Público</button></div>
+      <p class="tiny">Privado: solo lo ven sus miembros. Público: también aparece para toda la comunidad.</p></div>
+    <label class="check"><input type="checkbox" id="g-calif" ${g.calificacion ? 'checked' : ''}> <span>${ic('star')} ${esc(C.CALIF_GRUPO)}</span></label>
+    <p class="tiny" style="margin-top:-4px">${esc(C.CALIF_GRUPO_TEXTO)}</p>
+    ${g.id && g.calificacion ? `<div class="row calif-simbolo"><span class="tiny">${esc(C.CALIF_CON)}</span><span class="estrellas">${simboloCalif(g.calif_simbolo).repeat(3)}</span>
+      <button type="button" class="btn alt sm" data-act="calif_simbolo" data-id="${g.id}">${ic('pencil')} ${esc(C.CALIF_CAMBIAR)}</button></div>` : ''}`}
+    <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, E.color || g.color, 'color')}</div>
+    <div class="field"><label>${ic('sparkles')}</label>${iconPicker(E.icon || g.icon)}</div>
+    ${!g.id ? `<p class="tiny">${gruposCreados()} / ${maxGrupos()} grupos creados</p>` : ''}
+    <button class="btn block" data-act="guardar_grupo" data-id="${g.id}">${ic('check')} Guardar</button>
+    ${g.id && !enc && g.owner === S.user.id ? `<button class="btn alt block peligro" data-act="eliminar_grupo" data-id="${g.id}" style="margin-top:18px">${ic('trash')} ${esc(C.GRUPO_ELIMINAR)}</button>` : ''}`;
+  };
+  abrirHoja(render, (r) => { r._grupo = E; }, 'editar_grupo');
+  hojaArriba().datos = E;
+}
+async function guardarGrupo(btn, gid) {
+  const raiz = $('.sheet'), E = (hojaArriba() && hojaArriba().datos) || { tipo: 'coleccion' };
+  const enc = E.tipo === 'encuentro';
+  const d = { name: $('#g-nombre', raiz).value.trim(), icon: iconoElegido(raiz), color: valor(raiz, 'color') };
+  if (!enc) { d.is_public = valor(raiz, 'publico') === '1'; const cal = $('#g-calif', raiz); if (cal) d.calificacion = !!cal.checked; }
+  if (!gid) { d.tipo = E.tipo; if (enc) { d.uso = valor(raiz, 'uso') || E.uso; d.is_public = false; } }
+  if (!d.name) return aviso('Ponle un nombre', 'pencil');
+  if (!esIcono(d.icon) || !d.color) return aviso('Elige ícono y color', 'palette');
+  if (!gid && gruposCreados() >= maxGrupos()) return hojaLimiteGrupos();
+  ocupado(btn, true);
+  try {
+    const g = gid ? await api.updateGroup(gid, d) : await api.createGroup(d);
+    await recargarGrupos();
+    cerrarHoja();
+    const top = hojaArriba();
+    if (top && top.tipo === 'grupo' && top.datos) top.datos.cargar();
+    else if (S.grupo && S.grupo.gid === g.id) S.grupo.cargar(true);
+    else abrirGrupo(g.id);
+    aviso(gid ? 'Guardado' : 'Grupo creado', enc ? 'lifebuoy' : 'users');
+    if (S.tab === 'coleccion') pintarColeccion();
+    if (!gid && esEncuentro(g)) ofrecerPush();
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+async function mostrarInvitacion(code) {
+  let inv = null;
+  try { inv = await api.invitePreview(code); } catch (e) { return fallo(e); }
+  if (!inv) return aviso('Esa invitación ya no es válida', 'alert-triangle');
+  if (inv.already) return abrirGrupo(inv.id);
+  const enc = inv.tipo === 'encuentro';
+  abrirHoja(() => `${cabeza(`${ic(enc ? 'lifebuoy' : 'users')} Invitación`)}
+    <div style="text-align:center;padding:10px 0 4px">
+      <span class="avatar lg" style="background:${okColor(inv.color)};margin:0 auto 10px">${ic(inv.icon)}</span>
+      <h2>${esc(inv.name)}</h2>
+      <p class="muted row" style="justify-content:center">${enc ? `${ic('lifebuoy')} Grupo de encuentro` : `${ic(inv.is_public ? 'world' : 'lock')} ${esc(inv.is_public ? C.AYUDA.grupo_publico : C.AYUDA.grupo_privado)}`} · ${ic('users')} ${inv.members}</p>
+      ${enc ? `<p class="tiny">${esc(C.ENCUENTRO_TIPO_TEXTO)}</p>` : ''}
+      ${inv.lleno ? `<p class="banner">${ic('users')} ${esc(mensajeError('GRUPO_LLENO'))}</p>`
+        : `<button class="btn block" data-act="unirme" data-v="${esc(code)}" style="margin-top:14px">${ic('user-plus')} Unirme</button>`}</div>`, null, 'invitacion');
+}
+
+/* ---------------------------------------------------------------------
+   GRUPOS DE ENCUENTRO: privados y ocultos. Puntos de encuentro, "Todo bien",
+   "Necesito ayuda", "Mira esto" (con juego opcional) y ubicación por tiempo limitado.
+   --------------------------------------------------------------------- */
+const usoDe = (id) => C.ENCUENTRO_USOS.find((u) => u.id === id) || null;
+const hora = (ts) => new Date(ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+// El grupo de encuentro activo vive en el mapa principal (modo grupo); no es una hoja
+const encuentroActual = () => S.grupo || null;
+function getPosRapida() {
+  return new Promise((res, rej) => {
+    if (!navigator.geolocation) return rej(new Error('NO_GPS'));
+    navigator.geolocation.getCurrentPosition((p) => res({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy) }),
+      rej, { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 });
+  });
+}
+function premioMini(n, k) {
+  const v = nivelPremio(n || 0); if (!v) return '';
+  const id = v >= 500 ? 'sombrero' : v >= 250 ? 'corona2' : v >= 100 ? 'corona' : v >= 50 ? '' : v >= 25 ? 'brote' : 'patito';
+  return `<span class="premio-mini" data-tip="${esc((C.PREMIOS[v] || {}).nombre || '')}">${id ? svgPremio(id, k) : BRILLO}</span>`;
+}
+/* Modo grupo: el grupo de encuentro se maneja desde el mapa principal.
+   Arriba, su nombre y una X para salir; en el mapa, solo lo del grupo; abajo, un panel que se sube con el dedo. */
+const claveGrupoMapa = () => 'cg_grupo_mapa_' + (S.user ? S.user.id : '');
+function recordarGrupoMapa(gid) { if (!S.user) return; try { if (gid) localStorage.setItem(claveGrupoMapa(), gid); else localStorage.removeItem(claveGrupoMapa()); } catch (e) { /* sin almacenamiento */ } }
+function leerGrupoMapa() { try { return localStorage.getItem(claveGrupoMapa()) || null; } catch (e) { return null; } }
+function abrirEncuentro(gid, foco, op) {
+  if (!miGrupo(gid)) return aviso('Este grupo ya no está disponible', 'alert-triangle');
+  const mira = op && op.mira;
+  cerrarTodo();
+  if (S.tab !== 'map') irA('map');
+  if (S.grupo && S.grupo.gid === gid) {
+    const D = S.grupo;
+    if (foco) D.foco = foco;
+    if (mira) { D.tab = 'mira'; D.miraAbierta = mira; D.irAMira = true; D.abierto = true; }
+    pintarPanelGrupo(D); D.cargar(true);
+    return;
+  }
+  if (S.grupo) salirGrupo(true);
+  const D = { gid, e: null, foco: foco || null, error: false, premio: null, tab: mira ? 'mira' : 'tablero', lineas: {}, firma: '',
+    miraAbierta: mira || null, irAMira: !!mira, abierto: !!mira, primera: true };
+  S.grupo = D; recordarGrupoMapa(gid);
+  pintarModoGrupo();
+  // Cada 20 s se revisa; el panel y los marcadores solo cambian si llegó algo nuevo
+  D.cargar = async (forzar) => {
+    const antes = D.firma;
+    try {
+      const e = await api.estadoEncuentro(gid);
+      if (S.grupo !== D) return;
+      if (!e) {
+        salirGrupo();
+        await recargarGrupos().catch(() => null);
+        if (S.tab === 'coleccion') pintarColeccion();
+        return aviso('Este grupo ya no está disponible', 'alert-triangle');
+      }
+      D.e = e; D.error = false;
+      revisarPremioMira(D);
+    } catch (err) {
+      if (S.grupo !== D) return;
+      D.error = true;
+      // Sin señal al abrir: el mapa vuelve a lo normal, pero el teléfono recuerda el grupo para la próxima vez
+      if (!D.e) { salirGrupo(); if (esErrorRed(err)) recordarGrupoMapa(gid); return fallo(err); }
+    }
+    D.firma = JSON.stringify(D.e) + '|' + D.error;
+    if (forzar || D.firma !== antes || D.foco || D.primera) {
+      pintarCabGrupo(D); pintarPanelGrupo(D); pintarMarcasEncuentro(D);
+      if (D.foco) enfocarEncuentro(D); else if (D.primera) verTodoEncuentro(D);
+      D.primera = false;
+    } else pintarCompartirEncuentro(D);
+  };
+  D.cargar();
+}
+function salirGrupo(cambiando) {
+  if (!S.grupo) return;
+  S.grupo = null;
+  // Compartir la ubicación sigue al salir del modo grupo (puede ser una emergencia): la franja lo dice y deja suspenderlo
+  if (!cambiando) recordarGrupoMapa(null);
+  if (S.capaEnc) S.capaEnc.clearLayers();
+  pintarModoGrupo();
+  if (!cambiando) cargarPines();
+}
+// Cabecera y panel del modo grupo; los filtros y los hallazgos se esconden mientras dura
+function pintarModoGrupo() {
+  const scr = $('#scr-map'); if (!scr) return;
+  const D = S.grupo;
+  scr.classList.toggle('modo-grupo', !!D);
+  pintarFranjaCompartir();
+  const cab = $('#grupo-cab'), panel = $('#panel-grupo');
+  if (!D) { if (cab) { cab.hidden = true; cab.innerHTML = ''; } if (panel) { soltarFoco(panel); panel.hidden = true; panel.innerHTML = ''; } scr.style.removeProperty('--panel-alto'); pintarFiltrosMapa(); return; }
+  if (S.capa) S.capa.clearLayers();
+  pintarCabGrupo(D); pintarPanelGrupo(D);
+}
+function pintarCabGrupo(D) {
+  const cab = $('#grupo-cab'); if (!cab) return;
+  const g = (D.e && D.e.grupo) || miGrupo(D.gid) || {};
+  cab.hidden = false;
+  cab.innerHTML = `<span class="pastilla-grupo" style="--c:${okColor(g.color)}">${ic('lifebuoy')}<span class="grow">${esc(g.name || '')}</span>
+      ${D.e ? `<span class="n">${ic('users')} ${D.e.miembros.length}</span>` : ''}${D.error ? `<span class="n">${ic('cloud-off')}</span>` : ''}</span>
+    ${ib('avisos', 'mail-heart', 'avisos', 'data-campana', 'sm')}${ib('encuentro_guia', 'help', 'encuentro_guia', '', 'sm')}${ib('salir_grupo_mapa', 'x', 'salir_grupo_mapa', '', 'sm')}`;
+  pintarCampana();
+}
+// Panel recogido: "Ver más" deja claro que abajo hay todo el grupo (tablero, puntos, "Mira esto" y ajustes).
+// Si alguien pide ayuda, se dice ahí mismo para no perderlo.
+function verMasGrupoHTML(D) {
+  const orden = (m) => (!m.estado ? 2 : m.estado.kind === 'ayuda' ? 0 : 1);
+  const ms = D.e.miembros.slice().sort((a, b) => orden(a) - orden(b) || String((b.estado || {}).created_at || '').localeCompare(String((a.estado || {}).created_at || '')));
+  const ayudas = ms.filter((m) => orden(m) === 0).length, max = C.GRUPO_CARITAS_MAX;
+  const nombre = (m) => `${m.name}: ${m.estado ? C.ENCUENTRO_ESTADOS[m.estado.kind].nombre : C.ENCUENTRO_SIN_AVISO}`;
+  const caritas = ms.slice(0, max).map((m) => `<span class="carita ${m.estado ? 'est-' + m.estado.kind : 'est-no'}" title="${esc(nombre(m))}">${avatar(m)}<i></i></span>`).join('')
+    + (ms.length > max ? `<span class="carita-mas">+${ms.length - max}</span>` : '');
+  const resumen = ms.map(nombre).join(', ');
+  return `<button type="button" class="panel-mas ${ayudas ? 'con-ayuda' : ''}" data-act="grupo_panel" aria-expanded="false" aria-label="${esc(C.GRUPO_VER_MAS)}. ${esc(resumen)}">
+    <span class="caritas" aria-hidden="true">${caritas}</span>
+    <span class="grow" style="min-width:0"><b>${esc(C.GRUPO_VER_MAS)}</b><span class="tiny">${ayudas ? `<span class="txt-ayuda">${esc((ayudas === 1 ? C.GRUPO_AYUDA_1 : C.GRUPO_AYUDA_N).replace('{n}', ayudas))}</span>` : esc(C.GRUPO_VER_MAS_TEXTO)}</span></span>
+    ${ic('chevron-up')}</button>`;
+}
+function pintarPanelGrupo(D) {
+  const p = $('#panel-grupo'); if (!p || S.grupo !== D) return;
+  const cuerpoAntes = $('.panel-cuerpo', p), arriba = cuerpoAntes ? cuerpoAntes.scrollTop : 0;
+  soltarFoco(p);
+  p.hidden = false;
+  p.classList.toggle('abierto', !!D.abierto);
+  if (!D.e) { p.innerHTML = `<div class="empty" style="padding:16px"><span class="spin">${ic('loader-2')}</span></div>`; return; }
+  p.innerHTML = `<button type="button" class="asa" data-act="grupo_panel" aria-expanded="${D.abierto ? 'true' : 'false'}" aria-label="${esc(D.abierto ? C.GRUPO_PANEL_BAJAR : C.GRUPO_PANEL_SUBIR)}"><span></span></button>
+    <div class="enc-botones">
+      <button class="enc-btn bien" data-act="estado_encuentro" data-v="bien">${ic(C.ENCUENTRO_ESTADOS.bien.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.bien.corto)}</span></button>
+      <button class="enc-btn ayuda" data-act="estado_encuentro" data-v="ayuda">${ic(C.ENCUENTRO_ESTADOS.ayuda.icono)}<span>${esc(C.ENCUENTRO_ESTADOS.ayuda.corto)}</span></button>
+      <button class="enc-btn mira" data-act="mira_nuevo">${ic('eye')}<span>${esc(C.ENCUENTRO_MIRA)}</span></button>
+    </div>
+    <div class="row panel-fila"><span id="enc-compartir" class="grow" style="min-width:0">${encCompartirHTML(D)}</span>
+      ${ib('punto_nuevo', 'flag', 'punto_nuevo', '', 'sm')}${ib('ubicar', 'current-location', 'ubicar', '', 'sm')}${ib('enc_ver_todo', 'arrows-maximize', 'ver_todo', '', 'sm')}</div>
+    ${D.abierto ? `<div class="panel-cuerpo"><div id="enc-arriba">${encArribaHTML(D)}</div><div id="enc-abajo">${encAbajoHTML(D)}</div></div>` : verMasGrupoHTML(D)}`;
+  const c = $('.panel-cuerpo', p); if (c && arriba) c.scrollTop = arriba;
+  // los créditos del mapa (OpenStreetMap) quedan justo arriba del panel
+  $('#scr-map').style.setProperty('--panel-alto', p.offsetHeight + 'px');
+  montarPanelGrupo(p, D);
+  llevarAMira(D);
+}
+// Deslizar el asa hacia arriba sube el panel; hacia abajo, lo recoge
+function montarPanelGrupo(p, D) {
+  const asa = $('.asa', p); if (!asa) return;
+  let y0 = null;
+  asa.addEventListener('touchstart', (ev) => { y0 = ev.touches[0].clientY; }, { passive: true });
+  asa.addEventListener('touchend', (ev) => {
+    if (y0 == null) return;
+    const dy = ev.changedTouches[0].clientY - y0; y0 = null;
+    if (Math.abs(dy) < 30) return;
+    ev.preventDefault();
+    D.abierto = dy < 0; pintarPanelGrupo(D);
+  });
+}
+function pintarCompartirEncuentro(D) {
+  const el = $('#enc-compartir'); if (el && D.e && S.grupo === D) el.innerHTML = encCompartirHTML(D);
+}
+function encArribaHTML(D) {
+  const e = D.e, g = e.grupo, uso = usoDe(g.uso);
+  const linea = (k, icono, titulo, texto) => `<button type="button" class="enc-linea ${D.lineas[k] ? 'abierta' : ''}" data-act="enc_linea" data-v="${k}" aria-expanded="${D.lineas[k] ? 'true' : 'false'}">
+    ${ic(icono)}<span><b>${esc(titulo)}:</b> ${esc(texto)}</span></button>`;
+  return `<div class="row wrap enc-cabeza">
+      <span class="catb" style="background:${okColor(g.color)}">${ic('lifebuoy')}${esc(uso ? uso.nombre : 'Grupo de encuentro')}</span>
+      <span class="muted row">${ic('users')} ${e.miembros.length}</span>
+      ${D.error ? `<span class="tiny row">${ic('cloud-off')} ${esc(C.SIN_CONEXION)}</span>` : ''}
+      <span class="grow"></span>${ib('descargar_fichas', 'download', C.PDF_TITULO, `data-tipo="encuentro" data-id="${g.id}"`, 'sm')}${ib('encuentro_refrescar', 'refresh', 'refrescar', '', 'sm')}</div>
+    ${g.tema ? linea('tema', 'sparkles', 'Tema', g.tema) : ''}
+    ${g.acuerdo ? linea('acuerdo', 'info-circle', 'Acuerdo', g.acuerdo) : ''}`;
+}
+function encCompartirHTML(D) {
+  const g = D.e.grupo, comparte = S.comparte && S.comparte.gid === g.id ? S.comparte : null;
+  if (comparte) {
+    const quedan = Math.max(1, Math.ceil((comparte.hasta - Date.now()) / 60000));
+    return `<span class="pastilla on">${ic('current-location')}<span>${esc(C.ENCUENTRO_COMPARTIENDO.replace('{m}', quedan))}</span>
+      <button type="button" data-act="dejar_compartir" aria-label="${esc(C.AYUDA.dejar_compartir)}" data-tip="${esc(C.AYUDA.dejar_compartir)}">${ic('x')}</button></span>`;
+  }
+  return `<span class="pastilla">${ic('current-location')}<span>${esc(C.ENCUENTRO_COMPARTIR_CORTO)}</span>
+    ${C.ENCUENTRO_COMPARTIR_MIN.map((m) => `<button type="button" data-act="compartir_ubicacion" data-v="${m}" aria-label="${esc(C.ENCUENTRO_COMPARTIR)} ${m} min">${m}</button>`).join('')}<span>min</span></span>`;
+}
+function encAbajoHTML(D) {
+  const e = D.e, g = e.grupo, yo = e.yo, v = e.votos;
+  const nombrePunto = (id) => (e.puntos.find((p) => p.id === id) || {}).name;
+  const ayudas = e.miembros.filter((m) => m.estado && m.estado.kind === 'ayuda').length;
+  const tabs = [['tablero', 'Tablero', ayudas ? `<b class="cuenta">${ayudas}</b>` : ''], ['puntos', 'Puntos', `<i>${e.puntos.length}</i>`],
+    ['mira', 'Mira', `<i>${e.miras.length}</i>`], ['grupo', 'Grupo', v.n ? `<b class="cuenta">${v.n}</b>` : '']];
+  let cuerpo = '';
+  if (D.tab === 'puntos') cuerpo = `<div class="row between enc-sub"><span class="muted">${esc(C.ENCUENTRO_PUNTOS_TEXTO)}</span>${ib('punto_nuevo', 'plus', 'punto_nuevo', '', 'sm on')}</div>
+    ${e.puntos.length ? `<div class="list">${e.puntos.map((p) => filaPunto(p, e)).join('')}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_PUNTOS)}</p>`}`;
+  else if (D.tab === 'mira') cuerpo = e.miras.length ? `<div class="list">${(() => { const l = e.miras.slice(0, 30); const ab = D.miraAbierta && e.miras.find((k) => k.id === D.miraAbierta);
+      if (ab && !l.includes(ab)) l.unshift(ab); return l.map((k) => filaMira(k, e, D)).join(''); })()}</div>` : `<p class="muted">${esc(C.ENCUENTRO_SIN_MIRA)}</p>`;
+  else if (D.tab === 'grupo') cuerpo = `${v.n ? `<p class="banner">${ic('trash')} ${esc(C.ENCUENTRO_VOTOS.replace('{n}', v.n).replace('{t}', v.total))}</p>` : ''}
+      <div class="row wrap">
+        ${yo.admin ? `<button class="btn sm" data-act="invitar_grupo" data-id="${g.id}">${ic('user-plus')} ${esc(C.INVITAR_BOTON)}</button>` : ''}
+        ${yo.admin ? ib('ajustes_encuentro', 'adjustments', 'encuentro_ajustes') : ''}
+        ${yo.duena ? ib('editar_grupo', 'pencil', 'editar', `data-id="${g.id}"`) : ''}
+        ${ib('borrar_lo_mio', 'eraser', 'borrar_lo_mio')}
+        ${ib('votar_borrado', v.mio ? 'arrow-back-up' : 'trash', v.mio ? 'quitar_voto' : 'votar_borrado')}
+        ${yo.duena && e.inactividad.puede_eliminar ? ib('eliminar_inactivo', 'clock-x', 'eliminar_inactivo') : ''}
+        <span class="grow"></span>
+        ${!yo.duena ? ib('salir_encuentro', 'door-exit', 'salir_grupo') : ''}
+      </div>`;
+  else cuerpo = `<div class="list">${e.miembros.map((m) => filaMiembro(m, e, nombrePunto)).join('')}</div>`;
+  return `<div class="enc-tabs" role="tablist">${tabs.map(([k, n, x]) => `<button type="button" role="tab" class="${D.tab === k ? 'on' : ''}" aria-selected="${D.tab === k}" data-act="enc_tab" data-v="${k}">${esc(n)}${x}</button>`).join('')}</div>
+    <div class="enc-cuerpo">${cuerpo}</div>`;
+}
+function filaMiembro(m, e, nombrePunto) {
+  const st = m.estado, est = st ? C.ENCUENTRO_ESTADOS[st.kind] : null;
+  const esYo = m.user_id === S.user.id;
+  const gestionar = !esYo && !m.duena && (e.yo.duena || (e.yo.admin && !m.coadmin));
+  return `<div class="li miembro ${st && st.kind === 'ayuda' ? 'pide-ayuda' : ''}">
+    <button class="row grow" data-act="perfil" data-id="${m.user_id}" style="text-align:left;min-width:0">${avatar(m)}
+      <div class="grow" style="min-width:0"><div class="row"><b>${esc(m.name)}</b>${m.duena ? `<span data-tip="${esc(C.AYUDA.duena)}">${ic('crown')}</span>` : m.coadmin ? `<span data-tip="${esc(C.AYUDA.coadmin)}">${ic('shield')}</span>` : ''}${e.grupo.juego ? premioMini(m.premio, m.premio_color) : ''}</div>
+      <div class="tiny">${st ? `${ic(est.icono)} ${esc(est.nombre)} · ${esc(hace(st.created_at))}${st.colonia ? ` · ${esc(st.colonia)}` : ''}${st.punto_id && nombrePunto(st.punto_id) ? ` · Va a ${esc(nombrePunto(st.punto_id))}` : ''}${st.note ? ` · «${esc(st.note)}»` : ''}` : esc(C.ENCUENTRO_SIN_AVISO)}</div></div></button>
+    ${st && st.lat != null ? ib('ver_en_mapa_enc', 'map-pin', 'ver_en_mapa', `data-id="${m.user_id}"`, 'sm') : ''}
+    ${gestionar ? ib('miembro_encuentro', 'dots-vertical', 'miembro', `data-id="${m.user_id}"`, 'sm') : ''}</div>`;
+}
+function filaPunto(p, e) {
+  const mio = p.user_id === S.user.id, autora = (e.miembros.find((m) => m.user_id === p.user_id) || {}).name || '';
+  return `<div class="li punto">${p.thumb || p.photo ? `<img class="thumb" src="${api.photoUrl(p.thumb || p.photo)}" alt="" data-act="ver_foto" data-src="${esc(api.photoUrl(p.photo || p.thumb))}">` : `<span class="thumb">${ic('flag')}</span>`}
+    <div class="grow" style="min-width:0"><b class="row">${esc(p.name)}${p.principal ? `<span data-tip="Punto principal">${ic('star')}</span>` : ''}</b>
+      <div class="tiny">${p.note ? esc(p.note) + ' · ' : ''}${esc(autora)}</div></div>
+    ${ib('ir_punto_encuentro', 'navigation', 'ir_al_punto', `data-id="${p.id}"`, 'sm on')}
+    ${e.yo.admin && !p.principal ? ib('punto_principal', 'star', 'principal', `data-id="${p.id}"`, 'sm') : ''}
+    ${mio || e.yo.admin ? ib('borrar_punto', 'trash', 'borrar', `data-id="${p.id}"`, 'sm') : ''}</div>`;
+}
+function filaMira(k, e, D) {
+  const autora = (e.miembros.find((m) => m.user_id === k.user_id) || {}).name || '';
+  const abierta = D && D.miraAbierta === k.id, foto = k.photo || k.thumb;
+  // Tocar la fila despliega su foto; desplegada, se puede ver en el mapa
+  return `<div class="li mira ${abierta ? 'abierta' : ''}" data-id="${k.id}">
+    <div class="row" style="gap:10px;width:100%">${k.thumb || k.photo ? `<img class="thumb" src="${api.photoUrl(k.thumb || k.photo)}" alt="">` : `<span class="thumb">${ic('eye')}</span>`}
+    <button class="grow" data-act="enc_mira_abrir" data-id="${k.id}" aria-expanded="${abierta}" style="text-align:left;min-width:0"><b>${esc(k.note)}</b><div class="tiny">${esc(autora)} · ${esc(hace(k.created_at))}</div></button>
+    ${k.user_id === S.user.id || e.yo.admin ? ib('borrar_mira', 'trash', 'borrar', `data-id="${k.id}"`, 'sm') : ''}</div>
+    ${abierta ? `<div class="mira-grande">${foto ? `<img src="${api.photoUrl(k.photo || k.thumb)}" alt="${esc(k.note)}">` : ''}
+      <button class="btn alt sm" data-act="ver_mira" data-id="${k.id}">${ic('map-pin')} ${esc(C.AYUDA.ver_en_mapa)}</button></div>` : ''}</div>`;
+}
+// Marcadores del grupo en el mapa principal: puntos, "Mira esto", quien pidió ayuda y quien comparte su ubicación
+function pintarMarcasEncuentro(D) {
+  const capa = S.capaEnc; if (!capa || S.grupo !== D || !D.e) return [];
+  capa.clearLayers();
+  marcasEncuentro(D.e, capa, (foco) => {
+    if (foco.tipo === 'mira') return abrirMira(D, foco.id);
+    aviso(foco.texto, foco.tipo === 'punto' ? 'flag' : foco.tipo === 'ayuda' ? 'urgent' : 'current-location');
+  });
+  D.pts = puntosEncuentro(D.e);
+  return D.pts;
+}
+// Todo lo que el grupo tiene en el mapa (para encuadrarlo): puntos, "Mira esto", ayudas con ubicación y ubicaciones compartidas
+function puntosEncuentro(e) {
+  const pts = [];
+  e.puntos.forEach((p) => pts.push([p.lat, p.lng]));
+  e.miras.forEach((k) => pts.push([k.lat, k.lng]));
+  e.miembros.forEach((x) => { if (x.estado && x.estado.kind === 'ayuda' && x.estado.lat != null) pts.push([x.estado.lat, x.estado.lng]); });
+  e.ubicaciones.forEach((u) => pts.push([u.lat, u.lng]));
+  return pts;
+}
+// Marcadores de un grupo de encuentro en el mapa principal (modo grupo)
+function marcasEncuentro(e, capa, alTocar) {
+  const g = e.grupo;
+  const icono = (html) => L.divIcon({ className: '', html, iconSize: [36, 36], iconAnchor: [18, 36] });
+  e.puntos.forEach((p) => {
+    L.marker([p.lat, p.lng], { icon: icono(`<div class="pin enc-punto ${p.principal ? 'principal' : ''}" style="background:${okColor(g.color)}">${ic('flag')}</div>`) })
+      .on('click', () => alTocar({ lat: p.lat, lng: p.lng, tipo: 'punto', texto: p.name })).addTo(capa); });
+  e.miras.forEach((k) => { const a = e.miembros.find((x) => x.user_id === k.user_id) || {};
+    L.marker([k.lat, k.lng], { icon: icono(pinHTML('#3F6E73', 'eye', g.juego ? a.premio : 0, a.premio_color)) })
+      .on('click', () => alTocar({ lat: k.lat, lng: k.lng, tipo: 'mira', id: k.id, texto: k.note })).addTo(capa); });
+  e.miembros.forEach((x) => { const st = x.estado;
+    if (st && st.kind === 'ayuda' && st.lat != null) {
+      L.marker([st.lat, st.lng], { icon: icono(`<div class="pin enc-ayuda">${ic('urgent')}</div>`) })
+        .on('click', () => alTocar({ lat: st.lat, lng: st.lng, tipo: 'ayuda', texto: `${x.name}: ${C.ENCUENTRO_ESTADOS.ayuda.nombre}` })).addTo(capa); } });
+  e.ubicaciones.forEach((u) => { const x = e.miembros.find((y) => y.user_id === u.user_id) || {};
+    L.marker([u.lat, u.lng], { icon: L.divIcon({ className: '', html: `<span class="avatar enc-yo" style="background:${okColor(x.avatar_color)}">${ic(x.avatar)}</span>`, iconSize: [30, 30], iconAnchor: [15, 15] }) })
+      .on('click', () => alTocar({ lat: u.lat, lng: u.lng, tipo: 'ubicacion', texto: `${x.name} · ${hace(u.updated_at)}` })).addTo(capa); });
+}
+function enfocarEncuentro(D) {
+  const e = D.e, m = S.map; let foco = null;
+  if (D.foco && typeof D.foco === 'object') foco = D.foco;
+  else if (D.foco && e) {
+    const x = e.miembros.find((y) => y.user_id === D.foco), u = e.ubicaciones.find((y) => y.user_id === D.foco);
+    foco = x && x.estado && x.estado.lat != null ? { lat: x.estado.lat, lng: x.estado.lng } : u ? { lat: u.lat, lng: u.lng } : null;
+  }
+  D.foco = null;
+  if (foco && m) m.setView([foco.lat, foco.lng], 17);
+}
+// Ver a todo el grupo: el encuadre deja libre el espacio del panel de abajo
+function verTodoEncuentro(D) {
+  const m = S.map; if (!m || !D.e) return;
+  const todos = (D.pts || puntosEncuentro(D.e)).slice();
+  if (S.yo && S.yo.getLatLng) { const y = S.yo.getLatLng(); todos.push([y.lat, y.lng]); }
+  const panel = $('#panel-grupo'), abajo = panel && !panel.hidden ? panel.getBoundingClientRect().height : 0;
+  if (todos.length > 1 && m.fitBounds) m.fitBounds(todos, { paddingTopLeft: [40, 110], paddingBottomRight: [40, abajo + 30], maxZoom: 17 });
+  else if (todos.length) m.setView(todos[0], 16);
+  else aviso(C.CAPA_VACIA, 'lifebuoy');
+}
+// Un "Mira esto": el panel se sube en su pestaña con la foto desplegada
+function abrirMira(D, id) {
+  if (!D || !D.e) return;
+  D.tab = 'mira'; D.miraAbierta = id; D.irAMira = true; D.abierto = true;
+  pintarPanelGrupo(D);
+}
+function llevarAMira(D) {
+  if (!D.irAMira) return;
+  const el = $(`#panel-grupo .li.mira[data-id="${D.miraAbierta}"]`);
+  if (el) { D.irAMira = false; el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+}
+// Centra el mapa donde se pidió y recoge el panel para dejarlo a la vista
+function verMapaEncuentro(D) {
+  if (D.abierto) { D.abierto = false; pintarPanelGrupo(D); }
+  enfocarEncuentro(D);
+}
+function hojaGuiaEncuentro() {
+  abrirHoja(() => `${cabeza(`${ic('lifebuoy')} ${esc(C.AYUDA.encuentro_guia)}`)}
+    <div class="dudas guia">${C.GUIA_ENCUENTRO.map((d) => `<div class="duda"><h3 class="row"><span class="gicon">${ic(d.icono)}</span>${esc(d.titulo)}</h3>
+      ${d.texto ? `<p>${esc(d.texto)}</p>` : ''}${d.pasos ? `<ul>${d.pasos.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}</div>`).join('')}</div>`, null, 'guia_encuentro');
+}
+
+/* "Todo bien" y "Necesito ayuda" */
+function hojaEstado(gid, kind) {
+  const D = encuentroActual(), e = D && D.e, est = C.ENCUENTRO_ESTADOS[kind];
+  abrirHoja(() => `${cabeza(`${ic(est.icono)} ${esc(est.nombre)}`)}
+    ${kind === 'bien' && e && e.puntos.length ? `<div class="field"><label>${ic('flag')} ${esc(C.ENCUENTRO_VOY_A)}</label><div class="chips" data-pick="punto" style="flex-wrap:wrap">
+      <button type="button" class="chip on" data-act="elegir" data-v="">—</button>${e.puntos.map((p) => `<button type="button" class="chip" data-act="elegir" data-v="${p.id}">${ic('flag')}${esc(p.name)}</button>`).join('')}</div></div>` : ''}
+    ${kind === 'ayuda' ? `<label class="check"><input type="checkbox" id="ayuda-exacta"> <span>${esc(C.ENCUENTRO_EXACTA)}</span></label>
+      <div class="field"><textarea id="ayuda-nota" class="in" maxlength="${C.ENCUENTRO_NOTA_MAX}" rows="2" placeholder="${esc(C.ENCUENTRO_NOTA_AYUDA)}"></textarea></div>` : ''}
+    <button class="btn block enc-enviar ${kind}" data-act="enviar_estado" data-gid="${gid}" data-v="${kind}">${ic(est.icono)} Enviar "${esc(est.nombre)}"</button>`, null, 'estado');
+}
+async function enviarEstado(btn, gid, kind) {
+  const raiz = $('.sheet'), D = encuentroActual(), e = D && D.e;
+  const punto = kind === 'bien' ? (valor(raiz, 'punto') || null) : null;
+  const exacta = kind === 'ayuda' && !!($('#ayuda-exacta', raiz) || {}).checked;
+  const nota = kind === 'ayuda' ? (($('#ayuda-nota', raiz) || {}).value || '').trim() : '';
+  ocupado(btn, true);
+  const r = await mandarEstado([gid], kind, { punto, exacta, nota });
+  if (!r.enviados && !r.enCola) { ocupado(btn, false); return fallo(r.errores[0]); }
+  if (hojaArriba() && hojaArriba().tipo === 'estado') cerrarHoja();
+  const nombrePunto = punto && e ? (e.puntos.find((p) => p.id === punto) || {}).name : '';
+  hojaEstadoListo(kind, { enCola: !!r.enCola, nombrePunto, nota, pos: exacta ? r.pos : null });
+  if (D && r.enviados) D.cargar();
+}
+// Envía "Todo bien" o "Necesito ayuda" a uno o varios grupos. Sin señal, cada aviso queda guardado y se envía al volver.
+async function mandarEstado(gids, kind, o) {
+  let pos = null;
+  try { pos = await getPosRapida(); } catch (err) { pos = null; }
+  if (o.exacta && !pos) aviso('Sin GPS: se envía sin tu ubicación exacta', 'current-location');
+  let colonia = null;
+  if (navigator.onLine && pos) { try { colonia = await api.colonia(pos.lat, pos.lng); } catch (err) { colonia = null; } }
+  const r = { pos, enviados: 0, enCola: 0, errores: [], fallidos: [] };
+  const cuando = new Date().toISOString();
+  for (const gid of gids) {
+    const fila = { group_id: gid, kind, punto_id: o.punto || null, note: o.nota || null, created_at: cuando };
+    if (o.exacta && pos) Object.assign(fila, { lat: pos.lat, lng: pos.lng, accuracy: pos.acc });
+    try {
+      if (!navigator.onLine) throw new TypeError('Failed to fetch');
+      await api.addEstado(Object.assign({ colonia }, fila));
+      r.enviados++;
+    } catch (err) {
+      if (!esErrorRed(err)) { r.errores.push(err); r.fallidos.push(gid); continue; }
+      try { await guardarPendiente({ tipo: 'estado', datos: fila, pos }); r.enCola++; }
+      catch (err2) { r.errores.push(err); r.fallidos.push(gid); }
+    }
+  }
+  if (r.enviados) api.dispararPush();
+  return r;
+}
+
+// Si el grupo activo en el mapa ya no es tuyo (saliste o se borró), el mapa vuelve a lo normal
+function revisarGrupoMapa() {
+  if (S.grupo && !miGrupo(S.grupo.gid)) salirGrupo();
+  pintarFiltrosMapa();
+}
+// Solo con sesión, en el mapa y sin hojas abiertas encima: el grupo activo se revisa cada 20 s
+setInterval(() => { if (S.user && S.grupo && S.tab === 'map' && !document.hidden && !pila.length) S.grupo.cargar(); }, C.ENCUENTRO_REFRESCO_MS);
+
+/* Aviso rápido: "Todo bien" o "Necesito ayuda" a tus grupos de encuentro, sin entrar a cada grupo.
+   Se llega desde el mapa, desde la lista de grupos o (en Android) dejando presionado el ícono de la app. */
+const gruposEncuentro = () => (S.groups || []).filter(esEncuentro);
+const icAyuda = () => `<span class="ic-ayuda" aria-hidden="true"><b>!</b>${ic('lifebuoy')}<b>!</b></span>`;
+function botonAyuda(attrs = '') {
+  return `<button class="ib sm ayuda-atajo" data-act="aviso_rapido" data-tip="${esc(C.AYUDA.aviso_rapido)}" aria-label="${esc(C.AYUDA.aviso_rapido)}" ${attrs}>${icAyuda()}</button>`;
+}
+function pintarAtajoMapa() { const el = $('#atajo-ayuda'); if (el) el.innerHTML = gruposEncuentro().length ? botonAyuda() : ''; }
+const Q = {};
+function hojaAvisoRapido(gid) {
+  const grupos = gruposEncuentro();
+  if (!grupos.length) {
+    return abrirHoja(() => `${cabeza(`${icAyuda()} ${esc(C.AVISO_RAPIDO_TITULO)}`)}
+      <div class="empty">${ic('lifebuoy')}<p>${esc(C.AVISO_RAPIDO_SIN_GRUPOS)}</p></div>
+      <button class="btn block" data-act="grupo_nuevo">${ic('plus')} ${esc(C.AYUDA.grupo_nuevo)}</button>`, null, 'aviso_rapido');
+  }
+  Object.assign(Q, { kind: 'ayuda', exacta: false, nota: '',
+    sel: new Set(gid && grupos.some((g) => g.id === gid) ? [gid] : grupos.map((g) => g.id)) });
+  abrirHoja(avisoRapidoHTML, null, 'aviso_rapido');
+}
+function avisoRapidoHTML() {
+  const grupos = gruposEncuentro(), n = grupos.filter((g) => Q.sel.has(g.id)).length, est = C.ENCUENTRO_ESTADOS;
+  const tipo = (k) => `<button type="button" class="enc-btn ${k} ${Q.kind === k ? 'on' : 'apagado'}" data-act="aviso_tipo" data-v="${k}" aria-pressed="${Q.kind === k}">${ic(est[k].icono)}<span>${esc(est[k].nombre)}</span></button>`;
+  return `${cabeza(`${icAyuda()} ${esc(C.AVISO_RAPIDO_TITULO)}`)}
+    <div class="aviso-tipos">${tipo('bien')}${tipo('ayuda')}</div>
+    <div class="tiny aviso-a">${esc(C.AVISO_RAPIDO_A)}</div>
+    <div class="list aviso-grupos">${grupos.map((g) => { const uso = usoDe(g.uso), on = Q.sel.has(g.id);
+      return `<button type="button" class="li check-grupo ${on ? 'on' : ''}" data-act="aviso_grupo" data-id="${g.id}" aria-pressed="${on}">
+        <span class="caja">${on ? ic('check') : ''}</span><span class="avatar sm" style="background:${okColor(g.color)}">${ic(g.icon)}</span>
+        <b class="grow">${esc(g.name)}</b>${uso ? `<span class="tiny">${esc(uso.nombre)}</span>` : ''}</button>`; }).join('')}</div>
+    ${Q.kind === 'ayuda' ? `<label class="check"><input type="checkbox" id="rapido-exacta" ${Q.exacta ? 'checked' : ''}> <span>${esc(C.ENCUENTRO_EXACTA)}</span></label>
+      <label class="campo-ic">${ic('info-circle')}<textarea id="rapido-nota" class="in compacto crece" rows="1" maxlength="${C.ENCUENTRO_NOTA_MAX}" aria-label="Nota" placeholder="${esc(C.ENCUENTRO_NOTA_AYUDA)}">${esc(Q.nota)}</textarea></label>` : ''}
+    <button class="btn block enc-enviar ${Q.kind}" data-act="enviar_aviso_rapido" ${n ? '' : 'disabled'}>${ic('send')} ${esc(n > 1 ? C.AVISO_RAPIDO_ENVIAR_N.replace('{n}', n) : C.AVISO_RAPIDO_ENVIAR)}</button>`;
+}
+function recordarRapido() {
+  const x = $('#rapido-exacta'), t = $('#rapido-nota');
+  if (x) Q.exacta = x.checked; if (t) Q.nota = t.value;
+}
+async function enviarAvisoRapido(btn) {
+  recordarRapido();
+  const grupos = gruposEncuentro().filter((g) => Q.sel.has(g.id));
+  if (!grupos.length) return aviso(C.AVISO_RAPIDO_ELIGE, 'users');
+  const kind = Q.kind === 'bien' ? 'bien' : 'ayuda', nota = kind === 'ayuda' ? Q.nota.trim() : '', exacta = kind === 'ayuda' && Q.exacta;
+  ocupado(btn, true);
+  const r = await mandarEstado(grupos.map((g) => g.id), kind, { exacta, nota });
+  if (!r.enviados && !r.enCola) { ocupado(btn, false); return fallo(r.errores[0]); }
+  if (hojaArriba() && hojaArriba().tipo === 'aviso_rapido') cerrarHoja();
+  hojaEstadoListo(kind, { enCola: !!r.enCola, nota, pos: exacta ? r.pos : null });
+  if (r.fallidos.length) {
+    const nombres = r.fallidos.map((id) => (miGrupo(id) || {}).name).filter(Boolean).join(', ');
+    setTimeout(() => aviso(`${C.AVISO_RAPIDO_NO_SALIO} ${nombres}. ${errTexto(r.errores[0]).includes('ESPERA') ? C.AVISO_RAPIDO_ESPERA : ''}`.trim(), 'alert-triangle'), 400);
+  }
+  const D = encuentroActual(); if (D && r.enviados) D.cargar();
+}
+function textoWhatsAppEstado(kind, o) {
+  const partes = [kind === 'ayuda' ? 'Necesito ayuda.' : 'Todo bien.'];
+  if (o.nombrePunto) partes.push(`Voy a: ${o.nombrePunto}.`);
+  if (o.nota) partes.push(o.nota);
+  if (o.pos) { const la = o.pos.lat.toFixed(5), lo = o.pos.lng.toFixed(5); partes.push(`Estoy aquí: https://www.openstreetmap.org/?mlat=${la}&mlon=${lo}#map=18/${la}/${lo}`); }
+  partes.push(`${hora(Date.now())} · Collector Go`);
+  return partes.join(' ');
+}
+function hojaEstadoListo(kind, o) {
+  const est = C.ENCUENTRO_ESTADOS[kind], t = textoWhatsAppEstado(kind, o);
+  abrirHoja(() => `${cabeza(`${ic(est.icono)} ${esc(est.nombre)}`)}
+    <div class="empty" style="padding:16px 0">${ic(o.enCola ? 'cloud-off' : 'circle-check')}<p>${esc(o.enCola ? C.ENCUENTRO_EN_COLA : est.listo)}</p></div>
+    <button class="btn block" data-act="whatsapp_estado" data-texto="${esc(t)}">${ic('brand-whatsapp')} ${esc(C.ENCUENTRO_WHATSAPP)}</button>
+    <button class="btn alt block" data-act="cerrar" style="margin-top:10px" aria-label="Listo">${ic('check')}</button>`, null, 'estado_listo');
+}
+
+/* "Mira esto" y proponer un punto de encuentro: nota (o nombre), foto opcional y ubicación */
+const M = {};
+function hojaMarca(gid, modo) {
+  if (M.enc) soltarLienzo(M.enc.img);
+  Object.assign(M, { gid, modo, foto: null, enc: null, vistaUrl: null, nombre: '', nota: '', pos: null, gps: 'buscando', mover: null });
+  abrirHoja(marcaHTML, montarMarca, 'marca');
+  leerGpsMarca();
+}
+function leerGpsMarca() {
+  const gid = M.gid; M.gps = 'buscando'; pintarGpsMarca();
+  getPos().then((p) => { if (M.gid !== gid) return; M.pos = p; M.gps = 'ok'; if (M.mover) M.mover(p); pintarGpsMarca(); })
+    .catch(() => { M.gps = M.pos ? 'ok' : 'error'; pintarGpsMarca(); });
+}
+function marcaHTML() {
+  const punto = M.modo === 'punto';
+  return `${cabeza(punto ? `${ic('flag')} ${esc(C.AYUDA.punto_nuevo)}` : `${ic('eye')} ${esc(C.ENCUENTRO_MIRA)}`)}
+    ${punto ? `<label class="campo-ic">${ic('pencil')}<input id="marca-nombre" class="in compacto" maxlength="40" value="${esc(M.nombre)}" placeholder="${esc(C.PUNTO_PISTA)}" aria-label="Nombre del punto" autocomplete="off"></label>` : ''}
+    <label class="campo-ic">${ic('info-circle')}<textarea id="marca-nota" class="in compacto crece" rows="1" maxlength="${C.ENCUENTRO_NOTA_MAX}" aria-label="Nota" placeholder="${esc(punto ? C.NOTA_PISTA : C.MIRA_PISTA)}">${esc(M.nota)}</textarea></label>
+    <div class="fotos-fila">
+      <label class="ib mini" data-tip="${esc(C.AYUDA.camara)}" aria-label="${esc(C.AYUDA.camara)}">${ic('camera')}<input type="file" accept="image/*" capture="environment" hidden data-in="foto-marca"></label>
+      <label class="ib mini" data-tip="${esc(C.AYUDA.galeria)}" aria-label="${esc(C.AYUDA.galeria)}">${ic('upload')}<input type="file" accept="image/*" hidden data-in="foto-marca"></label>
+      ${M.foto ? `<button type="button" class="foto-mini" data-act="encuadrar_marca" data-tip="${esc(C.AYUDA.encuadrar)}" aria-label="${esc(C.AYUDA.encuadrar)}"><img id="vista-marca" src="${M.vistaUrl}" alt=""></button>${ib('quitar_foto_marca', 'x', 'quitar_captura', '', 'sm')}` : ''}
+    </div>
+    ${filaGuardar('guardar_marca', M, 'gps-marca')}
+    <div class="mapa-caja"><div class="minimap grande" id="mini-marca"></div><div class="mapa-lado">${ib('releer_gps_marca', 'current-location', 'gps', '', 'sm')}</div></div>`;
+}
+function recordarMarca() {
+  const n = $('#marca-nombre'), t = $('#marca-nota');
+  if (n) M.nombre = n.value; if (t) M.nota = t.value;
+}
+function montarMarca(raiz) {
+  $$('[data-in="foto-marca"]', raiz).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && tomarFotoMarca(inp.files[0])));
+  const el = $('#mini-marca', raiz);
+  if (el) { const mm = miniMapa(el, M.pos, (p) => { M.pos = p; M.gps = 'ok'; pintarGpsMarca(); }); M.mover = mm.mover; }
+}
+function pintarGpsMarca() { const el = $('#gps-marca'); if (el) { el.innerHTML = gpsCorto(M); el.classList.toggle('alerta', !!(M.pos && esAproximada(M.pos))); } }
+async function fotosDe(blob) {
+  const img = await cargarImagen(blob);
+  return { grande: await lienzoABlob(escalar(img, C.FOTO_LADO), C.FOTO_CALIDAD, false), mini: await lienzoABlob(escalar(img, C.MINIATURA_LADO), C.MINIATURA_CALIDAD, false) };
+}
+async function cuadroMarca() {
+  const E = M.enc; if (!E) return;
+  E.sucio = false;
+  const cv = cuadroDe(E, C.FOTO_LADO), b = await lienzoABlob(cv, C.FOTO_CALIDAD, false);
+  soltarLienzo(cv);
+  if (M.enc !== E) return;
+  M.foto = b;
+  if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl);
+  M.vistaUrl = URL.createObjectURL(M.foto);
+  const v = $('#vista-marca'); if (v) v.src = M.vistaUrl;
+}
+async function tomarFotoMarca(file) {
+  try {
+    recordarMarca();
+    const img = await cargarImagen(file);
+    if (M.enc) soltarLienzo(M.enc.img);
+    M.enc = nuevoEncuadre(escalar(img, C.ENCUADRE_FUENTE));
+    await cuadroMarca();
+    dibujarHoja();
+    hojaEncuadre(M.enc, async () => { await cuadroMarca(); });
+  } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
+}
+// Encuadrar en su propia hoja (puntos y "Mira esto"): la foto cuadrada se ve completa y se ajusta con los dedos
+function hojaEncuadre(E, alListo) {
+  abrirHoja(() => `${cabeza(`${ic('crop')} ${esc(C.AYUDA.encuadrar)}`)}
+    <div class="foto-caja"><canvas class="encuadre" id="encuadre-solo"></canvas></div>
+    <p class="tiny pista-abajo">${ic('arrows-move')} ${esc(C.ENCUADRE_PISTA)}</p>
+    <button class="btn block guardar" data-act="encuadre_listo" style="margin-top:12px">${ic('check')} Listo</button>`,
+  (raiz) => { const cv = $('#encuadre-solo', raiz); if (cv) montarEncuadre(cv, E, () => alListo()); raiz._encuadre = alListo; }, 'encuadre');
+}
+// conMedia: solo para hallazgos públicos (la mediana es la foto del muro); nunca en carpetas privadas
+async function subirFotosDe(fotos, carpeta, conMedia) {
+  if (!fotos || !fotos.grande) return { pFoto: null, pMini: null, pMedia: null };
+  const id = uuid(), pFoto = `${carpeta}/${id}.${ext(fotos.grande)}`, pMini = `${carpeta}/${id}_t.${ext(fotos.mini)}`;
+  const pMedia = conMedia && fotos.media && !carpeta.startsWith('priv:') ? `${carpeta}/${id}_m.${ext(fotos.media)}` : null;
+  await api.upload(pFoto, fotos.grande);
+  try {
+    await api.upload(pMini, fotos.mini);
+    if (pMedia) await api.upload(pMedia, fotos.media);
+  } catch (e) { api.removeFiles([pFoto, pMini, pMedia].filter(Boolean)).catch(() => null); throw e; }
+  return { pFoto, pMini, pMedia };
+}
+const carpetaEncuentro = (gid) => `priv:${S.user.id}/enc/${gid}`;
+async function guardarMarca(btn) {
+  recordarMarca();
+  const punto = M.modo === 'punto', nombre = M.nombre.trim(), nota = M.nota.trim();
+  if (punto && !nombre) { const n = $('#marca-nombre'); if (n) n.focus(); return aviso('Ponle un nombre', 'pencil'); }
+  if (!punto && !nota) { const t = $('#marca-nota'); if (t) t.focus(); return aviso('Escribe una nota corta', 'pencil'); }
+  if (!M.pos) return aviso('Falta la ubicación: toca el mapa', 'map-pin');
+  ocupado(btn, true);
+  if (M.enc && M.enc.sucio) await cuadroMarca();
+  const D = encuentroActual(), gid = M.gid;
+  const fila = punto ? { group_id: gid, name: nombre, note: nota || null, lat: M.pos.lat, lng: M.pos.lng }
+    : { group_id: gid, note: nota, lat: M.pos.lat, lng: M.pos.lng, created_at: new Date().toISOString() };
+  let fotos = null, subidas = null;
+  try {
+    fotos = M.foto ? await fotosDe(M.foto) : null;
+    if (!navigator.onLine) throw new TypeError('Failed to fetch');
+    subidas = await subirFotosDe(fotos, carpetaEncuentro(gid));
+    Object.assign(fila, { photo: subidas.pFoto, thumb: subidas.pMini });
+    if (punto) await api.addPunto(fila); else { await api.addMira(fila); api.dispararPush(); }
+    cerrarHoja(); aviso(punto ? 'Punto propuesto' : 'Marcado en el mapa del grupo', punto ? 'flag' : 'eye');
+    if (D) await D.cargar();
+  } catch (err) {
+    if (subidas && subidas.pFoto) api.removeFiles([subidas.pFoto, subidas.pMini]).catch(() => null);
+    if (!esErrorRed(err)) { ocupado(btn, false); return fallo(err); }
+    delete fila.photo; delete fila.thumb;
+    try { await guardarPendiente({ tipo: punto ? 'punto' : 'mira', datos: fila, fotos }); }
+    catch (err2) { ocupado(btn, false); return fallo(err); }
+    cerrarHoja(); aviso(C.PENDIENTE_GUARDADO, 'cloud-off');
+  }
+}
+// Juego: cuando tus "Mira esto" ganan un premio, se celebra (solo dentro del grupo)
+function revisarPremioMira(D) {
+  const e = D.e; if (!e || !e.grupo.juego) { D.premio = null; return; }
+  const yo = e.miembros.find((m) => m.user_id === S.user.id); if (!yo) return;
+  const n = nivelPremio(yo.premio || 0);
+  if (D.premio != null && n > D.premio) {
+    const pr = C.PREMIOS[n];
+    setTimeout(() => {
+      abrirHoja(() => `${cabeza('')}<div class="unlock"><div class="burst" aria-hidden="true"></div>
+        <h1 class="serif unlock-t">¡Premio!</h1>
+        <div class="premio-nuevo"><div class="pin-muestra">${pinHTML('#3F6E73', 'eye', n, yo.premio_color)}</div>
+        <p><b>${esc(C.ENCUENTRO_PREMIO.replace('{grupo}', e.grupo.name).replace('{premio}', pr ? pr.nombre : ''))}</b></p>
+        ${n >= 100 ? `<p class="tiny">${esc(C.AYUDA.color_premio)}</p>${selectorColorPremio('grupo', e.grupo.id, yo.premio_color || 'oro')}` : ''}</div>
+        <button class="btn block" data-act="cerrar" style="margin-top:18px">${ic('check')}</button></div>`, null, 'logro');
+      confeti(160, 2200);
+    }, 300);
+  }
+  D.premio = n;
+}
+
+/* Ubicación por tiempo limitado: solo con la app abierta; se guarda únicamente el último punto */
+async function iniciarCompartir(gid, minutos, btn) {
+  ocupado(btn, true);
+  let p;
+  try { p = await getPos(); } catch (err) { ocupado(btn, false); return aviso(C.GUIA_SIN_GPS, 'current-location'); }
+  try {
+    const hasta = await api.compartirUbicacion(gid, p, minutos);
+    // compartir con otro grupo reemplaza al anterior: ese grupo deja de verte
+    if (S.comparte && S.comparte.gid !== gid) api.dejarDeCompartir(S.comparte.gid).catch(() => null);
+    pararCompartir(true);
+    S.comparte = { gid, hasta: new Date(hasta).getTime(), ultimo: { p, t: Date.now() }, pos: p, watch: null, tFin: null, tPulso: null };
+    vigilarCompartir(); pintarFranjaCompartir();
+    aviso(`Compartiendo tu ubicación ${minutos} min`, 'current-location');
+    const D = encuentroActual(); if (D) D.cargar();
+  } catch (err) { ocupado(btn, false); fallo(err); }
+}
+function vigilarCompartir() {
+  const X = S.comparte; if (!X) return;
+  if (Date.now() >= X.hasta) return pararCompartir(false);
+  clearTimeout(X.tFin);
+  X.tFin = setTimeout(() => { pararCompartir(false); const D = encuentroActual(); if (D) D.cargar(); }, X.hasta - Date.now() + 500);
+  if (navigator.geolocation && X.watch == null) {
+    X.watch = navigator.geolocation.watchPosition((pos) => {
+      const p = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: Math.round(pos.coords.accuracy) };
+      X.pos = p;
+      if (distancia(p, X.ultimo.p) >= 50) enviarPosicion(X, p);
+    }, () => null, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+  }
+  clearInterval(X.tPulso);
+  X.tPulso = setInterval(() => { if (X.pos && Date.now() - X.ultimo.t >= 60000) enviarPosicion(X, X.pos); }, 15000);
+}
+async function enviarPosicion(X, p) {
+  X.ultimo = { p, t: Date.now() };
+  try { const h = await api.compartirUbicacion(X.gid, p, null); if (!h && S.comparte === X) pararCompartir(false); }
+  catch (err) { /* sin red: se intenta con la siguiente lectura */ }
+}
+function pausarCompartir() {
+  const X = S.comparte; if (!X) return;
+  if (X.watch != null && navigator.geolocation) navigator.geolocation.clearWatch(X.watch);
+  X.watch = null; clearInterval(X.tPulso);
+}
+/* Franja "Compartiendo tu ubicación": en todas las pantallas mientras dure, con Suspender.
+   No sale en el mapa del mismo grupo, donde el panel ya lo muestra. */
+function pintarFranjaCompartir() {
+  const el = $('#franja-compartir'); if (!el) return;
+  const X = S.comparte, g = X && miGrupo(X.gid);
+  const ver = !!(X && g) && !(S.tab === 'map' && S.grupo && S.grupo.gid === X.gid);
+  document.body.classList.toggle('compartiendo', ver);
+  if (!ver) { soltarFoco(el); el.hidden = true; el.innerHTML = ''; return; }
+  const quedan = Math.max(1, Math.ceil((X.hasta - Date.now()) / 60000));
+  el.hidden = false;
+  el.innerHTML = `<button type="button" class="row grow" data-act="grupo_mapa" data-id="${X.gid}" style="text-align:left;min-width:0">${ic('current-location')}
+      <span class="grow" style="min-width:0"><b>${esc(C.COMPARTIENDO_TITULO)}</b><span class="franja-detalle">${esc(C.COMPARTIENDO_DETALLE.replace('{g}', g.name).replace('{m}', quedan))}</span><span class="tiny">${esc(C.COMPARTIENDO_ABIERTA)}</span></span></button>
+    <button type="button" class="btn sm alt" data-act="dejar_compartir">${ic('player-pause')} ${esc(C.COMPARTIR_SUSPENDER)}</button>`;
+  document.body.style.setProperty('--franja-alto', el.offsetHeight + 'px'); // lo de abajo sube lo que mida la franja
+}
+setInterval(() => { if (S.comparte) pintarFranjaCompartir(); }, 30000);
+function pararCompartir(silencio) {
+  const X = S.comparte; if (!X) return;
+  pausarCompartir(); clearTimeout(X.tFin); S.comparte = null; pintarFranjaCompartir();
+  if (!silencio) aviso('Dejaste de compartir tu ubicación', 'current-location');
+}
+
+/* Ajustes (quien administra): juego, tema de colección y acuerdos */
+function hojaAjustesEncuentro() {
+  const D = encuentroActual(); if (!D || !D.e) return;
+  const g = D.e.grupo, uso = usoDe(g.uso);
+  abrirHoja(() => `${cabeza(`${ic('adjustments')} ${esc(C.AYUDA.encuentro_ajustes)}`)}
+    <div class="field"><label>${ic('gift')} ${esc(C.ENCUENTRO_JUEGO)}</label><div class="toggle" data-pick="juego">
+      <button type="button" data-act="elegir" data-v="0" class="${!g.juego ? 'on' : ''}">Apagado</button>
+      <button type="button" data-act="elegir" data-v="1" class="${g.juego ? 'on' : ''}">Encendido</button></div>
+      <p class="tiny">${esc(C.ENCUENTRO_JUEGO_TEXTO)}</p></div>
+    <div class="field"><label for="enc-tema">${ic('sparkles')} Tema de colección</label><input id="enc-tema" class="in" maxlength="${C.ENCUENTRO_TEMA_MAX}" value="${esc(g.tema || '')}" placeholder="${esc(C.ENCUENTRO_TEMA_PISTA)}" autocomplete="off"></div>
+    <div class="field"><label for="enc-acuerdo">${ic('info-circle')} Acuerdo</label><textarea id="enc-acuerdo" class="in" maxlength="${C.ENCUENTRO_ACUERDO_MAX}" rows="2" placeholder="${esc((uso && uso.acuerdo) || '')}">${esc(g.acuerdo || '')}</textarea></div>
+    <button class="btn block" data-act="guardar_ajustes_encuentro">${ic('check')} Guardar</button>`, null, 'ajustes_encuentro');
+}
+function hojaMiembroEncuentro(uid) {
+  const D = encuentroActual(), e = D && D.e, m = e && e.miembros.find((x) => x.user_id === uid);
+  if (!m) return;
+  abrirHoja(() => `${cabeza(`<span class="row">${avatar(m)} ${esc(m.name)}</span>`)}
+    <div class="list">
+      ${e.yo.duena ? `<button class="li" data-act="coadmin_encuentro" data-id="${uid}" data-v="${m.coadmin ? '0' : '1'}">${ic('shield')}<b class="grow" style="text-align:left">${m.coadmin ? 'Quitar cargo de coadministradora' : 'Nombrar coadministradora'}</b></button>` : ''}
+      <button class="li" data-act="sacar_encuentro" data-id="${uid}">${ic('user-minus')}<b class="grow" style="text-align:left">Sacar del grupo</b></button>
+    </div>`, null, 'miembro_encuentro');
+}
+
+/* ---------------------------------------------------------------------
+   NOTIFICACIONES (push): texto genérico; el detalle solo dentro de la app
+   --------------------------------------------------------------------- */
+const pushSoportado = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const esIphone = () => /iPhone|iPad|iPod/.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function bytesDe(b64) {
+  const s = atob(String(b64).replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((String(b64).length + 3) % 4));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+async function suscripcionActual() {
+  if (!pushSoportado() || !navigator.serviceWorker.controller && !(await navigator.serviceWorker.getRegistration())) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+function datosSuscripcion(sub) { const j = sub.toJSON(); return { endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }; }
+async function activarPush() {
+  if (!pushSoportado()) { aviso(esIphone() && !yaInstalada() ? C.PUSH_IPHONE : C.PUSH_NO_SOPORTA, 'bell-off'); return false; }
+  if (esIphone() && !yaInstalada()) { aviso(C.PUSH_IPHONE, 'device-mobile'); return false; }
+  const permiso = await Notification.requestPermission();
+  if (permiso !== 'granted') { aviso(C.PUSH_BLOQUEADAS, 'bell-off'); return false; }
+  try {
+    const llave = await api.llavePush();
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (sub && sub.options && sub.options.applicationServerKey) {
+      const actual = new Uint8Array(sub.options.applicationServerKey), nueva = bytesDe(llave);
+      if (actual.length !== nueva.length || actual.some((x, i) => x !== nueva[i])) { await sub.unsubscribe().catch(() => null); sub = null; }
+    }
+    sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytesDe(llave) });
+    await api.registrarPush(datosSuscripcion(sub));
+    S.push = await api.pushPrefs();
+    aviso(C.PUSH_ACTIVAS, 'bell');
+    return true;
+  } catch (e) { fallo(e); return false; }
+}
+async function desactivarPush(silencio) {
+  try {
+    const sub = await suscripcionActual();
+    if (sub) { const ep = sub.endpoint; await sub.unsubscribe().catch(() => null); await api.quitarPush(ep).catch(() => null); }
+    S.push = null;
+    if (!silencio) aviso('Notificaciones desactivadas en este teléfono', 'bell-off');
+  } catch (e) { if (!silencio) fallo(e); }
+}
+// Al abrir la app: si este teléfono ya tiene notificaciones, se confirma con la cuenta actual
+async function sincronizarPush() {
+  try {
+    if (!pushSoportado() || Notification.permission !== 'granted') return;
+    const sub = await suscripcionActual(); if (!sub) return;
+    await api.registrarPush(datosSuscripcion(sub));
+    S.push = await api.pushPrefs();
+  } catch (e) { /* sin red: se intenta la próxima vez */ }
+}
+// Al crear o entrar a un grupo de encuentro
+async function ofrecerPush() {
+  if (!pushSoportado() && !esIphone()) return;
+  try { if (pushSoportado() && Notification.permission === 'granted' && await suscripcionActual()) return; } catch (e) { /* sigue */ }
+  if (pushSoportado() && Notification.permission === 'denied') return;
+  const P = { paso: 1 };
+  const hoja = { render: () => `${cabeza(`${ic('bell')} Notificaciones`)}
+    ${P.paso === 1 ? `<p style="font-size:18px">${esc(C.PUSH_OFRECER)}</p>
+      ${esIphone() && !yaInstalada() ? `<p class="tiny">${esc(C.PUSH_IPHONE)}</p>` : ''}
+      <button class="btn block" data-act="push_ofrecer_si">${ic('bell')} ${esc(C.PUSH_ACTIVAR)}</button>
+      <button class="btn alt block" data-act="cerrar" style="margin-top:10px">Ahora no</button>`
+    : `<p>${esc(C.PUSH_ACTIVAS)}</p>
+      <label class="check"><input type="checkbox" id="push-sonido"> <span>${esc(C.PUSH_PREFS.find((x) => x.k === 'sonido').nombre)}</span></label>
+      <button class="btn block" data-act="push_ofrecer_listo">${ic('check')} Listo</button>`}`, tipo: 'push_ofrecer', datos: P };
+  pila.push(hoja); dibujarHoja();
+}
+async function pintarNotificaciones() {
+  const el = $('#sec-notif'); if (!el) return;
+  let estado = 'apagadas';
+  if (!pushSoportado()) estado = esIphone() && !yaInstalada() ? 'iphone' : 'no';
+  else if (esIphone() && !yaInstalada()) estado = 'iphone';
+  else if (Notification.permission === 'denied') estado = 'bloqueadas';
+  else if (Notification.permission === 'granted' && await suscripcionActual().catch(() => null)) estado = 'activas';
+  if (estado === 'activas' && !S.push) S.push = await api.pushPrefs().catch(() => null);
+  const p = S.push || {};
+  const prefs = C.PUSH_PREFS.filter((x) => !x.admin || S.me.is_admin);
+  const resumen = estado === 'activas' ? C.PLEGAR_NOTIF_ACTIVAS.replace('{n}', prefs.filter((x) => p[x.k]).length).replace('{t}', prefs.length)
+    : C.PLEGAR_NOTIF[estado] || '';
+  el.innerHTML = cabezaPlegable('notif', 'bell', 'Notificaciones', resumen) + `<div class="plegable" ${plegadoAbierto('notif') ? '' : 'hidden'}>
+    ${estado === 'no' ? `<p class="muted">${esc(C.PUSH_NO_SOPORTA)}</p>` : ''}
+    ${estado === 'iphone' ? `<p class="muted">${esc(C.PUSH_IPHONE)}</p>${tipoInstalacion() ? `<button class="btn alt block" data-act="instalar">${ic('device-mobile')} ${esc(C.INSTALAR_BOTON)}</button>` : ''}` : ''}
+    ${estado === 'bloqueadas' ? `<p class="muted">${esc(C.PUSH_BLOQUEADAS)}</p>` : ''}
+    ${estado === 'apagadas' ? `<button class="btn alt block" data-act="activar_push">${ic('bell')} ${esc(C.PUSH_ACTIVAR)}</button>` : ''}
+    ${estado === 'activas' ? `<div class="list">${C.PUSH_PREFS.filter((x) => !x.admin || S.me.is_admin).map((x) =>
+      `<button class="li interruptor ${p[x.k] ? 'on' : ''}" data-act="push_pref" data-k="${x.k}" role="switch" aria-checked="${p[x.k] ? 'true' : 'false'}">
+        <span class="grow" style="text-align:left">${esc(x.nombre)}</span><span class="sw" aria-hidden="true"></span></button>`).join('')}</div>
+      <button class="linkbtn" data-act="desactivar_push" style="margin-top:6px">${ic('bell-off')} ${esc(C.PUSH_DESACTIVAR)}</button>` : ''}</div>`;
+}
+function resumenNotif() {
+  const el = $('#resumen-notif'); if (!el || !S.push) return;
+  const prefs = C.PUSH_PREFS.filter((x) => !x.admin || S.me.is_admin);
+  el.textContent = '· ' + C.PLEGAR_NOTIF_ACTIVAS.replace('{n}', prefs.filter((x) => S.push[x.k]).length).replace('{t}', prefs.length);
+}
+/* Secciones plegables del perfil: cerradas de inicio con un resumen; el teléfono recuerda si quedaron abiertas */
+function plegadoAbierto(k) { try { return localStorage.getItem('cg_plegado_' + k) === '1'; } catch (e) { return false; } }
+function cabezaPlegable(k, icono, titulo, resumen) {
+  const ab = plegadoAbierto(k);
+  return `<button type="button" class="sec-cab" data-act="plegar" data-k="${k}" aria-expanded="${ab}">${ic(icono)}<span class="grow"><b>${esc(titulo)}</b>
+    <span class="tiny" id="resumen-${k}">${resumen ? '· ' + esc(resumen) : ''}</span></span>${ic(ab ? 'chevron-down' : 'chevron-right')}</button>`;
+}
+function abrirPlegable(k, abrir) {
+  try { localStorage.setItem('cg_plegado_' + k, abrir ? '1' : '0'); } catch (e) { /* nada */ }
+  const cab = $(`.sec-cab[data-k="${k}"]`); if (!cab) return;
+  const cuerpo = cab.nextElementSibling;
+  if (cuerpo) cuerpo.hidden = !abrir;
+  cab.setAttribute('aria-expanded', abrir ? 'true' : 'false');
+  const flecha = cab.querySelector('.ic:last-child'); if (flecha) flecha.outerHTML = ic(abrir ? 'chevron-down' : 'chevron-right');
+}
+
+/* ---------------------------------------------------------------------
+   SIN CONEXIÓN: registros que esperan señal (guardados en el teléfono)
+   --------------------------------------------------------------------- */
+const BDP = {
+  abrir() {
+    return new Promise((res, rej) => {
+      if (!window.indexedDB) return rej(new Error('SIN_BD'));
+      const r = indexedDB.open('cg-app', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('pendientes', { keyPath: 'id' });
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  },
+  async hacer(modo, fn) {
+    const db = await BDP.abrir();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('pendientes', modo); let out;
+      const q = fn(tx.objectStore('pendientes')); if (q) q.onsuccess = () => { out = q.result; };
+      tx.oncomplete = () => { db.close(); res(out); }; tx.onerror = () => { db.close(); rej(tx.error); };
+    });
+  },
+  todos: (uid) => BDP.hacer('readonly', (st) => st.getAll()).then((l) => (l || []).filter((x) => x.uid === uid).sort((a, b) => a.creado.localeCompare(b.creado))),
+  poner: (x) => BDP.hacer('readwrite', (st) => st.put(x)),
+  quitar: (id) => BDP.hacer('readwrite', (st) => st.delete(id))
+};
+async function guardarPendiente(x) {
+  const item = Object.assign({ id: uuid(), uid: S.user.id, creado: new Date().toISOString(), estado: 'pendiente' }, x);
+  await BDP.poner(item);
+  await contarPendientes();
+  return item;
+}
+async function contarPendientes() {
+  try { S.pendientes = S.user ? await BDP.todos(S.user.id) : []; } catch (e) { S.pendientes = []; }
+  pintarConexion(); pintarPendientes();
+}
+function pintarConexion() {
+  let el = $('#conexion');
+  const sin = !navigator.onLine, n = S.user ? (S.pendientes || []).length : 0;
+  if (!sin && !n) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('button'); el.id = 'conexion'; el.className = 'conexion'; el.dataset.act = 'ver_pendientes'; document.body.appendChild(el); }
+  el.classList.toggle('sin', sin);
+  el.setAttribute('aria-label', sin ? C.SIN_CONEXION : C.PENDIENTES_TITULO);
+  el.innerHTML = `${ic(sin ? 'cloud-off' : 'cloud-upload')}<span>${sin ? esc(C.SIN_CONEXION) : esc(C.PENDIENTES_TITULO)}${n ? ` · ${n}` : ''}</span>`;
+}
+let subiendo = false;
+async function subirPendientes() {
+  if (subiendo || !S.user || !navigator.onLine) return;
+  subiendo = true; let subidos = 0;
+  try {
+    for (const x of await BDP.todos(S.user.id)) {
+      if (x.estado === 'duda' || x.estado === 'error') continue;
+      try { await subirUno(x); await BDP.quitar(x.id); subidos++; }
+      catch (e) {
+        if (e && e.duda) { x.estado = 'duda'; await BDP.poner(x); continue; }
+        if (esErrorRed(e)) break;
+        x.estado = 'error'; x.error = mensajeError(e); await BDP.poner(x);
+      }
+    }
+  } finally { subiendo = false; await contarPendientes(); }
+  if (subidos) {
+    aviso(C.PENDIENTES_SUBIDOS.replace('{n}', subidos), 'cloud-upload');
+    S.stats = null; S.feed = []; refrescarActual();
+    const D = encuentroActual(); if (D) D.cargar();
+  }
+}
+async function subirUno(x) {
+  const d = Object.assign({}, x.datos), uid = S.user.id;
+  if (x.tipo === 'hallazgo') {
+    if (d.category_id === 'auto') { d.category_id = await asegurarMisHallazgos(); x.datos.category_id = d.category_id; }
+    if (!x.forzar) {
+      const ya = await api.findByName(d.name, d.category_id, d.group_id);
+      if (ya) { x.existente = ya; throw Object.assign(new Error('NOMBRE_REPETIDO'), { duda: true }); }
+    }
+    const f = await subirFotosDe(x.fotos, (x.privado ? 'priv:' : '') + uid, !x.privado);
+    d.colonia = d.lat != null ? await api.colonia(d.lat, d.lng) : null;
+    let id;
+    try { id = await api.addFind(Object.assign(d, { photo: f.pFoto, thumb: f.pMini }, f.pMedia ? { media: f.pMedia } : {})); }
+    catch (e) { if (f.pFoto) api.removeFiles([f.pFoto, f.pMini, f.pMedia].filter(Boolean)).catch(() => null); throw e; }
+    if (x.etiquetas && x.etiquetas.length && !d.is_private) await api.etiquetar(id, x.etiquetas).catch(() => null);
+  } else if (x.tipo === 'reencuentro') {
+    const f = await subirFotosDe(x.fotos, (x.privado ? 'priv:' : '') + uid);
+    d.colonia = d.lat != null ? await api.colonia(d.lat, d.lng) : null;
+    try { await api.addSighting(Object.assign(d, { photo: f.pFoto, thumb: f.pMini })); }
+    catch (e) { if (f.pFoto) api.removeFiles([f.pFoto, f.pMini]).catch(() => null); throw e; }
+  } else if (x.tipo === 'estado') {
+    if (x.pos && d.colonia == null) d.colonia = await api.colonia(x.pos.lat, x.pos.lng);
+    try { await api.addEstado(d); } catch (e) { if (!errTexto(e).includes('ESPERA')) throw e; }
+    api.dispararPush();
+  } else if (x.tipo === 'mira' || x.tipo === 'punto') {
+    const f = await subirFotosDe(x.fotos, carpetaEncuentro(d.group_id));
+    Object.assign(d, { photo: f.pFoto, thumb: f.pMini });
+    try { if (x.tipo === 'mira') { await api.addMira(d); api.dispararPush(); } else await api.addPunto(d); }
+    catch (e) { if (f.pFoto) api.removeFiles([f.pFoto, f.pMini]).catch(() => null); throw e; }
+  }
+}
+const ICONO_PENDIENTE = { hallazgo: 'camera', reencuentro: 'repeat', estado: 'circle-check', mira: 'eye', punto: 'flag' };
+function textoPendiente(x) {
+  const d = x.datos || {};
+  if (x.tipo === 'hallazgo') return d.name;
+  if (x.tipo === 'reencuentro') return `${C.AYUDA.reencuentro}${x.nombre ? ': ' + x.nombre : ''}`;
+  if (x.tipo === 'estado') return (C.ENCUENTRO_ESTADOS[d.kind] || {}).nombre || '';
+  if (x.tipo === 'mira') return `${C.ENCUENTRO_MIRA}: ${d.note || ''}`;
+  return `${C.AYUDA.punto_nuevo}: ${d.name || ''}`;
+}
+function pintarPendientes() {
+  const el = $('#pendientes'); if (!el) return;
+  const l = S.pendientes || [];
+  const rs = $('#resumen-offline');
+  if (rs) {
+    rs.textContent = l.length ? '· ' + C.PLEGAR_PENDIENTES.replace('{n}', l.length) : '';
+    if (l.length && !pintarPendientes.habia) abrirPlegable('offline', true);   // se abre sola solo cuando aparecen pendientes
+  }
+  pintarPendientes.habia = l.length > 0;
+  el.innerHTML = l.length ? `<h4 class="row">${ic('cloud-upload')} ${esc(C.PENDIENTES_TITULO)} · ${l.length}</h4>
+    <div class="list">${l.map((x) => `<div class="li pendiente ${x.estado}">
+      <span class="thumb">${ic(ICONO_PENDIENTE[x.tipo] || 'cloud-upload')}</span>
+      <div class="grow" style="min-width:0"><b>${esc(textoPendiente(x))}</b>
+        <div class="tiny">${esc(hace(x.creado))}${x.estado === 'duda' ? ` · ${esc(C.PENDIENTE_DUDA)}` : ''}${x.estado === 'error' ? ` · ${esc(x.error || '')}` : ''}</div></div>
+      ${x.estado === 'duda' ? `${ib('pendiente_mismo', 'repeat', 'reencuentro', `data-id="${x.id}"`, 'sm')}${ib('pendiente_otro', 'pencil', 'editar', `data-id="${x.id}"`, 'sm')}` : ''}
+      ${ib('pendiente_borrar', 'trash', 'borrar', `data-id="${x.id}"`, 'sm')}</div>`).join('')}</div>
+    ${navigator.onLine ? `<button class="btn alt block" data-act="subir_ahora" style="margin-top:8px">${ic('cloud-upload')} ${esc(C.AYUDA.subir_ahora)}</button>` : ''}` : '';
+}
+// La colección automática: se reutiliza si ya existe; si no, se crea gris y sin gracia para animar a nombrarla
+async function asegurarMisHallazgos() {
+  const ya = S.cats.find((c) => c.automatica) || S.cats[0];
+  if (ya) return ya.id;
+  const c = await api.addCat({ name: C.MIS_HALLAZGOS_NOMBRE, icon: C.MIS_HALLAZGOS_ICONO, color: C.MIS_HALLAZGOS_COLOR, automatica: true });
+  S.cats = await api.listCats(S.user.id);
+  return c.id;
+}
+async function guardarHallazgoSinConexion(btn, o) {
+  try {
+    const priv = !o.grupo && R.priv;
+    const fotos = R.original ? await prepararFotos(!priv) : null;
+    await guardarPendiente({ tipo: 'hallazgo', privado: priv, fotos, etiquetas: priv ? [] : R.etiquetas.slice(),
+      datos: Object.assign({ category_id: o.cat, group_id: o.grupo, name: o.nombre, note: o.nota || null, is_private: priv, created_at: new Date().toISOString() },
+        o.sinMapa ? { en_mapa: false } : { lat: R.pos.lat, lng: R.pos.lng, accuracy: R.pos.acc }) });
+    cerrarTodo();
+    const g = o.grupo ? miGrupo(o.grupo) : null, ct = o.cat === 'auto' ? { icon: C.MIS_HALLAZGOS_ICONO, color: C.MIS_HALLAZGOS_COLOR } : o.cat ? S.cats.find((x) => x.id === o.cat) : null;
+    celebrarHallazgo({ icono: (ct || g || {}).icon, color: (ct || g || {}).color, titulo: o.nombre, detalle: C.PENDIENTE_GUARDADO, foto: R.vistaUrl });
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+async function guardarReencuentroSinConexion(btn, c) {
+  try {
+    const fotos = R.original ? await prepararFotos() : null, pos = enMapa(c) ? R.pos || null : null;
+    await guardarPendiente({ tipo: 'reencuentro', privado: !!c.is_private, fotos, nombre: c.name,
+      datos: { find_id: c.id, lat: pos ? pos.lat : null, lng: pos ? pos.lng : null, note: (R.nota || '').trim() || null, created_at: new Date().toISOString() } });
+    cerrarTodo();
+    celebrarHallazgo({ icono: 'repeat', color: c.cat_color, titulo: c.name, detalle: C.PENDIENTE_GUARDADO, foto: R.original ? R.vistaUrl : '' });
+  } catch (e) { ocupado(btn, false); fallo(e); }
+}
+// Fotos que quedaron fuera de un grupo de encuentro borrado: cada quien las quita de su almacén
+async function procesarFotosPorBorrar() {
+  try {
+    const l = await api.fotosPorBorrar(); if (!l || !l.length) return;
+    await api.removeFiles(l.map((x) => x.path)).catch(() => null);
+    await api.quitarFotosPorBorrar(l.map((x) => x.id));
+  } catch (e) { /* se reintenta al abrir otra vez */ }
+}
+// Copias en el teléfono (las administra el trabajador del teléfono)
+const fotosSinConexion = () => { try { return localStorage.getItem('cg_fotos_offline') !== '0'; } catch (e) { return true; } };
+function alTrabajador(msg) {
+  return new Promise((res) => {
+    const sw = 'serviceWorker' in navigator && navigator.serviceWorker.controller;
+    if (!sw) return res(null);
+    const ch = new MessageChannel(); const t = setTimeout(() => res(null), 4000);
+    ch.port1.onmessage = (e) => { clearTimeout(t); res(e.data); };
+    sw.postMessage(msg, [ch.port2]);
+  });
+}
+async function pintarSinConexion() {
+  const el = $('#sec-offline'); if (!el) return;
+  const si = fotosSinConexion();
+  const n = (S.pendientes || []).length;
+  if (n && !pintarPendientes.habia) { try { localStorage.setItem('cg_plegado_offline', '1'); } catch (e) { /* nada */ } }   // con pendientes nuevos se abre sola
+  el.innerHTML = cabezaPlegable('offline', 'cloud-off', C.OFFLINE_TITULO, n ? C.PLEGAR_PENDIENTES.replace('{n}', n) : '') + `<div class="plegable" ${plegadoAbierto('offline') ? '' : 'hidden'}>
+    <div id="pendientes"></div>
+    <button class="li interruptor ${si ? 'on' : ''}" data-act="fotos_offline" role="switch" aria-checked="${si}"><span class="grow" style="text-align:left">${esc(C.GUARDAR_FOTOS)}</span><span class="sw" aria-hidden="true"></span></button>
+    <div class="row between" style="margin-top:8px"><span class="tiny grow" id="espacio">…</span><button class="btn alt sm" data-act="liberar_espacio">${ic('eraser')} ${esc(C.LIBERAR)}</button></div></div>`;
+  pintarPendientes();
+  const r = await alTrabajador({ tipo: 'espacio' });
+  const e = $('#espacio'); if (e) e.textContent = r ? textoEspacio(r) : '';
+  const rs = $('#resumen-offline'); if (rs && !n && r) rs.textContent = '· ' + C.PLEGAR_ESPACIO.replace('{mb}', (r.fotos / 1048576).toFixed(1));
+}
+const textoEspacio = (r) => C.ESPACIO.replace('{mb}', (r.fotos / 1048576).toFixed(1)).replace('{tope}', Math.round(r.tope / 1048576)).replace('{t}', r.teselas);
+
+/* Trabajador del teléfono: abrir sin conexión, versión nueva y notificaciones */
+let trabajadorEsperando = null;
+function registrarTrabajador() {
+  if (!('serviceWorker' in navigator) || (window.__API_PRUEBAS__ && !window.__PROBAR_SW__)) return;
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    const avisarNueva = () => { if (reg.waiting && navigator.serviceWorker.controller) { trabajadorEsperando = reg.waiting; pintarVersionNueva(); } };
+    avisarNueva();
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing;
+      if (w) w.addEventListener('statechange', () => { if (w.state === 'installed') avisarNueva(); });
+    });
+    setInterval(() => { if (!document.hidden) reg.update().catch(() => null); }, 30 * 60 * 1000);
+  }).catch((e) => console.error(e));
+  let recargando = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (S.actualizando && !recargando) { recargando = true; location.reload(); return; }
+    if (S.user) alTrabajador({ tipo: 'ajustes', uid: S.user.id, fotos: fotosSinConexion() }); // primera vez que el trabajador toma el control
+  });
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.tipo === 'abrir') abrirRuta(d.url);
+    if (d.tipo === 'push') revisarAvisos();
+    // La red tardó y se mostró la copia guardada: llegó lo nuevo y el perfil se vuelve a pintar con eso
+    // lo nuevo llegó después de mostrar la copia: se vuelve a pintar una vez (con red muy lenta, no más de una vez cada 30 s)
+    if (d.tipo === 'datos_al_dia' && /profile_stats|mis_retos/.test(d.clave || '') && S.user && S.tab === 'perfil' && !pila.length && Date.now() - (S.alDiaAt || 0) > 30000) { S.alDiaAt = Date.now(); pintarPerfil(); }
+  });
+}
+function pintarVersionNueva() {
+  if (!trabajadorEsperando || $('#version-nueva')) return;
+  const b = document.createElement('button');
+  b.id = 'version-nueva'; b.className = 'version-nueva'; b.dataset.act = 'actualizar';
+  b.innerHTML = `${ic('refresh')}<span>${esc(C.VERSION_NUEVA)}</span>`;
+  document.body.appendChild(b);
+}
+function abrirRuta(url) {
+  let h = '';
+  try { h = new URL(url, location.href).hash; } catch (e) { h = ''; }
+  if (!h) return;
+  if (location.hash === h) rutaHash(h); else location.hash = h;
+}
+
+/* Tarjeta para compartir por WhatsApp */
+function cargarRemota(url) {
+  return new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+}
+async function tarjetaImagen(c) {
+  const W = 1080, H = 1350, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const x = cv.getContext('2d');
+  x.fillStyle = C.COLORES.papel; x.fillRect(0, 0, W, H);
+  x.strokeStyle = C.COLORES.tinta; x.lineWidth = 8; x.strokeRect(40, 40, W - 80, H - 80);
+  x.fillStyle = '#EADFCB'; x.fillRect(90, 90, W - 180, W - 180);
+  if (c.photo || c.thumb) {
+    const img = await cargarRemota(foto(c));
+    const k = Math.min((W - 220) / img.width, (W - 220) / img.height);
+    const w = img.width * k, h = img.height * k;
+    x.drawImage(img, (W - w) / 2, 90 + (W - 180 - h) / 2, w, h);
+  }
+  x.fillStyle = C.COLORES.tinta; x.textAlign = 'left';
+  x.font = 'bold 76px Georgia, serif'; x.fillText(String(c.name).slice(0, 24), 90, W + 20);
+  x.fillStyle = okColor(c.cat_color); x.font = 'bold 40px system-ui, sans-serif'; x.fillText(String(c.cat_name || '').slice(0, 30), 90, W + 85);
+  x.fillStyle = '#6B635A'; x.font = '36px system-ui, sans-serif';
+  x.fillText([c.user_name ? C.WHATSAPP_DE.replace('{n}', c.user_name) : '', c.colonia, fecha(c.created_at)].filter(Boolean).join(' · ').slice(0, 52), 90, W + 140);
+  x.fillStyle = C.COLORES.terracota; x.font = 'bold 34px Georgia, serif'; x.fillText('Collector Go', 90, H - 80);
+  x.fillStyle = '#6B635A'; x.font = '28px system-ui, sans-serif'; x.fillText(C.LEMA, 330, H - 80);
+  return new Promise((res) => cv.toBlob((b) => res(b), 'image/jpeg', 0.86));
+}
+function abrirWhatsApp(texto) { window.open('https://wa.me/?text=' + encodeURIComponent(texto), '_blank', 'noopener'); }
+// 2.0.4: cualquier hallazgo que quien lo reciba pueda abrir: público y fuera de grupos privados (propio o ajeno)
+const compartible = (c) => !!c && !c.is_private && (!c.group_id || c.group_public === true);
+async function compartirHallazgo(c, btn) {
+  const url = location.origin + location.pathname + '#f=' + c.id;
+  const texto = `${c.user_id === S.user.id ? C.WHATSAPP_TEXTO : C.WHATSAPP_TEXTO_AJENO.replace('{n}', c.user_name || '')}: ${c.name}\n${url}`;
+  ocupado(btn, true);
+  try {
+    if (navigator.canShare) {
+      const blob = await tarjetaImagen(c);
+      const file = new File([blob], `collector-go-${c.id.slice(0, 8)}.jpg`, { type: 'image/jpeg' });
+      if (navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], text: texto }); return; }
+    }
+    abrirWhatsApp(texto);
+  } catch (e) {
+    if (!(e && e.name === 'AbortError')) abrirWhatsApp(texto);
+  } finally { ocupado(btn, false); }
+}
+
+/* Perfil: crear y editar */
+function hojaPerfil(p, nuevo) {
+  const d = p || { name: '', bio: '', avatar: C.ICONOS_AVATAR[0], avatar_color: C.COLORES_CATEGORIA[0] };
+  return `${nuevo ? `<h1 class="serif" style="margin:6px 0 4px">Collector Go</h1><p class="muted">${ic('user')} Tu perfil</p>` : cabeza(ic('pencil'))}
+    <div class="field"><label for="p-nombre">${ic('user')} Nombre</label><input id="p-nombre" class="in" maxlength="40" value="${esc(d.name)}" placeholder="${esc(C.PERFIL_NOMBRE_PISTA)}"></div>
+    ${nuevo ? `<p class="tiny">${esc(C.PERFIL_NUEVO_NOTA)}</p>` : `<div class="field"><label for="p-bio">${ic('info-circle')} Frase</label><input id="p-bio" class="in" maxlength="120" value="${esc(d.bio || '')}" placeholder="Coleccionista de puertas"></div>
+    <div class="field"><label>${ic('sparkles')}</label>${selector('avatar', C.ICONOS_AVATAR, d.avatar)}</div>
+    <div class="field"><label>${ic('palette')}</label>${selector('color', C.COLORES_CATEGORIA, d.avatar_color, 'color')}</div>`}
+    <button class="btn block" data-act="${nuevo ? 'crear_perfil' : 'guardar_perfil'}">${ic('check')} ${nuevo ? 'Continuar' : 'Guardar'}</button>`;
+}
+// 2.0.4: al crear la cuenta solo se pide el nombre; el ícono y el color se eligen al azar y se cambian después en el perfil
+const alAzar = (lista) => lista[Math.floor(Math.random() * lista.length)];
+function leerPerfil(raiz) {
+  const bio = $('#p-bio', raiz);
+  return { name: $('#p-nombre', raiz).value.trim(), bio: bio ? bio.value.trim() || null : null,
+    avatar: valor(raiz, 'avatar') || alAzar(C.ICONOS_AVATAR), avatar_color: valor(raiz, 'color') || alAzar(C.COLORES_CATEGORIA) };
+}
+
+/* Silenciar: personas y grupos públicos de los que no formas parte */
+async function recargarSilencios() { S.mutes = await api.muteList(); }
+function trasSilencio() {
+  S.feed = [];
+  const top = hojaArriba();
+  if (top && top.tipo === 'perfil') { const D = $('.sheet')._perfil; if (D) D.cargar(); else dibujarHoja(); }
+  else if (top && top.datos && top.datos.cargar && (top.tipo === 'chat' || top.tipo === 'chats' || top.tipo === 'avisos')) top.datos.cargar();
+  else if (top) dibujarHoja();
+  refrescarActual();
+}
+function hojaSilenciados() {
+  const render = () => `${cabeza(`${ic('cg-silenciar')} ${esc(C.AYUDA.silenciados)}`)}
+    ${S.mutes.length ? `<div class="list">${S.mutes.map((m) => `<div class="li">
+      ${m.target_user ? `<button class="row grow" data-act="perfil" data-id="${m.target_user}" style="text-align:left">${avatar({ avatar: m.avatar, avatar_color: m.avatar_color })}<b class="grow">${esc(m.user_name || '—')}</b></button>`
+        : `<button class="row grow" data-act="grupo" data-id="${m.target_group}" style="text-align:left"><span class="avatar" style="background:${okColor(m.group_color)}">${ic(m.group_icon)}</span><b class="grow">${esc(m.group_name || '—')}</b>${ic('users')}</button>`}
+      ${ib('quitar_silencio', 'eye', 'quitar_silencio', `data-id="${m.id}"`, 'sm')}</div>`).join('')}</div>`
+      : `<div class="empty">${ic('eye')}<p>${esc(C.SILENCIADOS_VACIO)}</p></div>`}`;
+  abrirHoja(render, null, 'silenciados');
+  recargarSilencios().then(() => { if (hojaArriba() && hojaArriba().tipo === 'silenciados') dibujarHoja(); }).catch(fallo);
+}
+
+/* Vitrina: fotos públicas de un perfil, por categoría (se puede ver sin cuenta) */
+function invitacionHTML(conId) {
+  return `<div class="invita" ${conId ? 'id="invita"' : ''}><p>${esc(C.VITRINA_INVITACION)}</p>
+    <button class="btn block" data-act="entrar">${ic('user-plus')} ${esc(C.VITRINA_BOTON)}</button></div>`;
+}
+function vitrinaHTML(v, uid, conCuenta) {
+  const cats = (v.categorias || []).filter((c) => c.hallazgos && c.hallazgos.length);
+  return `<div class="vitrina">
+    <div class="row" style="gap:14px">${avatar(v, 'lg')}<div class="grow"><h2>${esc(v.name)}</h2>${v.bio ? `<div class="muted">${esc(v.bio)}</div>` : ''}
+      ${cats.length ? `<div class="colicons">${cats.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}</div></div>
+    ${conCuenta ? `<div class="row wrap" style="margin:14px 0">${ib('perfil', 'user', 'ver_perfil', `data-id="${uid}"`)}${S.user && uid === S.user.id ? ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${uid}"`) : ''}</div>` : invitacionHTML(true)}
+    ${cats.length ? cats.map((c) => `<div class="sec"><h3>${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total}</span></h3>
+      <div class="vgrid">${c.hallazgos.map((h) => `<figure class="vtile" data-act="${conCuenta ? 'ficha' : 'vitrina_invitar'}" data-id="${h.id}" role="button" aria-label="${esc(h.name)}">
+        <img src="${api.photoUrl(h.thumb || h.photo)}" alt="" loading="lazy"><figcaption><b>${esc(h.name)}</b>${h.colonia ? `<span>${ic('map-pin')} ${esc(h.colonia)}</span>` : ''}</figcaption></figure>`).join('')}</div></div>`).join('')
+      : `<div class="empty">${ic('photo')}<p>${esc(C.VITRINA_VACIA)}</p></div>`}
+    ${conCuenta || cats.reduce((n, c) => n + c.hallazgos.length, 0) <= 6 ? '' : invitacionHTML(false)}</div>`;
+}
+// Galería de una categoría de otra persona: solo lo público con foto, igual que su vitrina
+function abrirGaleriaCat(uid, cat) {
+  const D = { v: undefined };
+  const hoja = { render: () => galeriaCatHTML(D, uid, cat), tipo: 'galeria_cat' };
+  pila.push(hoja); dibujarHoja();
+  api.vitrina(uid).then((v) => { D.v = v || null; }).catch((e) => { D.v = null; fallo(e); })
+    .finally(() => { if (hojaArriba() === hoja) dibujarHoja(); });
+}
+function galeriaCatHTML(D, uid, cat) {
+  if (D.v === undefined) return cabeza(ic('photo')) + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!D.v) return cabeza(ic('photo')) + `<div class="empty">${ic('alert-triangle')}<p>Este perfil no está disponible</p></div>`;
+  const v = D.v, c = (v.categorias || []).find((x) => x.id === cat);
+  const items = c && c.hallazgos ? c.hallazgos : [];
+  return `${cabeza(c ? `<span class="row">${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total}</span></span>` : ic('photo'))}
+    <button class="row galeria-persona" data-act="perfil" data-id="${uid}" style="text-align:left">${avatar(v)}<div class="grow"><b>${esc(v.name)}${medallaNombre(uid)}</b>${c ? `<div class="muted tiny">${esc(C.GALERIA_DE.replace('{c}', c.name))}</div>` : ''}</div></button>
+    ${c && S.user && uid !== S.user.id ? (() => { const sigo = (S.sigoCols || []).some((x) => x.category_id === cat);
+      return `<button class="btn ${sigo ? 'alt' : ''} block seguir-col" data-act="seguir_coleccion" data-id="${cat}" aria-pressed="${sigo}" style="margin-bottom:12px">${ic(sigo ? 'user-check' : 'user-plus')} ${esc(sigo ? C.SIGUIENDO_COLECCION : C.SEGUIR_COLECCION)}</button>`; })() : ''}
+    ${items.length ? `<div class="vgrid">${items.map((h) => `<figure class="vtile" data-act="ficha" data-id="${h.id}" role="button" aria-label="${esc(h.name)}">
+      <img src="${api.photoUrl(h.thumb || h.photo)}" alt="" loading="lazy"><figcaption><b>${esc(h.name)}</b>${h.colonia ? `<span>${ic('map-pin')} ${esc(h.colonia)}</span>` : ''}</figcaption></figure>`).join('')}</div>`
+      : `<div class="empty">${ic('photo')}<p>${esc(C.GALERIA_VACIA)}</p></div>`}
+    <button class="btn alt block" data-act="ver_vitrina" data-id="${uid}" style="margin-top:14px">${ic('photo')} ${esc(C.GALERIA_VITRINA)}</button>`;
+}
+function abrirVitrina(uid) {
+  const D = { v: undefined };
+  const hoja = { render: () => cabeza(ic('photo')) + (D.v === undefined ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+    : D.v ? vitrinaHTML(D.v, uid, true) : `<div class="empty">${ic('alert-triangle')}<p>Este perfil no está disponible</p></div>`), tipo: 'vitrina' };
+  pila.push(hoja); dibujarHoja();
+  api.vitrina(uid).then((v) => { D.v = v || null; }).catch((e) => { D.v = null; fallo(e); })
+    .finally(() => { if (hojaArriba() === hoja) dibujarHoja(); });
+}
+// Sin cuenta: la vitrina ocupa la pantalla, con la invitación a unirse
+async function pantallaVitrina(uid) {
+  $('#app').innerHTML = `<main class="screen vitrina-pub"><div class="row" style="margin-bottom:16px"><img src="icon.svg" alt="" width="40" height="40">
+      <div class="grow"><b class="serif" style="font-size:20px">Collector Go</b><div class="tiny">${esc(C.LEMA)}</div></div></div>
+    <div id="vit"><div class="empty"><span class="spin">${ic('loader-2')}</span></div></div></main>`;
+  let v = null;
+  try { v = await api.vitrina(uid); } catch (e) { fallo(e); }
+  if (S.user || !$('#vit')) return;
+  $('#vit').innerHTML = v ? vitrinaHTML(v, uid, false) : `<div class="empty">${ic('alert-triangle')}<p>Este perfil no está disponible</p></div>${invitacionHTML(true)}`;
+}
+const destinoVitrina = () => { const m = location.hash.match(/^#v=([0-9a-f-]{36})$/i); return m ? m[1] : null; };
+
+/* Imagen tipo mosaico para compartir la vitrina por WhatsApp */
+async function iconoLienzo(nombre, color, lado) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = lado;
+  const x = cv.getContext('2d');
+  const n = okIcon(nombre);
+  if (esEmoji(n)) { x.font = `${Math.round(lado * 0.8)}px serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(n.slice(6), lado / 2, lado / 2 + 2); return cv; }
+  if (ICONOS_PROPIOS[n]) { x.drawImage(await cargarImagen(new Blob([ICONOS_PROPIOS[n]], { type: 'image/svg+xml' })), 0, 0, lado, lado); return cv; }
+  const r = await fetch(C.ICONOS_URL + n + '.svg');
+  if (!r.ok) throw new Error('ICONO');
+  const svg = (await r.text()).replace(/currentColor/g, color);
+  const img = await cargarImagen(new Blob([svg], { type: 'image/svg+xml' }));
+  x.drawImage(img, 0, 0, lado, lado);
+  cv.toDataURL(); // si el navegador no permite usar el ícono, falla aquí y no ensucia el mosaico
+  return cv;
+}
+function textoCorto(x, t, max) {
+  let s = String(t || '');
+  while (s.length > 1 && x.measureText(s).width > max) s = s.slice(0, -1);
+  return s === String(t || '') ? s : s.trimEnd() + '…';
+}
+async function mosaicoImagen(v) {
+  const W = 1080, H = 1350, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const x = cv.getContext('2d');
+  x.fillStyle = C.COLORES.papel; x.fillRect(0, 0, W, H);
+  x.strokeStyle = C.COLORES.tinta; x.lineWidth = 8; x.strokeRect(40, 40, W - 80, H - 80);
+  x.fillStyle = C.COLORES.tinta; x.font = 'bold 66px Georgia, serif'; x.textAlign = 'left';
+  x.fillText(textoCorto(x, v.name, W - 180), 90, 150);
+  // Hasta 9 fotos, alternando categorías
+  const cats = (v.categorias || []).filter((c) => c.hallazgos && c.hallazgos.length);
+  const colas = cats.map((c) => c.hallazgos.slice()), fotos = [];
+  while (fotos.length < 9 && colas.some((l) => l.length)) colas.forEach((l) => { if (l.length && fotos.length < 9) fotos.push(l.shift()); });
+  const imgs = await Promise.all(fotos.map((h) => cargarRemota(api.photoUrl(h.thumb || h.photo)).catch(() => null)));
+  const gap = 12, lado = (840 - gap * 2) / 3, x0 = (W - 840) / 2, y0 = 195;
+  for (let i = 0; i < 9; i++) {
+    const cx = x0 + (i % 3) * (lado + gap), cy = y0 + Math.floor(i / 3) * (lado + gap);
+    x.fillStyle = '#EADFCB'; x.fillRect(cx, cy, lado, lado);
+    const img = imgs[i];
+    if (img) {
+      const k = Math.min(lado / img.width, lado / img.height), w = img.width * k, h = img.height * k;
+      x.drawImage(img, cx + (lado - w) / 2, cy + (lado - h) / 2, w, h);
+    }
+    x.strokeStyle = C.COLORES.tinta; x.lineWidth = 3; x.strokeRect(cx, cy, lado, lado);
+  }
+  // Íconos de las colecciones
+  const yI = y0 + 840 + 85, paso = Math.min(190, (W - 180) / Math.max(1, cats.length));
+  for (let i = 0; i < cats.length; i++) {
+    const c = cats[i], cx = 90 + i * paso + 40;
+    x.fillStyle = okColor(c.color); x.beginPath(); x.arc(cx, yI, 40, 0, Math.PI * 2); x.fill();
+    x.strokeStyle = C.COLORES.tinta; x.lineWidth = 3; x.stroke();
+    try { x.drawImage(await iconoLienzo(c.icon, C.COLORES.papel, 44), cx - 22, yI - 22); }
+    catch (e) { x.fillStyle = C.COLORES.papel; x.font = 'bold 38px system-ui, sans-serif'; x.textAlign = 'center'; x.fillText(primerGrafema(c.name).toUpperCase(), cx, yI + 13); x.textAlign = 'left'; }
+    x.fillStyle = C.COLORES.tinta; x.font = '26px system-ui, sans-serif'; x.textAlign = 'center';
+    x.fillText(textoCorto(x, c.name, paso - 10), cx, yI + 76); x.textAlign = 'left';
+  }
+  x.fillStyle = C.COLORES.terracota; x.font = 'bold 34px Georgia, serif'; x.fillText('Collector Go', 90, H - 80);
+  x.fillStyle = '#6B635A'; x.font = '28px system-ui, sans-serif'; x.fillText(C.LEMA, 330, H - 80);
+  return new Promise((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('MOSAICO'))), 'image/jpeg', 0.86));
+}
+// Solo para tu propio perfil, el mosaico se prepara cuando el teléfono está desocupado, para compartirlo con un solo toque
+// (Safari y otros navegadores solo dejan compartir un archivo en el mismo instante del toque).
+const MOSAICOS = new Map();
+const cuandoDesocupado = (fn) => (window.requestIdleCallback ? requestIdleCallback(fn, { timeout: 3000 }) : setTimeout(fn, 1200));
+function prepararMosaico(uid) {
+  const ya = MOSAICOS.get(uid);
+  if (ya && (ya.estado === 'cargando' || Date.now() - ya.t < 10 * 60 * 1000)) return ya;
+  if (ya && ya.url) URL.revokeObjectURL(ya.url);
+  const M = { estado: 'cargando', url: null, file: null, texto: '', t: Date.now() };
+  MOSAICOS.set(uid, M);
+  M.listo = (async () => {
+    let v = null;
+    try { v = await api.vitrina(uid); } catch (e) { console.error(e); }
+    M.texto = `${S.user && uid === S.user.id ? C.WHATSAPP_VITRINA : C.WHATSAPP_VITRINA_DE.replace('{nombre}', v ? v.name : '')}\n${location.origin + location.pathname}#v=${uid}`;
+    if (v && (v.categorias || []).some((c) => c.hallazgos && c.hallazgos.length)) {
+      try {
+        const blob = await mosaicoImagen(v);
+        M.file = new File([blob], `collector-go-${uid.slice(0, 8)}.jpg`, { type: 'image/jpeg' });
+        M.url = URL.createObjectURL(blob);
+      } catch (e) { console.error(e); }
+    }
+    M.estado = 'listo'; M.t = Date.now();
+    return M;
+  })();
+  return M;
+}
+const puedeCompartirArchivo = (f) => !!(f && navigator.canShare && navigator.share && navigator.canShare({ files: [f] }));
+function compartirMosaico(M) {
+  if (puedeCompartirArchivo(M.file)) {
+    navigator.share({ files: [M.file], text: M.texto }).catch((e) => { if (!(e && e.name === 'AbortError')) abrirWhatsApp(M.texto); });
+  } else abrirWhatsApp(M.texto);
+}
+// Si aún no está listo (o el navegador no comparte archivos): vista previa con Enviar y Descargar
+function hojaMosaico(uid) {
+  const M = prepararMosaico(uid);
+  const hoja = { render: () => `${cabeza(`${ic('brand-whatsapp')} ${esc(C.AYUDA.whatsapp)}`)}
+    ${M.estado === 'cargando' ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : ''}
+    ${M.url ? `<img class="big mosaico" src="${M.url}" alt="">` : ''}
+    ${M.estado === 'listo' ? `<button class="btn block" data-act="enviar_mosaico" data-id="${uid}" style="margin-top:12px">${ic('brand-whatsapp')} Enviar</button>
+      ${M.url ? `<a class="btn alt block" href="${M.url}" download="collector-go-${uid.slice(0, 8)}.jpg" style="margin-top:10px">${ic('download')} ${esc(C.AYUDA.descargar)}</a>` : ''}` : ''}`, tipo: 'mosaico' };
+  pila.push(hoja); dibujarHoja();
+  M.listo.then(() => { if (hojaArriba() === hoja) dibujarHoja(); });
+}
+
+/* Buzón de peticiones a la administradora */
+const tipoBuzon = (id) => C.BUZON_TIPOS.find((t) => t.id === id) || C.BUZON_TIPOS[C.BUZON_TIPOS.length - 1];
+const estadoBuzon = (id) => C.BUZON_ESTADOS[id] || C.BUZON_ESTADOS.recibido;
+function metaBuzon() {
+  return { version: C.VERSION, dispositivo: String(navigator.userAgent || '').slice(0, 300), pantalla: `${screen.width}x${screen.height}`,
+    idioma: navigator.language || '', ultimo_error: S.ultimoError || null };
+}
+function resumenDispositivo(ua) {
+  ua = String(ua || '');
+  const so = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Mac OS/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'Otro';
+  const nav = /CriOS|Chrome/.test(ua) && !/Edg|SamsungBrowser/.test(ua) ? 'Chrome' : /FxiOS|Firefox/.test(ua) ? 'Firefox' : /SamsungBrowser/.test(ua) ? 'Samsung' : /Edg/.test(ua) ? 'Edge' : /Safari/.test(ua) ? 'Safari' : 'navegador';
+  return `${so} · ${nav}`;
+}
+function peticionHTML(r, admin, editando) {
+  const t = tipoBuzon(r.tipo), e = estadoBuzon(r.status), m = r.meta || {};
+  return `<div class="peticion">
+    <div class="row between">${admin ? `<button class="row" data-act="perfil" data-id="${r.user_id}">${avatar(r)}<b>${esc(r.user_name || '')}</b></button>` : ''}
+      <span class="row">${ic(t.icono)} <b>${esc(t.nombre)}</b></span><span class="estado e-${esc(r.status)}">${ic(e.icono)} ${esc(e.nombre)}</span></div>
+    <p>${esc(r.body)}</p>
+    ${r.screenshot ? `<a href="${api.photoUrl(r.screenshot)}" target="_blank" rel="noopener"><img class="captura" src="${api.photoUrl(r.screenshot)}" alt="Captura"></a>` : ''}
+    ${admin ? `<div class="tiny">v${esc(m.version || '?')} · ${esc(resumenDispositivo(m.dispositivo))}${m.ultimo_error ? ` · código ${esc(m.ultimo_error.codigo)}` : ''}</div>
+      ${m.ultimo_error ? `<details class="tiny"><summary>Último error</summary><pre>${esc(JSON.stringify(m.ultimo_error, null, 1))}</pre></details>` : ''}
+      <div class="toggle" style="margin:8px 0">${Object.keys(C.BUZON_ESTADOS).map((k) => `<button type="button" data-act="peticion_estado" data-id="${r.id}" data-v="${k}" class="${r.status === k ? 'on' : ''}" aria-label="${esc(C.BUZON_ESTADOS[k].nombre)}" data-tip="${esc(C.BUZON_ESTADOS[k].nombre)}">${ic(C.BUZON_ESTADOS[k].icono)}</button>`).join('')}</div>
+      ${r.reply && !editando ? `<div class="respuesta enviada">${ic('circle-check')} <span class="grow"><b>${esc(C.RESPUESTA_ENVIADA)}</b> ${esc(r.reply)}
+          ${r.replied_at ? `<span class="tiny"> · ${esc(hace(r.replied_at))}</span>` : ''}</span>${ib('editar_respuesta', 'pencil', 'editar', `data-id="${r.id}"`, 'sm')}</div>`
+        : `<textarea class="in" id="resp-${r.id}" maxlength="${C.BUZON_RESPUESTA_MAX}" placeholder="${esc(C.RESPUESTA_PISTA)}">${esc(r.reply || '')}</textarea>
+          <button class="btn sm" data-act="responder_peticion" data-id="${r.id}" style="margin-top:6px">${ic('send')} ${esc(C.RESPUESTA_ENVIAR)}</button>`}`
+      : r.reply ? `<div class="respuesta">${ic('message-circle')} <b>${esc(C.RESPUESTA_DE_ADMIN)}</b> ${esc(r.reply)}</div>` : ''}
+    <div class="row between" style="margin-top:6px"><span class="tiny">${esc(fecha(r.created_at))}</span>
+      <span class="row">${ib('borrar_peticion', 'trash', 'borrar', `data-id="${r.id}"`, 'sm')}</span></div></div>`;
+}
+function hojaBuzon() {
+  const D = { tipo: C.BUZON_TIPOS[0].id, texto: '', foto: null, fotoUrl: null, lista: null };
+  const hoja = { render: () => `${cabeza(`${ic('mail')} ${esc(C.AYUDA.buzon)}`)}
+    <p class="muted" style="margin:0 0 12px">${esc(C.BUZON_TEXTO)}</p>
+    <div class="toggle" style="margin-bottom:6px">${C.BUZON_TIPOS.map((t) => `<button type="button" data-act="buzon_tipo" data-v="${t.id}" class="${D.tipo === t.id ? 'on' : ''}" aria-label="${esc(t.nombre)}">${ic(t.icono)}<span style="font-size:15px">${esc(t.nombre)}</span></button>`).join('')}</div>
+    <div class="field"><textarea id="buzon-in" class="in" maxlength="${C.BUZON_MAX}" rows="4" placeholder="${esc(C.BUZON_PISTA)}">${esc(D.texto)}</textarea>
+      <div class="tiny" style="text-align:right"><span id="buzon-n">${D.texto.length}</span>/${C.BUZON_MAX}</div></div>
+    <div class="row" style="margin-bottom:12px">${D.fotoUrl ? `<img class="captura sm" src="${D.fotoUrl}" alt="">${ib('buzon_quitar_foto', 'x', 'quitar_captura', '', 'sm')}`
+      : `<label class="ib" data-tip="${esc(C.AYUDA.captura)}" aria-label="${esc(C.AYUDA.captura)}">${ic('photo-plus')}<input type="file" accept="image/*" hidden data-in="captura"></label>`}
+      <span class="tiny grow">${esc(C.AYUDA.captura)}</span></div>
+    <button class="btn block" data-act="enviar_buzon">${ic('send')} ${esc(C.AYUDA.enviar)}</button>
+    <div class="sec"><h3>${ic('inbox')} ${esc(C.BUZON_MIS)}</h3>
+      ${D.lista === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.lista.length ? `<div class="list">${D.lista.map((r) => peticionHTML(r, false)).join('')}</div>` : `<p class="muted">—</p>`}</div>`,
+  after: (r) => {
+    r._buzon = D;
+    $$('[data-in="captura"]', r).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && ponerCaptura(D, inp.files[0])));
+  }, tipo: 'buzon' };
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => { try { D.lista = await api.myRequests(S.user.id); } catch (e) { D.lista = []; fallo(e); } if (pila.includes(hoja)) dibujarHoja(); };
+  D.cargar();
+}
+async function ponerCaptura(D, file) {
+  try {
+    const cv = escalar(await cargarImagen(file), 1280);
+    const blob = await new Promise((res) => cv.toBlob((b) => res(b), 'image/jpeg', 0.8));
+    if (!blob) throw new Error('IMAGEN');
+    if (D.fotoUrl) URL.revokeObjectURL(D.fotoUrl);
+    D.foto = blob; D.fotoUrl = URL.createObjectURL(blob);
+    const t = $('#buzon-in'); if (t) D.texto = t.value;
+    dibujarHoja();
+  } catch (e) { aviso('No se pudo leer la imagen', 'photo'); }
+}
+
+// Las fotos de hallazgos privados guardadas antes de la versión 1.4 pasan al almacén cerrado (una sola vez)
+async function protegerFotosAntiguas() {
+  // 2.0.4: se revisa en cada inicio (no una sola vez): un grupo privado borrado o un hallazgo que salió de él
+  // deja fotos secretas que deben pasar al almacén cerrado
+  try {
+    const mias = await api.userCards(S.user.id);
+    const pend = mias.filter((c) => c.is_private && [c.photo, c.thumb].some((x) => x && !String(x).startsWith('priv:')));
+    for (const c of pend) await moverFotosHallazgo(c.id, true);
+    if (pend.length) { S.cache.clear(); refrescarActual(); }
+  } catch (e) { console.error(e); }
+}
+
+/* Avisos (solo con la app abierta): reacciones, comentarios, reencuentros y seguidores;
+   para la administradora también personas nuevas, buzón, moderación y uso del plan */
+const claveAviso = (a) => `${a.kind}|${a.find_id}|${a.actor_id}|${a.reaccion || ''}|${a.texto || ''}|${a.at}|${a.grupo_id || ''}`;
+const RECURSOS = { fotos: 'fotos', base: 'base de datos' };
+function textoAviso(a) {
+  const k = a.kind;
+  if (k === 'comentario') return `${a.actor_name} comentó en ${a.find_name}: «${a.texto}»`;
+  if (k === 'tambien') return C.TAMBIEN_AVISO.replace('{n}', a.actor_name || '').replace('{h}', a.find_name || '');
+  if (k === 'reencuentro') return a.reaccion === 'visto' ? `${a.actor_name} sumó una foto a tu ${a.find_name}${a.texto ? `: «${a.texto}»` : ''}` : `${a.actor_name} volvió a ver ${a.find_name}`;
+  if (k === 'traspaso') return C.TRASPASO_AVISO.replace('{h}', a.find_name || '').replace('{d}', a.texto || '');
+  if (k === 'reporte_col') return `${a.actor_name} reportó una foto de la comunidad: «${a.texto}»`;
+  if (k === 'seguidor') return `${a.actor_name} empezó a seguirte`;
+  if (k === 'etiqueta') return `${a.actor_name} te etiquetó en ${a.find_name}`;
+  if (k === 'mensaje') return a.texto ? `${a.actor_name} te escribió: «${a.texto}»` : C.FICHA_AVISO.replace('{n}', a.actor_name || '');
+  if (k === 'nuevo_miembro') return `Nueva persona en la comunidad: ${a.actor_name}`;
+  if (k === 'buzon') return `${a.actor_name} escribió al buzón: «${a.texto}»`;
+  if (k === 'reporte') return `Aviso a moderación: ${a.find_name || 'un hallazgo'}`;
+  if (k === 'uso') { const [rec, , pct] = String(a.texto || '').split(':'); return `Uso del plan: ${RECURSOS[rec] || rec} al ${pct} %`; }
+  if (k === 'ayuda') return `${a.actor_name} pidió ayuda en ${a.texto}`;
+  if (k === 'votacion') return `${a.actor_name} propone borrar ${a.texto}`;
+  if (k === 'ausencia') return `${a.actor_name} dice que ${a.find_name} ya no está`;
+  if (k === 'anuncio') return a.texto || '';
+  if (k === 'amistad') return C.AMISTAD_AVISO.replace('{n}', a.actor_name || '') + (a.texto ? `: «${a.texto}»` : '');
+  if (k === 'respuesta') return C.RESPUESTA_AVISO.replace('{t}', a.texto || '');
+  if (k === 'invitacion') return (a.reaccion === 'rechazada' ? C.INVITACION_RECHAZASTE : C.INVITACION_RECIBIDA).replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
+  if (k === 'propuesta') return C.PROPUESTA_AVISO.replace('{n}', a.actor_name || '').replace('{h}', a.find_name || '').replace('{m}', String(a.reaccion || '').split(':')[1] || '');
+  if (k === 'favorito') return (+a.reaccion > 1 ? C.FAVORITO_AVISO_N.replace('{n}', a.reaccion) : C.FAVORITO_AVISO_1).replace('{h}', a.find_name || '');
+  if (k === 'gracias') return C.GRACIAS_AVISO.replace('{n}', a.actor_name || '').replace('{h}', a.find_name || '');
+  if (k === 'solicitud') return C.SOLICITUD_AVISO.replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
+  if (k === 'solicitud_ok') return C.SOLICITUD_OK_AVISO.replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
+  if (k === 'invitacion_resp') return (a.reaccion === 'aceptada' ? C.INVITACION_ACEPTO : C.INVITACION_RECHAZO).replace('{n}', a.actor_name || '').replace('{g}', a.texto || '');
+  if (k === 'grupo_borrado') { const t = String(a.texto || ''), i = t.lastIndexOf(':'), m = t.slice(i + 1), g = t.slice(0, i);
+    if (m === 'creadora') return C.GRUPO_ELIMINADO_AVISO.replace(/\{g\}/g, g);
+    return `Se borró ${g} ${m === 'votacion' ? 'por votación' : 'por inactividad'}`; }
+  if (k === 'premio_top') return C.TOP_AVISO.replace('{h}', a.find_name || '').replace('{n}', a.texto || '');
+  if (k === 'premio_siempre') return C.SIEMPRE_AVISO.replace('{h}', a.find_name || '').replace('{n}', a.texto || '');
+  if (k === 'premio_podio') return C.PODIO_AVISO.replace('{n}', a.texto || '');
+  if (k === 'sigue_col') return C.SIGUE_COL_AVISO.replace('{n}', a.actor_name || '').replace('{c}', a.texto || '');
+  if (k === 'reaccion' && a.reaccion === 'eye') return C.VISTO_AVISO.replace('{n}', a.actor_name || '').replace('{h}', a.find_name || '');
+  const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
+  return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
+}
+function iconoAviso(a) {
+  const fijo = { comentario: 'message-circle', tambien: 'messages', reencuentro: 'repeat', seguidor: 'user-plus', nuevo_miembro: 'user-plus', buzon: 'mail', reporte: 'flag', uso: 'gauge', etiqueta: 'tag', mensaje: 'messages',
+    ayuda: 'urgent', votacion: 'trash', grupo_borrado: 'lifebuoy', ausencia: 'map-pin-off', anuncio: 'speakerphone', traspaso: 'heart-handshake', reporte_col: 'flag' };
+  if (a.kind === 'reencuentro' && a.reaccion === 'visto') return 'users';
+  if (a.kind === 'premio_top') return 'trophy';
+  if (a.kind === 'premio_podio') return 'compass';
+  if (a.kind === 'premio_siempre') return 'crown';
+  if (a.kind === 'sigue_col') return 'user-check';
+  if (a.kind === 'invitacion' || a.kind === 'solicitud') return 'user-plus';
+  if (a.kind === 'propuesta') return 'map-pin';
+  if (a.kind === 'gracias') return 'eye-check';
+  if (a.kind === 'favorito') return 'bookmark';
+  if (a.kind === 'solicitud_ok') return 'user-check';
+  if (a.kind === 'respuesta') return 'message-circle';
+  if (a.kind === 'amistad') return 'heart-handshake';
+  if (a.kind === 'invitacion_resp') return a.reaccion === 'aceptada' ? 'user-check' : 'user-x';
+  if (fijo[a.kind]) return fijo[a.kind];
+  const r = C.REACCIONES.find((x) => x.tipo === a.reaccion); return r ? r.icono : 'heart';
+}
+const nivelAviso = (a) => (a.kind === 'uso' && /:80:/.test(a.texto || '') ? 'rojo' : a.kind === 'uso' ? 'amarillo' : '');
+// Qué abre cada aviso: la ficha, un perfil o una pestaña del escudo
+function destinoAviso(a) {
+  if (['seguidor', 'nuevo_miembro', 'amistad', 'sigue_col'].includes(a.kind)) return `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (a.kind === 'premio_podio') return 'data-kind="tabla" data-id="colonias"';
+  if (a.kind === 'tambien' || a.kind === 'comentario') return `data-kind="comentarios" data-id="${a.find_id}"`;
+  if (a.kind === 'mensaje') return `data-kind="chat" data-id="${a.actor_id}"`;
+  if (a.kind === 'buzon') return 'data-kind="admin" data-id="buzon"';
+  if (a.kind === 'reporte' || a.kind === 'reporte_col') return 'data-kind="admin" data-id="avisos"';
+  if (a.kind === 'reencuentro' && a.reaccion === 'visto') return `data-kind="colaboracion" data-id="${a.find_id}" data-foto="${esc(a.thumb || '')}" data-n="${esc(a.actor_name || '')}" data-h="${esc(a.find_name || '')}"`;
+  if (a.kind === 'uso') return 'data-kind="admin" data-id="uso"';
+  if (a.kind === 'ayuda' || a.kind === 'votacion') return `data-kind="encuentro" data-id="${a.grupo_id}" data-foco="${a.kind === 'ayuda' ? a.actor_id : ''}"`;
+  if (a.kind === 'grupo_borrado') return 'data-kind="nada" data-id=""';
+  if (a.kind === 'invitacion') return 'data-kind="buzon" data-id=""';
+  if (a.kind === 'solicitud') return `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (a.kind === 'solicitud_ok') return `data-kind="grupo" data-id="${a.grupo_id}"`;
+  if (a.kind === 'respuesta') return 'data-kind="mis_mensajes" data-id="-"';
+  if (a.kind === 'invitacion_resp') return a.reaccion === 'aceptada' ? `data-kind="grupo" data-id="${a.grupo_id}"` : `data-kind="perfil" data-id="${a.actor_id}"`;
+  if (a.kind === 'anuncio') return a.reaccion === 'encuentro_nuevo' ? 'data-kind="encuentro_nuevo" data-id="-"' : 'data-kind="nada" data-id=""';
+  return `data-kind="ficha" data-id="${a.find_id}"`;
+}
+function caraAviso(a) {
+  if (a.kind === 'grupo_borrado') return `<span class="avatar" style="background:var(--tinta)">${ic('lifebuoy')}</span>`;
+  if (a.kind === 'traspaso') return `<span class="avatar" style="background:var(--terracota)">${ic('heart-handshake')}</span>`;
+  if (a.kind === 'favorito') return `<span class="avatar" style="background:var(--terracota)">${ic('bookmark')}</span>`;
+  if (a.kind === 'premio_top' || a.kind === 'premio_podio' || a.kind === 'premio_siempre') return `<span class="avatar" style="background:var(--mostaza)">${ic({ premio_top: 'trophy', premio_podio: 'compass', premio_siempre: 'crown' }[a.kind])}</span>`;
+  return a.actor_id ? avatar({ avatar: a.actor_avatar, avatar_color: a.actor_color })
+    : `<span class="avatar ${nivelAviso(a)}" style="background:var(--tinta)">${ic('shield')}</span>`;
+}
+const marcaAdmin = (a) => (a.admin ? `<span class="marca-admin" aria-label="Administración">${ic('shield')}</span>` : '');
+function pintarCampana() {
+  const n = S.avisos.filter((a) => a.nuevo).length;
+  $$('[data-campana]').forEach((b) => {
+    let s = $('.badge-n', b);
+    if (!n) { if (s) s.remove(); return; }
+    if (!s) { s = document.createElement('span'); s.className = 'badge-n'; b.appendChild(s); }
+    s.textContent = n > 9 ? '9+' : String(n);
+  });
+}
+let tNotif;
+function notificar(html, act, attrs) {
+  let el = $('#notif');
+  if (!el) { el = document.createElement('div'); el.id = 'notif'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  el.innerHTML = `<button class="notif-cuerpo row" data-act="${act}" ${attrs || ''}>${html}</button>${ib('cerrar_notif', 'x', 'cerrar', '', 'sm ghost')}`;
+  el.classList.add('show');
+  clearTimeout(tNotif); tNotif = setTimeout(() => el.classList.remove('show'), C.AVISO_MS);
+}
+function cerrarNotif() { const el = $('#notif'); if (el) el.classList.remove('show'); }
+const adminDatos = () => { const a = adminAbierto(); return a ? a.datos : null; };
+function recordarAnuncio(D) { const t = $('#anuncio-in'); if (t) D.nuevo.texto = t.value; }
+async function revisarAvisos() {
+  if (!S.user || !S.me || S.me.blocked || document.hidden || !api.avisos) return;
+  let lista;
+  try { lista = await api.avisos(); } catch (e) { return; } // sin avisos si falla: no interrumpe
+  S.avisos = lista || [];
+  let nuevos = S.avisos.filter((a) => a.nuevo && !S.avisosVistos.has(claveAviso(a)));
+  nuevos.forEach((a) => S.avisosVistos.add(claveAviso(a)));
+  const primera = !S.avisosListo; S.avisosListo = true;
+  pintarCampana();
+  if (!nuevos.length) return revisarBien();
+  // Si la conversación con esa persona está abierta, el mensaje aparece ahí mismo
+  const top = hojaArriba();
+  if (top && top.tipo === 'chat' && top.datos && nuevos.some((a) => a.kind === 'mensaje' && a.actor_id === top.datos.uid)) top.datos.cargar();
+  const aNotificar = nuevos.filter((a) => !(top && top.tipo === 'chat' && top.datos && a.kind === 'mensaje' && a.actor_id === top.datos.uid));
+  if (!aNotificar.length) return revisarBien();
+  if (top && top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+  nuevos = aNotificar;
+  if (primera && nuevos.length > 1) return notificar(`${ic('mail-heart')}<span class="grow">${esc(C.AVISOS_NUEVOS.replace('{n}', nuevos.length))}</span>`, 'avisos');
+  const a = nuevos[0];
+  notificar(`${caraAviso(a)}<span class="grow">${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}${nuevos.length > 1 ? ` <b>+${nuevos.length - 1}</b>` : ''}</span>
+    ${a.thumb && a.find_id ? `<img class="notif-img" src="${api.photoUrl(a.thumb)}" alt="">` : ''}`, nuevos.length > 1 ? 'avisos' : 'aviso_abrir', nuevos.length > 1 ? '' : destinoAviso(a));
+}
+/* "Todo bien" de tu grupo de encuentro: burbuja suave con la app abierta (sin sonido y sin ir al buzón).
+   Solo lo que llegó desde la última vez que se revisó en este teléfono. */
+async function revisarBien() {
+  if (!gruposEncuentro().length || !api.avisosBien) return;
+  const k = 'cg_bien_' + S.user.id;
+  let desde = null;
+  try { desde = localStorage.getItem(k); } catch (e) { /* sin almacenamiento */ }
+  if (!desde) desde = S.bienDesde || (S.bienDesde = new Date().toISOString());
+  let l;
+  try { l = await api.avisosBien(desde); } catch (e) { return; }
+  const t0 = Date.parse(desde) || 0;
+  l = (l || []).filter((x) => Date.parse(x.created_at) > t0);
+  if (!l.length) return;
+  const ultimo = new Date(Math.max(...l.map((x) => Date.parse(x.created_at)))).toISOString();
+  S.bienDesde = ultimo;
+  try { localStorage.setItem(k, ultimo); } catch (e) { /* nada */ }
+  if (document.hidden || ($('#notif') && $('#notif').classList.contains('show'))) return; // no tapa otro aviso
+  const x = l[0], n = new Set(l.map((y) => y.user_id)).size;
+  const texto = n > 1 ? C.BIEN_AVISO_N.replace('{n}', n) : C.BIEN_AVISO.replace('{n}', x.name || '').replace('{g}', x.group_name || '');
+  notificar(`${avatar(x)}<span class="grow">${ic(C.ENCUENTRO_ESTADOS.bien.icono)} ${esc(texto)}</span>`, 'grupo_mapa', `data-id="${x.group_id}"`);
+}
+// Buzón: una sola lista con las conversaciones (una fila por amiga) y los avisos, de lo más reciente a lo más antiguo.
+// Los avisos desaparecen 12 h después de verlos; las conversaciones se quedan.
+function filaAviso(a) {
+  const seguirVuelta = a.kind === 'seguidor' && !S.following.has(a.actor_id);
+  return `<div class="li aviso ${a.nuevo ? 'nuevo' : ''} ${a.admin ? 'de-admin' : ''}">
+    <button class="row grow" data-act="aviso_abrir" ${destinoAviso(a)} style="text-align:left;min-width:0">
+      ${caraAviso(a)}<div class="grow" style="min-width:0"><div>${marcaAdmin(a)}${ic(iconoAviso(a))} ${esc(textoAviso(a))}</div><div class="tiny">${esc(hace(a.at))}</div></div>
+      ${a.thumb && a.find_id ? `<img class="thumb" src="${api.photoUrl(a.thumb)}" alt="">` : ''}</button>
+    ${seguirVuelta ? `<button class="btn sm" data-act="seguir" data-id="${a.actor_id}">${ic('user-plus')} ${esc(C.AYUDA.seguir_vuelta)}</button>` : ''}
+    ${a.kind === 'ausencia' && a.find_id ? `<div class="ausencia-autora"><p class="tiny">${esc(C.AUSENCIA_AUTORA)}</p>
+      <button class="btn alt sm" data-act="editar_lugar" data-id="${a.find_id}">${ic('map-pin')} ${esc(C.AUSENCIA_EDITAR)}</button></div>` : ''}
+    ${a.kind === 'amistad' ? `<div class="row invit-botones">
+      <button class="btn sm" data-act="amistad_aceptar" data-id="${a.actor_id}">${ic('user-check')} ${esc(C.AMISTAD_ACEPTAR)}</button>
+      <button class="btn alt sm" data-act="amistad_rechazar" data-id="${a.actor_id}">${ic('x')} ${esc(C.INVITACION_RECHAZAR)}</button></div>` : ''}
+    ${a.kind === 'propuesta' ? `<div class="row invit-botones">
+      <button class="btn sm" data-act="propuesta_responder" data-id="${esc(a.reaccion || '')}" data-v="1">${ic('map-pin')} ${esc(C.PROPUESTA_MOVER)}</button>
+      <button class="btn alt sm" data-act="propuesta_responder" data-id="${esc(a.reaccion || '')}" data-v="0">${ic('x')} ${esc(C.PROPUESTA_DEJAR)}</button></div>` : ''}
+    ${a.kind === 'solicitud' ? `<div class="row invit-botones">
+      <button class="btn sm" data-act="solicitud_responder" data-id="${esc(a.reaccion || '')}" data-v="1">${ic('user-check')} ${esc(C.SOLICITUD_ACEPTAR)}</button>
+      <button class="btn alt sm" data-act="solicitud_responder" data-id="${esc(a.reaccion || '')}" data-v="0">${ic('x')} ${esc(C.INVITACION_RECHAZAR)}</button></div>` : ''}
+    ${a.kind === 'invitacion' ? `<div class="row invit-botones">
+      <button class="btn sm" data-act="invitacion_unirme" data-g="${a.grupo_id}">${ic('user-plus')} ${esc(C.INVITACION_UNIRME)}</button>
+      ${a.reaccion === 'pendiente' ? `<button class="btn alt sm" data-act="invitacion_rechazar" data-g="${a.grupo_id}">${ic('x')} ${esc(C.INVITACION_RECHAZAR)}</button>` : ''}</div>` : ''}</div>`;
+}
+function filaConversacion(c) {
+  if (!c.amigas && !c.yo_escribi && c.ultimo_at && !c.ultimo_mio) return `<div class="li conv conv-nueva ${c.sin_leer ? 'nuevo' : ''}">
+    <button class="row grow" data-act="chat" data-id="${c.persona}" style="text-align:left;min-width:0">${avatar(c)}<div class="grow" style="min-width:0"><b>${esc(c.name)}</b> <span class="etq-nueva">${esc(C.CONV_NUEVA)}</span>
+      <div class="tiny conv-ultimo">${ic(c.ultimo_ficha ? 'cards' : 'messages')} ${esc(c.ultimo || (c.ultimo_ficha ? C.FICHA_EN_CHAT : ''))}</div></div></button>
+    <div class="row invit-botones"><button class="btn sm" data-act="chat" data-id="${c.persona}">${ic('message-reply')} ${esc(C.CONV_RESPONDER)}</button>
+      <button class="btn alt sm" data-act="silenciar" data-user="${c.persona}">${ic('cg-silenciar')} ${esc(C.CONV_SILENCIAR)}</button></div></div>`;
+  return `<button class="li conv ${c.sin_leer ? 'nuevo' : ''}" data-act="chat" data-id="${c.persona}" style="text-align:left">
+    ${avatar(c)}<div class="grow" style="min-width:0"><b>${esc(c.name)}</b>
+      <div class="tiny conv-ultimo">${ic(c.ultimo_ficha ? 'cards' : 'messages')} ${c.ultimo_mio ? 'Tú: ' : ''}${esc(c.ultimo || (c.ultimo_ficha ? C.FICHA_EN_CHAT : ''))}</div></div>
+    <span class="tiny">${esc(hace(c.ultimo_at))}</span>${c.sin_leer ? `<span class="badge-n fijo">${c.sin_leer > 9 ? '9+' : c.sin_leer}</span>` : ''}</button>`;
+}
+function hojaAvisos() {
+  cerrarNotif();
+  const D = { conv: null };
+  const hoja = { render: () => {
+      const avisos = S.avisos.filter((a) => a.kind !== 'mensaje');
+      const conv = D.conv || [];
+      const filas = conv.filter((c) => c.ultimo_at).map((c) => ({ at: c.ultimo_at, html: filaConversacion(c) }))
+        .concat(avisos.map((a) => ({ at: a.at, html: filaAviso(a) })))
+        .sort((x, y) => String(y.at).localeCompare(String(x.at)));
+      const amigasSin = conv.filter((c) => !c.ultimo_at && c.amigas);
+      return `${cabeza(`${ic('mail-heart')} ${esc(C.AYUDA.buzon_amigos)}`)}
+        ${D.conv === null && !avisos.length ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+          : filas.length ? `<div class="list">${filas.map((f) => f.html).join('')}</div>` : `<div class="empty">${ic('mail-heart')}<p>${esc(C.AVISOS_VACIO)}</p></div>`}
+        ${amigasSin.length ? `<div class="sec"><h3>${ic('messages')} ${esc(C.BUZON_EMPEZAR)}</h3><div class="chips" style="flex-wrap:wrap">${amigasSin.map((c) =>
+          `<button class="chip" data-act="chat" data-id="${c.persona}">${avatar(c)}${esc(c.name)} ${ic('messages')}</button>`).join('')}</div></div>` : ''}`;
+    }, tipo: 'buzon_amigos' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => {
+    try {
+      const [conv, avisos] = await Promise.all([api.conversaciones(), api.avisos()]);
+      D.conv = conv; S.avisos = avisos || [];
+      S.avisos.forEach((x) => S.avisosVistos.add(claveAviso(x))); // lo que ya se ve aquí no vuelve a notificarse
+      pintarCampana();
+    } catch (e) { D.conv = D.conv || []; }
+    if (hojaArriba() === hoja) dibujarHoja();
+  };
+  D.cargar().then(() => api.avisosVistos()).then(() => {
+    S.avisos = S.avisos.map((a) => (a.kind === 'mensaje' ? a : Object.assign({}, a, { nuevo: false }))); pintarCampana();
+  }).catch(() => null);
+}
+
+// 2.0.2: el chat (solo las conversaciones), desde el perfil
+function hojaChats() {
+  const D = { conv: null };
+  const hoja = { render: () => {
+      const conv = (D.conv || []).filter((c) => c.ultimo_at).sort((a, b) => String(b.ultimo_at).localeCompare(String(a.ultimo_at)));
+      const amigasSin = (D.conv || []).filter((c) => !c.ultimo_at && c.amigas);
+      return `${cabeza(`${ic('messages')} ${esc(C.AYUDA.chats)}`)}
+        ${D.conv === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+          : conv.length ? `<div class="list">${conv.map(filaConversacion).join('')}</div>`
+          : `<div class="empty">${ic('messages')}<p>${esc(amigasSin.length ? C.CHATS_VACIO : C.CHATS_SIN_AMIGAS)}</p></div>`}
+        ${amigasSin.length ? `<div class="sec"><h3>${ic('messages')} ${esc(C.BUZON_EMPEZAR)}</h3><div class="chips" style="flex-wrap:wrap">${amigasSin.map((c) =>
+          `<button class="chip" data-act="chat" data-id="${c.persona}">${avatar(c)}${esc(c.name)} ${ic('messages')}</button>`).join('')}</div></div>` : ''}
+        ${D.conv !== null && !amigasSin.length && !conv.length ? `<button class="btn alt block" data-act="buscar_personas">${ic('search')} ${esc(C.AYUDA.buscar_personas)}</button>` : ''}`;
+    }, tipo: 'chats' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => { try { D.conv = await api.conversaciones() || []; } catch (e) { D.conv = D.conv || []; fallo(e); } if (hojaArriba() === hoja) dibujarHoja(); };
+  D.cargar();
+}
+
+// Conversación con una amiga: solo texto, hasta 300 caracteres
+function hojaChat(uid) {
+  cerrarNotif();
+  const D = { uid, p: null, msgs: null, puede: null, borrador: '' };
+  const hoja = { render: () => {
+      const p = D.p;
+      const cab = p ? `<button class="row" data-act="perfil" data-id="${uid}">${avatar(p)}<b>${esc(p.name)}</b></button>` : '';
+      // 2.0.3: cualquiera puede escribir; la primera conversación de alguien que no es tu amiga llega marcada
+      const nueva = D.msgs && D.msgs.length && D.amistad !== 'amigas' && !D.msgs.some((m) => m.sender === S.user.id);
+      return `${cabeza(cab)}
+        ${nueva ? `<div class="banner conv-nueva">${ic('mail-opened')}<span class="grow"><b>${esc(C.CONV_NUEVA)}</b><br><span class="tiny">${esc(C.CONV_NUEVA_TEXTO)}</span></span>
+          <button class="btn alt sm" data-act="silenciar" data-user="${uid}">${ic('cg-silenciar')} ${esc(C.CONV_SILENCIAR)}</button></div>` : ''}
+        <div class="chat" id="chat-lista">${listaChatHTML(D)}</div>
+        ${D.puede === false ? `<div class="banner" style="margin-top:12px">${ic('lock')}<span class="grow">${esc(C.CHAT_NO_PUEDE)}</span></div>`
+          : D.puede ? `<div class="chat-escribir"><textarea id="chat-in" class="in" maxlength="${C.MENSAJE_MAX}" rows="2" placeholder="${esc(C.CHAT_PISTA)}">${esc(D.borrador)}</textarea>
+            <div class="row between"><span class="tiny"><span id="chat-n">${D.borrador.length}</span>/${C.MENSAJE_MAX}</span>
+            <button class="btn" data-act="enviar_mensaje" data-id="${uid}">${ic('send')} ${esc(C.AYUDA.enviar)}</button></div></div>` : ''}`;
+    },
+    after: (r) => { const l = $('#chat-lista', r); if (l) l.scrollTop = l.scrollHeight; }, tipo: 'chat' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => {
+    try {
+      const [p, msgs, puede, amistad] = await Promise.all([api.getProfile(uid), api.hilo(uid), api.puedoEscribir(uid), api.estadoAmistad(uid).catch(() => null)]);
+      // las fichas del chat: solo se piden las que no están ya guardadas; si no se pueden ver, dicen "ya no está disponible"
+      const faltan = [...new Set(msgs.filter((m) => m.find_id && !cartaConFotos(m.find_id)).map((m) => m.find_id))];
+      if (faltan.length) guarda(await api.cardsByIds(faltan).catch(() => []));
+      Object.assign(D, { p, msgs, puede: !!puede, amistad });
+      if (msgs.some((m) => m.recipient === S.user.id && !m.read_at)) await api.marcarLeidos(uid).catch(() => null);
+      S.avisos = S.avisos.filter((a) => !(a.kind === 'mensaje' && a.actor_id === uid)); pintarCampana();
+    } catch (e) { D.msgs = D.msgs || []; fallo(e); }
+    if (hojaArriba() !== hoja) return;
+    const t = $('#chat-in'), l = $('#chat-lista');
+    if (t) D.borrador = t.value;
+    // Si solo llegaron mensajes (se puede seguir escribiendo igual), se redibuja solo la lista: el teclado no se cierra
+    const firma = `${D.puede}|${D.amistad}|${D.p ? D.p.name : ''}|${(D.msgs || []).some((m) => m.sender === S.user.id)}`;
+    if (t && l && D.firma === firma) {
+      const abajo = l.scrollHeight - l.scrollTop - l.clientHeight < 60;
+      l.innerHTML = listaChatHTML(D);
+      if (abajo) l.scrollTop = l.scrollHeight;
+    } else dibujarHoja();
+    D.firma = firma;
+  };
+  D.cargar();
+}
+function listaChatHTML(D) {
+  if (D.msgs === null) return `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  return D.msgs.length ? D.msgs.map((m) => `<div class="burbuja ${m.sender === S.user.id ? 'mia' : ''}">${m.body ? `<p>${esc(m.body)}</p>` : ''}${m.find_id || m.con_ficha ? fichaChatHTML(m) : ''}<span class="tiny">${esc(hace(m.created_at))}</span></div>`).join('')
+    : `<p class="muted" style="text-align:center">${esc(C.CHAT_VACIO)}</p>`;
+}
+
+// Ficha dentro del chat: foto chica, nombre y colonia; al tocarla se abre la ficha
+function fichaChatHTML(m) {
+  const c = m.find_id ? S.cache.get(m.find_id) : null;
+  if (!c || c.is_private) return `<div class="ficha-chat no-disp"><span class="ft"></span><span class="ficha-chat-tx"><b>${esc(C.FICHA_NO_DISPONIBLE)}</b><span class="tiny">${esc(C.FICHA_NO_DISPONIBLE_TEXTO)}</span></span></div>`;
+  return `<button type="button" class="ficha-chat" data-act="ficha" data-id="${c.id}">${c.thumb || c.photo ? `<img class="ft" src="${foto(c, true)}" alt="" loading="lazy">` : `<span class="ft">${ic(c.cat_icon)}</span>`}
+    <span class="ficha-chat-tx"><b>${esc(c.name)}</b>${c.colonia ? `<span class="tiny">${ic('map-pin')} ${esc(c.colonia)}</span>` : ''}</span></button>`;
+}
+// Enviar una ficha a una amiga (solo a quienes pueden verla)
+function hojaEnviarFicha(fid) {
+  const c = S.cache.get(fid); if (!c || c.is_private) return;
+  const D = { amigas: null, enviadas: new Set(), linea: '' };
+  const hoja = { render: () => `${cabeza(`${ic('send')} ${esc(C.FICHA_ENVIAR)}`)}
+      <div class="ficha-chat" style="margin:0 0 10px">${c.thumb || c.photo ? `<img class="ft" src="${foto(c, true)}" alt="">` : `<span class="ft">${ic(c.cat_icon)}</span>`}
+        <span class="ficha-chat-tx"><b>${esc(c.name)}</b>${c.colonia ? `<span class="tiny">${ic('map-pin')} ${esc(c.colonia)}</span>` : ''}</span></div>
+      <label class="campo-ic">${ic('pencil')}<input id="ficha-linea" class="in compacto" maxlength="${C.MENSAJE_MAX}" placeholder="${esc(C.FICHA_LINEA)}" value="${esc(D.linea)}"></label>
+      ${D.amigas === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+        : D.amigas.length ? `<div class="list" style="margin-top:10px">${D.amigas.map((a) => `<div class="li">${avatar(a)}<b class="grow">${esc(a.name)}</b>
+          ${D.enviadas.has(a.user_id) ? `<span class="tiny estado-amistad">${ic('check')} ${esc(C.FICHA_ENVIADA)}</span>`
+            : `<button class="btn sm" data-act="mandar_ficha" data-id="${a.user_id}" data-f="${fid}">${ic('send')} ${esc(C.AYUDA.enviar)}</button>`}</div>`).join('')}</div>`
+        : `<p class="tiny" style="margin-top:10px">${esc(C.FICHA_SIN_AMIGAS)}</p>`}`,
+    after: (r) => { const t = $('#ficha-linea', r); if (t) t.addEventListener('input', () => { D.linea = t.value; }); },
+    tipo: 'enviar_ficha' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  api.amigasParaFicha(fid).then((l) => { D.amigas = l || []; }).catch((e) => { D.amigas = []; fallo(e); })
+    .finally(() => { if (hojaArriba() === hoja) dibujarHoja(); });
+}
+
+// Etiquetar: elige hasta 5 personas que sigues o te siguen
+function hojaEtiquetar(findId, inicial, alGuardar) {
+  const D = { gente: null, sel: new Set(inicial || []), antes: new Set(inicial || []) };
+  const hoja = { render: () => `${cabeza(`${ic('tag')} ${esc(C.AYUDA.etiquetar)}`)}
+      <p class="muted" style="margin:0 0 12px">${esc(C.ETIQUETAR_TEXTO)}</p>
+      ${D.gente === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.gente.length ? `<div class="list">${D.gente.map((g) =>
+        `<button class="li etiqueta-op ${D.sel.has(g.persona) ? 'on' : ''}" data-act="etiqueta_toggle" data-id="${g.persona}" style="text-align:left">${avatar(g)}<b class="grow">${esc(g.name)}</b>${ic(D.sel.has(g.persona) ? 'circle-check' : 'circle')}</button>`).join('')}</div>`
+        : `<div class="empty">${ic('user-plus')}<p>${esc(C.ETIQUETAR_VACIO)}</p></div>`}
+      <p class="tiny" style="margin:10px 0">${D.sel.size} / ${C.ETIQUETAS_MAX}</p>
+      <button class="btn block" data-act="guardar_etiquetas">${ic('check')} Guardar</button>`, tipo: 'etiquetar' };
+  hoja.datos = D;
+  D.guardar = alGuardar;
+  pila.push(hoja); dibujarHoja();
+  (async () => {
+    try {
+      const [gente, mias] = await Promise.all([api.puedoEtiquetar(), findId ? api.misEtiquetas(findId) : Promise.resolve(null)]);
+      D.gente = gente;
+      if (mias) { D.sel = new Set(mias); D.antes = new Set(mias); }
+    } catch (e) { D.gente = []; fallo(e); }
+    if (hojaArriba() === hoja) dibujarHoja();
+  })();
+}
+
+let tAvisos;
+function vigilarAvisos() {
+  clearInterval(tAvisos);
+  revisarAvisos();
+  tAvisos = setInterval(revisarAvisos, C.AVISOS_CADA_MS);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    pausarCompartir();
+    if (S.user && pushSoportado() && Notification.permission === 'granted') api.appActiva(false).catch(() => null); // fuera de la vista vuelven las notificaciones
+    return;
+  }
+  revisarAvisos(); vigilarCompartir(); subirPendientes();
+  if (S.user && (!S.premiosAt || Date.now() - S.premiosAt > 60000)) { S.premiosAt = Date.now(); revisarPremiosPronto(1500); }
+  if (S.user && (!S.top || Date.now() - S.top.at > 600000)) cargarTop();
+  if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => null);
+  alTrabajador({ tipo: 'insignia' });
+});
+window.addEventListener('online', () => { pintarConexion(); subirPendientes(); revisarAvisos(); });
+window.addEventListener('offline', () => pintarConexion());
+
+/* Moderación: avisos de contenido y buzón */
+const tamano = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(2)} GB` : b >= 1048576 ? `${Math.round(b / 1048576)} MB` : `${Math.round(b / 1024)} KB`);
+const pctUso = (r) => Math.round(100 * r.usado / Math.max(1, r.limite));
+const nivelUso = (p) => (p >= 80 ? 'rojo' : p >= 60 ? 'amarillo' : '');
+function usoHTML(u) {
+  if (!u) return `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  const rs = u.recursos || [], peor = Math.max(0, ...rs.map(pctUso));
+  return `${rs.map((r) => { const p = pctUso(r); return `<div class="medidor">
+      <div class="row between"><b>${esc(RECURSOS[r.recurso] || r.recurso)}</b><span class="tiny">${tamano(r.usado)} de ${tamano(r.limite)} · <b>${p} %</b></span></div>
+      <div class="barra ${nivelUso(p)}"><div style="width:${Math.min(100, p)}%"></div></div></div>`; }).join('')}
+    ${nivelUso(peor) ? `<div class="banner uso ${nivelUso(peor)}">${ic('alert-triangle')}<span>${esc(peor >= 80 ? C.USO_ROJO : C.USO_AMARILLO)}</span></div>` : ''}
+    <div class="stats" style="margin-top:14px">
+      <div class="stat">${ic('photo')}<div class="v">${u.fotos_n}</div><div class="lbl">fotos</div></div>
+      <div class="stat">${ic('users')}<div class="v">${u.personas}</div><div class="lbl">personas · +${u.personas_semana} esta semana</div></div>
+      <div class="stat">${ic('activity')}<div class="v">${u.activas_semana}</div><div class="lbl">activas esta semana</div></div>
+      <div class="stat">${ic('camera')}<div class="v">${u.hallazgos_semana}</div><div class="lbl">hallazgos esta semana</div></div>
+      <div class="stat">${ic('repeat')}<div class="v">${u.reencuentros_semana}</div><div class="lbl">reencuentros esta semana</div></div>
+      <div class="stat">${ic('cards')}<div class="v">${u.hallazgos}</div><div class="lbl">hallazgos en total</div></div></div>
+    ${ritmoHTML(u)}
+    <p class="tiny" style="margin-top:12px">${esc(C.USO_TRANSFERENCIA)}</p>
+    ${panelUsoURL() ? `<a class="btn" style="margin-top:8px" href="${esc(panelUsoURL())}" target="_blank" rel="noopener">${ic('external-link')}${esc(C.USO_PANEL)}</a>` : ''}`;
+}
+/* Ritmo del almacén: con lo subido en los últimos 7 días, cuántas semanas faltan para llenarlo */
+function semanasParaLlenar(u) {
+  const r = (u && u.recursos || []).find((x) => x.recurso === 'fotos');
+  const semana = Number(u && u.fotos_bytes_semana) || 0;
+  if (!r || semana <= 0) return null;
+  return Math.max(0, (r.limite - r.usado) / semana);
+}
+function ritmoHTML(u) {
+  const n = semanasParaLlenar(u);
+  if (n == null) return `<p class="tiny ritmo" style="margin-top:12px">${esc(C.USO_RITMO_SIN)}</p>`;
+  const semanas = n < 1 ? C.USO_RITMO_MENOS : n > 520 ? C.USO_RITMO_MUCHO : C.USO_RITMO.replace('{n}', Math.round(n));
+  const aviso = n <= C.USO_SEMANAS_R2 ? `<span class="tiny" style="display:block">${esc(C.USO_RITMO_R2)}</span>` : '';
+  return `<div class="ritmo ${n <= C.USO_SEMANAS_R2 ? 'amarillo' : ''}" style="margin-top:12px">
+    <div class="row between"><b>${esc(C.USO_RITMO_TITULO)}</b><span class="tiny">+${tamano(Number(u.fotos_bytes_semana))} ${esc(C.USO_RITMO_SEMANA)}</span></div>
+    <p class="tiny" style="margin:4px 0 0">${esc(semanas)}</p>${aviso}</div>`;
+}
+// El panel de uso de Supabase (transferencia y todo lo demás), con el proyecto sacado de SUPABASE_URL
+function panelUsoURL() {
+  const m = /^https:\/\/([a-z0-9]+)\.supabase\.co/i.exec(C.SUPABASE_URL || '');
+  return m ? `https://supabase.com/dashboard/project/${m[1]}/usage` : '';
+}
+// Privacidad: primero lo más importante (en negritas), después los detalles
+function datosHTML(conExtra) {
+  return `<div class="datos-clave">${C.DATOS_CLAVE.map((d) => `<p><b>${esc(d.titulo)}</b> ${esc(d.texto)}</p>`).join('')}</div>
+    <h4>${esc(C.DATOS_ADEMAS)}</h4><ul class="datos-mas">${C.DATOS.concat(conExtra ? (C.DATOS_EXTRA || []) : []).map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`;
+}
+/* Anuncios a toda la comunidad: llegan al buzón (también a quien se una después) hasta que terminan o se retiran.
+   La notificación dice solo "Tienes un aviso nuevo". */
+const estadoAnuncio = (a) => (a.retirado ? 'retirado' : a.hasta && new Date(a.hasta) <= new Date() ? 'terminado' : 'activo');
+function anunciosHTML(D) {
+  const N = D.nuevo, primero = D.anuncios && !D.anuncios.length;
+  if (N.texto == null) N.texto = primero ? C.ANUNCIO_PRIMERO : '';
+  const dur = (sel, act, extra = '') => `<div class="chips" style="flex-wrap:wrap">${C.ANUNCIO_DURACIONES.map((d) =>
+    `<button type="button" class="chip ${String(d.dias) === String(sel) ? 'on' : ''}" data-act="${act}" data-v="${d.dias == null ? '' : d.dias}" ${extra}>${esc(d.nombre)}</button>`).join('')}</div>`;
+  const vista = { kind: 'anuncio', texto: N.texto || '…', actor_avatar: S.me.avatar, actor_color: S.me.avatar_color, actor_id: S.user.id };
+  return `<div class="sec" style="margin-top:0"><h3>${ic('speakerphone')} ${esc(C.ANUNCIO_NUEVO)}</h3>
+      <div class="field"><textarea id="anuncio-in" class="in" maxlength="${C.ANUNCIO_MAX}" rows="3" placeholder="${esc(C.ANUNCIO_PISTA)}">${esc(N.texto)}</textarea>
+        <div class="tiny" style="text-align:right"><span id="anuncio-n">${(N.texto || '').length}</span>/${C.ANUNCIO_MAX}</div></div>
+      <div class="field"><label>${ic('pointer')} ${esc(C.ANUNCIO_DESTINO)}</label><div class="toggle" style="display:flex">
+        <button type="button" class="${N.destino ? '' : 'on'}" data-act="anuncio_destino" data-v="" style="flex:1;font-size:14px">${esc(C.ANUNCIO_SIN_DESTINO)}</button>
+        <button type="button" class="${N.destino === 'encuentro_nuevo' ? 'on' : ''}" data-act="anuncio_destino" data-v="encuentro_nuevo" style="flex:1;font-size:14px">${ic('lifebuoy')} ${esc(C.ANUNCIO_DESTINO_ENCUENTRO)}</button></div></div>
+      <div class="field"><label>${ic('clock')} ${esc(C.ANUNCIO_DURACION)}</label>${dur(N.dias, 'anuncio_dias')}</div>
+      <div class="field"><label>${ic('eye')} ${esc(C.ANUNCIO_VISTA)}</label>
+        <div class="li aviso nuevo anuncio-vista">${caraAviso(vista)}<span class="grow">${ic('speakerphone')} <span id="anuncio-vista-t">${esc(vista.texto)}</span></span></div></div>
+      <button class="btn block" data-act="publicar_anuncio">${ic('send')} ${esc(C.ANUNCIO_PUBLICAR)}</button></div>
+    <div class="sec"><h3>${ic('list')} ${esc(C.ANUNCIO_LISTA)}</h3>
+      ${D.anuncios === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.anuncios.length ? `<div class="list">${D.anuncios.map((a) => {
+        const est = estadoAnuncio(a);
+        return `<div class="li anuncio ${est}" style="flex-direction:column;align-items:stretch">
+          <div class="row"><span class="grow">${esc(a.texto)}</span></div>
+          <div class="tiny">${esc(fecha(a.created_at))} · ${esc(C.ANUNCIO_ESTADO[est])}${est === 'activo' ? ` · ${a.hasta ? esc(C.ANUNCIO_HASTA.replace('{f}', fecha(a.hasta))) : esc(C.ANUNCIO_SIN_FIN)}` : ''}</div>
+          ${est === 'retirado' ? '' : `<div class="tiny">${esc(C.ANUNCIO_CAMBIAR)}</div>${dur('ninguna', 'anuncio_cambiar', `data-id="${a.id}"`)}
+          <button class="btn alt sm" data-act="retirar_anuncio" data-id="${a.id}" style="align-self:flex-start">${ic('x')} ${esc(C.ANUNCIO_RETIRAR)}</button>`}</div>`; }).join('')}</div>`
+        : `<p class="muted">${esc(C.ANUNCIO_NINGUNO)}</p>`}</div>`;
+}
+function hojaAdmin(vista) {
+  const D = { vista: vista || 'avisos', avisos: null, cols: [], bloqueados: [], peticiones: null, uso: null, anuncios: null,
+    nuevo: { texto: null, destino: 'encuentro_nuevo', dias: null } };
+  const pendientes = () => (D.peticiones || []).filter((r) => r.status === 'recibido').length;
+  const hoja = { render: () => `${cabeza(ic('shield'))}
+    <div class="toggle" style="margin-bottom:14px">
+      <button type="button" data-act="admin_vista" data-v="avisos" class="${D.vista === 'avisos' ? 'on' : ''}" aria-label="Avisos">${ic('flag')}<span style="font-size:15px">${D.avisos ? D.avisos.length + D.cols.length : ''}</span></button>
+      <button type="button" data-act="admin_vista" data-v="buzon" class="${D.vista === 'buzon' ? 'on' : ''}" aria-label="${esc(C.AYUDA.buzon)}">${ic('mail')}<span style="font-size:15px">${pendientes() || ''}</span></button>
+      <button type="button" data-act="admin_vista" data-v="uso" class="${D.vista === 'uso' ? 'on' : ''}" aria-label="${esc(C.AYUDA.uso)}" data-tip="${esc(C.AYUDA.uso)}">${ic('gauge')}</button>
+      <button type="button" data-act="admin_vista" data-v="anuncios" class="${D.vista === 'anuncios' ? 'on' : ''}" aria-label="${esc(C.AYUDA.anuncios)}" data-tip="${esc(C.AYUDA.anuncios)}">${ic('speakerphone')}</button></div>
+    ${D.vista === 'anuncios' ? anunciosHTML(D) : D.vista === 'uso' ? usoHTML(D.uso) : D.vista === 'buzon' ? (D.peticiones === null ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`
+      : D.peticiones.length ? `<div class="list">${D.peticiones.map((r) => peticionHTML(r, true, D.editandoResp === r.id)).join('')}</div>` : `<div class="empty">${ic('mail')}<p>Sin mensajes</p></div>`) : `
+    <div class="sec" style="margin-top:0"><h3>${ic('flag')} ${D.avisos ? D.avisos.length : ''}</h3>
+    ${!D.avisos ? `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>` : D.avisos.length ? `<div class="list">${D.avisos.map((a) => a.card ? `
+      <div class="li">${a.card.thumb ? `<img class="thumb" src="${foto(a.card, true)}" alt="">` : `<span class="thumb">${ic(a.card.cat_icon)}</span>`}
+        <div class="grow"><b>${esc(a.card.name)}</b><div class="tiny">${esc(a.card.user_name)} · ${ic('flag')} ${a.n}</div></div>
+        ${ib('ficha', 'eye', 'ver', `data-id="${a.card.id}"`, 'sm')}${ib('descartar', 'check', 'descartar', `data-id="${a.card.id}"`, 'sm')}${ib('borrar_hallazgo', 'trash', 'borrar', `data-id="${a.card.id}"`, 'sm')}${ib('bloquear', 'ban', 'bloquear', `data-id="${a.card.user_id}"`, 'sm')}
+      </div>` : `<div class="li"><div class="grow tiny">—</div>${ib('descartar', 'check', 'descartar', `data-id="${a.find_id}"`, 'sm')}</div>`).join('')}</div>` : D.cols.length ? '' : `<div class="empty">${ic('check')}<p>Sin avisos</p></div>`}</div>
+    ${D.cols.length ? `<div class="sec"><h3>${ic('users')} ${esc(C.COL_MODERACION)} · ${D.cols.length}</h3><div class="list">${D.cols.map((r) => `
+      <div class="li reporte-col" style="flex-direction:column;align-items:stretch">
+        <div class="row">${r.thumb || r.photo ? `<img class="thumb" src="${api.photoUrl(r.thumb || r.photo)}" alt="">` : ''}
+          <div class="grow" style="min-width:0"><b>${esc(r.find_name)}</b><div class="tiny">${esc(C.COL_DE.replace('{n}', r.autora_nombre || ''))} · ${ic('flag')} ${esc(r.quien_reporta_nombre || '')}</div>
+          <div class="tiny">«${esc(r.motivo)}»</div></div></div>
+        <div class="row">${ib('ficha', 'eye', 'ver', `data-id="${r.find_id}" data-s="${r.sighting_id}"`, 'sm')}${ib('col_descartar', 'check', 'descartar', `data-id="${r.id}"`, 'sm')}${ib('col_quitar', 'trash', C.COL_QUITAR, `data-id="${r.sighting_id}"`, 'sm')}</div>
+      </div>`).join('')}</div></div>` : ''}
+    <div class="sec"><h3>${ic('ban')} ${D.bloqueados.length}</h3><div class="list">${D.bloqueados.map((p) => `
+      <div class="li">${avatar(p)}<b class="grow">${esc(p.name)}</b>${ib('desbloquear', 'lock-open', 'desbloquear', `data-id="${p.id}"`, 'sm')}</div>`).join('')}</div></div>`}`,
+    after: (r) => { r._admin = D; }, tipo: 'admin' };
+  hoja.datos = D;
+  pila.push(hoja); dibujarHoja();
+  D.cargar = async () => {
+    try {
+      const rs = await api.reports();
+      const n = {}; rs.forEach((r) => { n[r.find_id] = (n[r.find_id] || 0) + 1; });
+      const ids = Object.keys(n);
+      const cards = guarda(await api.cardsByIds(ids));
+      D.avisos = ids.map((id) => ({ find_id: id, n: n[id], card: cards.find((c) => c.id === id) }));
+      D.bloqueados = await api.blockedList();
+    } catch (e) { D.avisos = []; fallo(e); }
+    try { D.cols = await api.reportesColaboracion(); } catch (e) { D.cols = []; }
+    try { D.peticiones = await api.allRequests(); } catch (e) { D.peticiones = []; fallo(e); }
+    try { D.uso = await api.usoPlan(); } catch (e) { D.uso = { recursos: [] }; fallo(e); }
+    try { D.anuncios = await api.anuncios(); } catch (e) { D.anuncios = []; }
+    if (pila.includes(hoja)) dibujarHoja();
+  };
+  D.cargar();
+  return D;
+}
+const adminAbierto = () => pila.find((h) => h.tipo === 'admin');
+
+/* ---------------------------------------------------------------------
+   Fichas en PDF (plantilla C: portada y cuatro hallazgos por página).
+   El archivo se arma en el teléfono, sin librerías ni servidores: fotos en JPEG y
+   letras estándar del PDF (Helvetica y Times), con acentos en codificación WinAnsi.
+   --------------------------------------------------------------------- */
+const PDF_W = 612, PDF_H = 792, PDF_M = 24;
+const WIN_ANSI = { 0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85, 0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89,
+  0x0160: 0x8A, 0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92, 0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96,
+  0x2014: 0x97, 0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C, 0x017E: 0x9E, 0x0178: 0x9F, 0x2212: 0x2D };
+// Texto para un string del PDF: un byte por letra (lo que no existe en WinAnsi se vuelve "?")
+function pdfTexto(t) {
+  let out = '';
+  for (const ch of String(t == null ? '' : t)) {
+    const cp = ch.codePointAt(0);
+    let b = cp < 0x80 || (cp >= 0xA0 && cp <= 0xFF) ? cp : WIN_ANSI[cp];
+    if (b == null) b = 0x3F;
+    const c = String.fromCharCode(b);
+    out += c === '(' || c === ')' || c === '\\' ? '\\' + c : c;
+  }
+  return out;
+}
+const pdfNum = (n) => (Math.round(n * 100) / 100).toString();
+// Medida aproximada del texto (Arial tiene las mismas medidas que Helvetica)
+let lienzoMedida = null;
+function anchoTexto(t, tam, fuente) {
+  if (!lienzoMedida) lienzoMedida = document.createElement('canvas').getContext('2d');
+  lienzoMedida.font = fuente === 'serif' ? `bold ${tam}px "Times New Roman", Times, serif` : `${fuente === 'bold' ? 'bold ' : fuente === 'italic' ? 'italic ' : ''}${tam}px Helvetica, Arial, sans-serif`;
+  return lienzoMedida.measureText(String(t)).width;
+}
+function recortarTexto(t, ancho, tam, fuente) {
+  t = String(t || '');
+  if (anchoTexto(t, tam, fuente) <= ancho) return t;
+  while (t.length > 1 && anchoTexto(t + '…', tam, fuente) > ancho) t = t.slice(0, -1);
+  return t.trimEnd() + '…';
+}
+// Reparte un texto en renglones; el último lleva "…" si no cabe
+function renglones(t, ancho, tam, fuente, max) {
+  const palabras = String(t || '').split(/\s+/).filter(Boolean), out = [];
+  let linea = '';
+  for (let i = 0; i < palabras.length; i++) {
+    const prueba = linea ? linea + ' ' + palabras[i] : palabras[i];
+    if (anchoTexto(prueba, tam, fuente) <= ancho) { linea = prueba; continue; }
+    if (linea) out.push(linea);
+    linea = palabras[i];
+    if (out.length === max) break;
+  }
+  if (linea && out.length < max) out.push(linea);
+  if (out.length === max && palabras.join(' ') !== out.join(' ')) out[max - 1] = recortarTexto(out[max - 1] + '…', ancho, tam, fuente);
+  return out.map((l) => recortarTexto(l, ancho, tam, fuente));
+}
+
+function nuevoPDF() {
+  const objs = [];   // cada objeto: lista de partes (texto o bytes)
+  const nuevoObj = (partes) => { objs.push(partes); return objs.length; };
+  const catalogo = nuevoObj(null), paginas = nuevoObj(null), xobjs = nuevoObj(null);
+  const fuentes = { F1: 'Helvetica', F2: 'Helvetica-Bold', F3: 'Times-Bold', F4: 'Helvetica-Oblique' };
+  const idFuente = {};
+  Object.keys(fuentes).forEach((k) => { idFuente[k] = nuevoObj([`<< /Type /Font /Subtype /Type1 /BaseFont /${fuentes[k]} /Encoding /WinAnsiEncoding >>`]); });
+  const imagenes = [], hojas = [];
+  return {
+    imagen(bytes, w, h) {
+      const id = nuevoObj([`<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${bytes.length} >>\nstream\n`, bytes, '\nendstream']);
+      imagenes.push(id); return 'Im' + id;
+    },
+    pagina(contenido, enlaces) {
+      const cont = nuevoObj([`<< /Length ${contenido.length} >>\nstream\n`, contenido, '\nendstream']);
+      const annots = (enlaces || []).map((e) => nuevoObj([`<< /Type /Annot /Subtype /Link /Rect [${e.r.map(pdfNum).join(' ')}] /Border [0 0 0] /A << /S /URI /URI (${pdfTexto(e.url)}) >> >>`]));
+      hojas.push(nuevoObj([`<< /Type /Page /Parent ${paginas} 0 R /MediaBox [0 0 ${PDF_W} ${PDF_H}] /Contents ${cont} 0 R /Resources << /Font << ${Object.keys(idFuente).map((k) => `/${k} ${idFuente[k]} 0 R`).join(' ')} >> /XObject ${xobjs} 0 R >>${annots.length ? ` /Annots [${annots.map((a) => a + ' 0 R').join(' ')}]` : ''} >>`]));
+    },
+    terminar(titulo) {
+      objs[catalogo - 1] = [`<< /Type /Catalog /Pages ${paginas} 0 R >>`];
+      objs[paginas - 1] = [`<< /Type /Pages /Kids [${hojas.map((h) => h + ' 0 R').join(' ')}] /Count ${hojas.length} >>`];
+      objs[xobjs - 1] = [`<< ${imagenes.map((i) => `/Im${i} ${i} 0 R`).join(' ')} >>`];
+      const info = nuevoObj([`<< /Title (${pdfTexto(titulo)}) /Producer (Collector Go) /CreationDate (D:${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}) >>`]);
+      const bytesDe = (p) => (typeof p === 'string' ? Uint8Array.from(p, (c) => c.charCodeAt(0) & 0xFF) : p);
+      const trozos = [bytesDe('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n')];
+      let pos = trozos[0].length;
+      const offs = [];
+      objs.forEach((partes, i) => {
+        offs.push(pos);
+        [`${i + 1} 0 obj\n`].concat(partes, ['\nendobj\n']).forEach((p) => { const b = bytesDe(p); trozos.push(b); pos += b.length; });
+      });
+      const xref = `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => String(o).padStart(10, '0') + ' 00000 n \n').join('')}`
+        + `trailer\n<< /Size ${objs.length + 1} /Root ${catalogo} 0 R /Info ${info} 0 R >>\nstartxref\n${pos}\n%%EOF\n`;
+      trozos.push(bytesDe(xref));
+      return new Blob(trozos, { type: 'application/pdf' });
+    }
+  };
+}
+// Lápiz para el contenido de una página: coordenadas desde arriba a la izquierda, como en pantalla
+function lapizPDF() {
+  const ops = [], enlaces = [];
+  const Y = (y) => PDF_H - y;
+  const color = (hex) => { const n = parseInt(String(hex || '#2E2A26').slice(1), 16); return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255].map(pdfNum).join(' '); };
+  return {
+    ops, enlaces,
+    texto(x, y, t, tam, fuente, hex) {
+      const f = { serif: 'F3', bold: 'F2', italic: 'F4' }[fuente] || 'F1';
+      ops.push(`BT /${f} ${tam} Tf ${color(hex)} rg ${pdfNum(x)} ${pdfNum(Y(y))} Td (${pdfTexto(t)}) Tj ET`);
+    },
+    imagen(nombre, x, y, w, h) { ops.push(`q ${pdfNum(w)} 0 0 ${pdfNum(h)} ${pdfNum(x)} ${pdfNum(Y(y + h))} cm /${nombre} Do Q`); },
+    marco(x, y, w, h, hex, grueso) { ops.push(`${color(hex)} RG ${grueso || 0.8} w ${pdfNum(x)} ${pdfNum(Y(y + h))} ${pdfNum(w)} ${pdfNum(h)} re S`); },
+    caja(x, y, w, h, hex) { ops.push(`${color(hex)} rg ${pdfNum(x)} ${pdfNum(Y(y + h))} ${pdfNum(w)} ${pdfNum(h)} re f`); },
+    linea(x1, y1, x2, y2, hex, grueso) { ops.push(`${color(hex)} RG ${grueso || 0.8} w ${pdfNum(x1)} ${pdfNum(Y(y1))} m ${pdfNum(x2)} ${pdfNum(Y(y2))} l S`); },
+    // Candado pequeño (lo secreto)
+    candado(x, y, hex) {
+      ops.push(`${color(hex)} rg ${pdfNum(x)} ${pdfNum(Y(y + 7))} 7 4.6 re f`);
+      ops.push(`${color(hex)} RG 1 w ${pdfNum(x + 1.6)} ${pdfNum(Y(y + 2.6))} m ${pdfNum(x + 1.6)} ${pdfNum(Y(y - 0.4))} ${pdfNum(x + 5.4)} ${pdfNum(Y(y - 0.4))} ${pdfNum(x + 5.4)} ${pdfNum(Y(y + 2.6))} c S`);
+    },
+    enlace(x, y, w, h, url) { enlaces.push({ r: [x, Y(y + h), x + w, Y(y)], url }); },
+    contenido() { return ops.join('\n'); }
+  };
+}
+// Foto a JPEG para el PDF: cuadrada, con el fondo beige de la app detrás de lo transparente
+async function jpegPDF(url, lado) {
+  const img = await new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+  const cv = document.createElement('canvas'); cv.width = cv.height = lado;
+  const x = cv.getContext('2d'); x.fillStyle = C.FONDO_FOTO; x.fillRect(0, 0, lado, lado);
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height, k = Math.min(lado / w, lado / h);
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(img, (lado - w * k) / 2, (lado - h * k) / 2, w * k, h * k);
+  const b = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.8));
+  soltarLienzo(cv);
+  return { bytes: new Uint8Array(await b.arrayBuffer()), lado };
+}
+const fechaHora = (iso) => { try { return new Date(iso).toLocaleString('es-MX', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: C.ZONA_HORARIA }); } catch (e) { return fecha(iso); } };
+const coordTexto = (f) => `${Number(f.lat).toFixed(5)}, ${Number(f.lng).toFixed(5)}`;
+const urlMapa = (f) => `https://www.openstreetmap.org/?mlat=${Number(f.lat).toFixed(6)}&mlon=${Number(f.lng).toFixed(6)}#map=18/${Number(f.lat).toFixed(6)}/${Number(f.lng).toFixed(6)}`;
+// Orden: la fecha (de lo más antiguo a lo más reciente) es la base de todos
+function ordenarFichas(items, orden) {
+  const porFecha = (a, b) => String(a.fecha).localeCompare(String(b.fecha));
+  const texto = (v) => (v == null || v === '' ? '￿' : String(v));
+  const l = items.slice();
+  if (orden === 'recientes') return l.sort((a, b) => porFecha(b, a));
+  if (orden === 'colonia') return l.sort((a, b) => texto(a.colonia).localeCompare(texto(b.colonia), 'es') || porFecha(a, b));
+  if (orden === 'persona') return l.sort((a, b) => texto(a.persona).localeCompare(texto(b.persona), 'es') || porFecha(a, b));
+  return l.sort(porFecha);
+}
+async function crearPDF(P, alAvanzar) {
+  const pdf = nuevoPDF(), items = ordenarFichas(P.items, P.orden);
+  const total = items.length;
+  const tinta = '#2E2A26', gris = '#6B635A', terracota = C.COLORES.terracota;
+  // 1) Fotos (una por ficha y miniaturas de sus avistamientos)
+  for (let i = 0; i < total; i++) {
+    const it = items[i];
+    alAvanzar(i, total);
+    if (it.foto) { try { const j = await jpegPDF(it.foto, 512); it.img = pdf.imagen(j.bytes, j.lado, j.lado); } catch (e) { it.img = null; } }
+    it.mini = [];
+    for (const u of (it.tira || []).slice(0, 8)) { try { const j = await jpegPDF(u, 64); it.mini.push(pdf.imagen(j.bytes, j.lado, j.lado)); } catch (e) { /* sin miniatura */ } }
+  }
+  alAvanzar(total, total);
+  const paginasFichas = Math.max(1, Math.ceil(total / 4)), totalPaginas = paginasFichas + 1;
+  const fechas = items.map((x) => x.fecha).filter(Boolean).sort();
+  // 2) Portada
+  {
+    const L = lapizPDF(), x = 54;
+    L.caja(0, 0, PDF_W, 6, terracota);
+    L.texto(x, 120, P.etiqueta.toUpperCase(), 10, 'bold', terracota);
+    L.texto(x, 160, recortarTexto(P.titulo, PDF_W - 2 * x, 34, 'serif'), 34, 'serif', tinta);
+    const sub = [P.subtitulo, `${total} ${total === 1 ? 'hallazgo' : 'hallazgos'}`,
+      fechas.length ? `${fecha(fechas[0])} – ${fecha(fechas[fechas.length - 1])}` : ''].filter(Boolean).join(' · ');
+    L.texto(x, 186, recortarTexto(sub, PDF_W - 2 * x, 12, ''), 12, '', gris);
+    const lado = 120, gap = 6, cols = 4;
+    items.filter((it) => it.img).slice(0, 12).forEach((it, i) => {
+      const cx = x + (i % cols) * (lado + gap), cy = 220 + Math.floor(i / cols) * (lado + gap);
+      L.imagen(it.img, cx, cy, lado, lado); L.marco(cx, cy, lado, lado, tinta, 0.6);
+    });
+    L.texto(x, PDF_H - 54, C.PDF_PIE.replace('{f}', fecha(new Date().toISOString())), 9, '', gris);
+    L.texto(PDF_W - x - anchoTexto('Collector Go', 12, 'serif'), PDF_H - 54, 'Collector Go', 12, 'serif', terracota);
+    pdf.pagina(L.contenido(), L.enlaces);
+  }
+  // 3) Fichas: cuatro por página
+  const cw = (PDF_W - 2 * PDF_M - 16) / 2, top = 60, ch = (PDF_H - top - PDF_M - 16) / 2, foto = 256;
+  for (let p = 0; p < paginasFichas; p++) {
+    const L = lapizPDF(), grupo = items.slice(p * 4, p * 4 + 4);
+    let izq = `${P.titulo}${P.subtitulo ? ' · ' + P.subtitulo : ''}`;
+    if (P.orden === 'colonia' || P.orden === 'persona') {
+      const vals = [...new Set(grupo.map((x) => (P.orden === 'colonia' ? x.colonia || C.PDF_SIN_COLONIA : x.persona || '—')))];
+      izq += ' · ' + vals.join(' · ');
+    }
+    const der = `Página ${p + 2} de ${totalPaginas}`;
+    L.texto(PDF_M, 40, recortarTexto(izq, PDF_W - 2 * PDF_M - anchoTexto(der, 8.5, '') - 16, 8.5, ''), 8.5, '', gris);
+    L.texto(PDF_W - PDF_M - anchoTexto(der, 8.5, ''), 40, der, 8.5, '', gris);
+    L.linea(PDF_M, 47, PDF_W - PDF_M, 47, tinta, 0.8);
+    grupo.forEach((it, i) => {
+      const x = PDF_M + (i % 2) * (cw + 16), y = top + Math.floor(i / 2) * (ch + 16);
+      if (it.img) L.imagen(it.img, x, y, foto, foto); else L.caja(x, y, foto, foto, C.FONDO_FOTO);
+      L.marco(x, y, foto, foto, tinta, 0.8);
+      let yy = y + foto + 16;
+      const nombre = recortarTexto(it.nombre, cw - (it.privado ? 12 : 0), 12, 'serif');
+      L.texto(x, yy, nombre, 12, 'serif', tinta);
+      if (it.privado) L.candado(x + anchoTexto(nombre, 12, 'serif') + 4, yy - 8, tinta);
+      yy += 12;
+      L.texto(x, yy, recortarTexto([fechaHora(it.fecha), it.colonia, it.persona && P.conPersona ? it.persona : ''].filter(Boolean).join(' · '), cw, 8.5, ''), 8.5, '', gris);
+      yy += 11;
+      if (it.lat != null && it.lng != null) {
+        const t = coordTexto(it);
+        L.texto(x, yy, t, 8.5, '', terracota);
+        L.linea(x, yy + 1.5, x + anchoTexto(t, 8.5, ''), yy + 1.5, terracota, 0.4);
+        L.enlace(x, yy - 9, anchoTexto(t, 8.5, ''), 12, urlMapa(it));
+      }
+      yy += 3;
+      renglones(it.nota, cw, 8, 'italic', 2).forEach((l) => { yy += 10; L.texto(x, yy, l, 8, 'italic', tinta); });
+      if (it.mini.length || it.vistas) {
+        yy += 6;
+        it.mini.forEach((m, k) => { L.imagen(m, x + k * 22, yy, 20, 20); L.marco(x + k * 22, yy, 20, 20, tinta, 0.4); });
+        const tx = x + it.mini.length * 22 + (it.mini.length ? 4 : 0);
+        if (it.vistas) L.texto(tx, yy + 13, recortarTexto(`Visto ${it.vistas + 1} veces${it.colaboran ? ' · ' + it.colaboran : ''}`, cw - (tx - x), 8, ''), 8, '', gris);
+      }
+    });
+    pdf.pagina(L.contenido(), L.enlaces);
+  }
+  return pdf.terminar(P.titulo);
+}
+
+// Qué se descarga: una colección tuya (o todas), un grupo o un grupo de encuentro
+async function datosPDF(fuente) {
+  if (fuente.tipo === 'coleccion') {
+    const mias = S.colMias || guarda(await api.userCards(S.user.id));
+    const cat = S.cats.find((c) => c.id === fuente.cat);
+    const lista = cat ? mias.filter((c) => c.category_id === cat.id) : mias;
+    return { etiqueta: 'Colección', titulo: cat ? cat.name : C.COL_TODAS, subtitulo: S.me.name, conPersona: false, cards: lista };
+  }
+  const g = miGrupo(fuente.gid);
+  if (fuente.tipo === 'grupo') {
+    const lista = guarda(await api.groupCards(fuente.gid));
+    return { etiqueta: 'Grupo', titulo: g ? g.name : 'Grupo', subtitulo: '', conPersona: true, cards: lista };
+  }
+  const e = await api.estadoEncuentro(fuente.gid);
+  const nombre = (uid) => { const m = (e.miembros || []).find((x) => x.user_id === uid); return m ? m.name : ''; };
+  const items = (e.puntos || []).map((x) => ({ nombre: x.name, nota: x.note, fecha: x.created_at, lat: x.lat, lng: x.lng, persona: nombre(x.user_id),
+      foto: x.photo || x.thumb ? api.photoUrl(x.photo || x.thumb) : null, colonia: null }))
+    .concat((e.miras || []).map((k) => ({ nombre: C.ENCUENTRO_MIRA, nota: k.note, fecha: k.created_at, lat: k.lat, lng: k.lng, persona: nombre(k.user_id),
+      foto: k.photo || k.thumb ? api.photoUrl(k.photo || k.thumb) : null, colonia: null })));
+  return { etiqueta: 'Grupo de encuentro', titulo: e.grupo.name, subtitulo: '', conPersona: true, items };
+}
+async function fichasDeCards(cards) {
+  const ids = cards.map((c) => c.id), hist = [];
+  for (let i = 0; i < ids.length; i += 100) hist.push(...(await api.sightingsDe(ids.slice(i, i + 100)).catch(() => [])));
+  return cards.map((c) => {
+    const suyas = hist.filter((h) => h.find_id === c.id && h.tipo !== 'no_esta');
+    const otras = [...new Set(suyas.filter((h) => h.user_id && h.user_id !== c.user_id).map((h) => h.user_name).filter(Boolean))];
+    return { nombre: c.name, nota: c.note, fecha: c.created_at, lat: c.lat, lng: c.lng, colonia: c.colonia, persona: c.user_name, privado: c.is_private,
+      foto: c.photo || c.thumb ? foto(c, false) : null, vistas: c.sightings_count || 0, colaboran: otras.join(', '),
+      tira: suyas.filter((h) => h.thumb || h.photo).slice(-8).map((h) => api.photoUrl(h.thumb || h.photo)) };
+  });
+}
+const P_PDF = {};
+function hojaPDF(fuente) {
+  let orden = 'antiguos'; try { orden = localStorage.getItem('cg_pdf_orden') || 'antiguos'; } catch (e) { /* sin almacenamiento */ }
+  if (orden === 'persona' && fuente.tipo === 'coleccion') orden = 'antiguos';
+  Object.assign(P_PDF, { fuente, orden, estado: 'cargando', datos: null, items: null, i: 0, n: 0, file: null });
+  abrirHoja(pdfHTML, null, 'pdf');
+  (async () => {
+    try {
+      const d = await datosPDF(fuente);
+      P_PDF.datos = d;
+      P_PDF.items = d.items || await fichasDeCards(d.cards);
+      P_PDF.estado = 'listo';
+    } catch (e) { P_PDF.estado = 'error'; fallo(e); }
+    const top = hojaArriba(); if (top && top.tipo === 'pdf') dibujarHoja();
+  })();
+}
+function pdfHTML() {
+  const P = P_PDF, d = P.datos, n = P.items ? P.items.length : 0;
+  if (P.estado === 'cargando') return cabeza(`${ic('download')} ${esc(C.PDF_TITULO)}`) + `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`;
+  if (!d) return cabeza(`${ic('download')} ${esc(C.PDF_TITULO)}`) + `<div class="empty">${ic('alert-triangle')}<p>${esc(C.PDF_VACIO)}</p></div>`;
+  const ordenes = C.PDF_ORDENES.filter((o) => o.id !== 'persona' || P.fuente.tipo !== 'coleccion');
+  const mb = Math.max(0.1, Math.round((0.15 + n * 0.06) * 10) / 10);
+  return `${cabeza(`${ic('download')} ${esc(C.PDF_TITULO)}`)}
+    <div class="resumen-pdf list" style="margin-bottom:10px">
+      <div class="row between"><span class="muted">${esc(d.etiqueta)}</span><b>${esc(d.titulo)}</b></div>
+      <div class="row between"><span class="muted">Hallazgos</span><b>${n}</b></div>
+      <div class="row between"><span class="muted">Páginas</span><b>${n ? 1 + Math.ceil(n / 4) : 0}</b></div>
+      <div class="row between"><span class="muted">Peso</span><b>${esc(C.PDF_PESO.replace('{m}', String(mb).replace('.', ',')))}</b></div></div>
+    <p class="tiny">${esc(C.PDF_TEXTO)}</p>
+    ${n ? `<div class="field"><label>${ic('arrows-sort')} ${esc(C.PDF_ORDEN)}</label><div class="chips pdf-orden">${ordenes.map((o) =>
+      `<button type="button" class="chip ${P.orden === o.id ? 'on' : ''}" data-act="pdf_orden" data-v="${o.id}" ${P.estado === 'creando' ? 'disabled' : ''}>${esc(o.nombre)}</button>`).join('')}</div></div>
+    ${P.estado === 'creando' ? `<div class="pdf-barra"><i style="width:${P.n ? Math.round(P.i / P.n * 100) : 0}%"></i></div><p class="tiny" id="pdf-avance">${esc(C.PDF_PREPARANDO.replace('{i}', P.i).replace('{n}', P.n))}</p>`
+      : P.estado === 'hecho' ? `<button class="btn block" data-act="pdf_compartir">${ic('share')} ${esc(C.PDF_GUARDAR)}</button>
+        <button class="btn alt block" data-act="pdf_crear" style="margin-top:8px">${ic('refresh')} ${esc(C.PDF_CREAR)}</button>`
+      : `<button class="btn block" data-act="pdf_crear">${ic('download')} ${esc(C.PDF_CREAR)}</button>`}`
+    : `<div class="empty">${ic('photo')}<p>${esc(C.PDF_VACIO)}</p></div>`}`;
+}
+async function generarPDF(btn) {
+  const P = P_PDF; if (!P.items || !P.items.length || P.estado === 'creando') return;
+  P.estado = 'creando'; P.i = 0; P.n = P.items.length; P.file = null; dibujarHoja();
+  try {
+    const blob = await crearPDF(Object.assign({}, P.datos, { items: P.items.map((x) => Object.assign({}, x)), orden: P.orden }), (i, n) => {
+      P.i = i; P.n = n;
+      const b = $('.pdf-barra i'), t = $('#pdf-avance');
+      if (b) b.style.width = `${n ? Math.round(i / n * 100) : 0}%`;
+      if (t) t.textContent = C.PDF_PREPARANDO.replace('{i}', i).replace('{n}', n);
+    });
+    const nombre = `collector-go-${sinAcentos(P.datos.titulo).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'fichas'}.pdf`;
+    P.file = new File([blob], nombre, { type: 'application/pdf' });
+    P.estado = 'hecho'; aviso(C.PDF_LISTO, 'file-check');
+  } catch (e) { P.estado = 'listo'; fallo(e); }
+  const top = hojaArriba(); if (top && top.tipo === 'pdf') dibujarHoja();
+}
+async function compartirPDF() {
+  const f = P_PDF.file; if (!f) return;
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [f] })) { await navigator.share({ files: [f], title: P_PDF.datos.titulo }); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  const u = URL.createObjectURL(f), a = document.createElement('a');
+  a.href = u; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 60000);
+}
+
+/* ---------------------------------------------------------------------
+   8. ACCIONES DE BOTONES
+   --------------------------------------------------------------------- */
+const ACCIONES = {
+  entrar: (b) => { ocupado(b, true); api.login().catch((e) => { ocupado(b, false); fallo(e); }); },
+  dudas: () => hojaDudas(),
+  privacidad: () => hojaPrivacidad(),
+  info_precision(b) { const acc = +(b.dataset.acc || (R.pos && R.pos.acc) || C.GPS_PRECISION_MAX + 1); if (hojaArriba() && hojaArriba().tipo === 'registro') recordarFormulario(); avisarPrecision({ acc }, true); },
+  async comentar(b) {
+    const t = $('#coment-in'); const texto = (t ? t.value : '').trim();
+    if (!texto) { if (t) t.focus(); return aviso('Escribe un comentario', 'message-circle'); }
+    if (texto.length > C.COMENTARIO_MAX) return aviso(`Máximo ${C.COMENTARIO_MAX} caracteres`, 'message-circle');
+    ocupado(b, true);
+    try {
+      await api.addComment(b.dataset.id, texto);
+      if (fichaH) { fichaH.borrador = ''; fichaH.coms = await api.comments(b.dataset.id); primeroDe(b.dataset.id, fichaH.coms); }
+      const nueva = await api.card(b.dataset.id); if (nueva) guarda([nueva]);
+      refrescarFicha(b.dataset.id); aviso('Comentario publicado', 'message-circle');
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async borrar_comentario(b) {
+    if (!(await confirmar('¿Borrar este comentario?'))) return;
+    try {
+      await api.delComment(b.dataset.id);
+      if (fichaH) { fichaH.coms = await api.comments(b.dataset.find); primeroDe(b.dataset.find, fichaH.coms); }
+      const nueva = await api.card(b.dataset.find); if (nueva) guarda([nueva]);
+      refrescarFicha(b.dataset.find); aviso('Comentario borrado', 'trash');
+    } catch (e) { fallo(e); }
+  },
+  tab: (b) => irA(b.dataset.v),
+  nuevo: () => nuevoRegistro(),
+  fondo: (b, ev) => { const top = hojaArriba(); if (ev.target === b && top && !top.fija) cerrarHoja(); },
+  cerrar: () => cerrarHoja(),
+  atras: () => cerrarHoja(),
+  elegir(b) {
+    const g = b.closest('[data-pick]'); $$('[data-v]', g).forEach((x) => x.classList.toggle('on', x === b));
+    if (g.dataset.pick === 'dest') {
+      const antes = destEncuentro(R.dest), ahora = destEncuentro(b.dataset.v);
+      const sm = !ahora && sinMapaRecordado(b.dataset.v);
+      if (antes !== ahora || sm !== !!R.sinMapa) { recordarFormulario(); R.dest = b.dataset.v; R.sinMapa = sm; dibujarHoja(); if (!sinMapaReg() && !R.pos && R.gps !== 'buscando') leerGPS(); return; }
+      const p = $('#campo-priv'); if (p) p.hidden = b.dataset.v.startsWith('g:'); R.dest = b.dataset.v; buscarCandidatos();
+    }
+    if (g.dataset.pick === 'dest_ed') {
+      const raiz = $('.sheet'), E = raiz && raiz._edicion, c = E && S.cache.get(($('[data-act="guardar_edicion"]', raiz) || {}).dataset.id);
+      if (E && c) {
+        E.dest = b.dataset.v;
+        // al salir de un grupo privado queda secreto (como al borrar un grupo); se puede cambiar con el ojo
+        if (E.dest.startsWith('c:') && c.group_id && E.origen.startsWith('g:')) E.priv = E.dest === E.origen ? false : !c.group_public;
+        const pv = $('#ed-priv', raiz); if (pv) { pv.hidden = E.dest.startsWith('g:'); $$('[data-v]', pv).forEach((x) => x.classList.toggle('on', (x.dataset.v === '1') === E.priv)); }
+        const nm = $('#ed-mover', raiz); if (nm) nm.innerHTML = notaMover(c, E);
+      }
+      return;
+    }
+    if (g.dataset.pick === 'priv') {
+      const E = $('.sheet') && $('.sheet')._edicion; if (E) E.priv = b.dataset.v === '1';
+      R.priv = b.dataset.v === '1'; const e = $('#campo-etiquetas'); if (e) e.hidden = R.priv;
+    }
+    if (g.dataset.pick === 'mapa') {
+      const v = b.dataset.v === '0'; if (v === !!R.sinMapa) return;
+      recordarFormulario(); R.sinMapa = v; recordarSinMapa(R.dest, v); dibujarHoja();
+      if (!v && !R.pos) leerGPS();
+    }
+  },
+  medalla: (b) => aviso(b.dataset.info, b.dataset.icon || 'medal'),
+  // Desde el aviso de "No está": editar la ubicación del hallazgo (se carga si hace falta)
+  async editar_lugar(b) {
+    const id = b.dataset.id; if (!id || b.disabled) return;
+    if (!S.cache.get(id) || S.cache.get(id).parcial) { ocupado(b, true); try { const x = await api.card(id); if (x) guarda([x]); } catch (e) { ocupado(b, false); return fallo(e); } ocupado(b, false); }
+    const x = S.cache.get(id); if (!x || x.user_id !== S.user.id) return aviso(C.HALLAZGO_NO_DISPONIBLE || 'Ya no está disponible', 'alert-triangle');
+    editarHallazgo(id);
+  },
+  mover_mis_hallazgos: (b) => hojaMoverTodos(b.dataset.id),
+  buscar_mapa: () => hojaBuscarPersonas('hallazgos'),
+  buscar_ir(b) {
+    const c = S.cache.get(b.dataset.id); if (!c) return;
+    cerrarTodo();
+    if (!enMapa(c) || !S.map) return abrirFicha(c.id);
+    if (S.tab !== 'map') irA('map');
+    S.map.once('moveend', () => abrirFicha(c.id));
+    S.map.flyTo([c.lat, c.lng], 17, { duration: 0.8 });
+  },
+  esta_aqui: (b) => estaAqui(b),
+  esta_aqui_enviar: (b) => estaAquiEnviar(b),
+  propuesta_responder: (b) => responderPropuesta(b),
+  pines_revisar: () => hojaPinesRevisar(),
+  calif_simbolo: (b) => hojaSimbolo(b.dataset.id),
+  calif_simbolo_guardar: (b) => guardarSimbolo(b, b.dataset.id),
+  mover_mis_hallazgos_si: (b) => moverTodos(b, b.dataset.id),
+  // "+ Nueva colección" desde la edición: al guardarla queda elegida para el hallazgo
+  ed_nueva_col() {
+    const raiz = $('.sheet'), E = raiz && raiz._edicion; if (!E) return;
+    if (S.cats.length >= limiteCategorias()) return aviso(C.COLECCION_MAXIMO_CORTO, 'alert-triangle');
+    const c = S.cache.get(E.cid);
+    S.trasNuevaCat = (nid) => { E.dest = 'c:' + nid; if (c && c.group_id) E.priv = !c.group_public; };
+    editarCategoria('');
+  },
+  ed_mapa(b) {
+    const raiz = $('.sheet'), E = raiz && raiz._edicion; if (!E) return;
+    const v = b.dataset.v === '0'; if (v === E.sinMapa) return;
+    E.sinMapa = v; $$('[data-act="ed_mapa"]', raiz).forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', x === b); });
+    pintarLugarEdicion(raiz, E);
+  },
+  async ed_mi_ubicacion(b) {
+    const raiz = $('.sheet'), E = raiz && raiz._edicion; if (!E || b.disabled) return;
+    ocupado(b, true);
+    try { const p = await getPos(); E.pos = p; E.movido = true; if (E.mover) E.mover(p); aviso(C.UBICACION_LISTA, 'current-location'); }
+    catch (e) { aviso(C.GPS_SIN, 'map-pin-off'); }
+    ocupado(b, false);
+  },
+
+  /* íconos */
+  icon_tab(b) {
+    const raiz = b.closest('[data-iconpick]');
+    $$('[data-act="icon_tab"]', raiz).forEach((x) => x.classList.toggle('on', x === b));
+    const q = $('#buscar-icono', raiz); if (q) { q.value = ''; q.hidden = b.dataset.v === 'emoji'; }
+    $('#icon-lista', raiz).innerHTML = listaIconos(b.dataset.v, raiz.dataset.sel);
+  },
+  elegir_icono(b) {
+    const raiz = b.closest('[data-iconpick]');
+    raiz.dataset.sel = b.dataset.v;
+    $$('[data-act="elegir_icono"]', raiz).forEach((x) => x.classList.toggle('on', x === b));
+    $('#icono-elegido', raiz).innerHTML = ic(b.dataset.v);
+  },
+  usar_emoji(b) {
+    const raiz = b.closest('[data-iconpick]');
+    const e = primerGrafema($('#emoji-in', raiz).value);
+    if (!esEmojiTexto(e)) return aviso('Escribe un emoji, no letras', 'mood-smile');
+    raiz.dataset.sel = 'emoji:' + e;
+    $$('[data-act="elegir_icono"]', raiz).forEach((x) => x.classList.remove('on'));
+    $('#icono-elegido', raiz).innerHTML = ic(raiz.dataset.sel);
+    aviso('Emoji elegido', 'mood-smile');
+  },
+
+  /* mapa */
+  filtro(b) {
+    S.filtro = leerFiltro(b.dataset.v);
+    if (S.filtro.modo === 'siguiendo' && !S.following.size && !(S.sigoCols || []).length) aviso('Aún no sigues a nadie', 'user-plus');
+    pintarFiltrosMapa(); cargarPines();
+  },
+  grupo_mapa: (b) => abrirEncuentro(b.dataset.id),
+  salir_grupo_mapa: () => salirGrupo(),
+  grupo_panel() { const D = encuentroActual(); if (!D) return; D.abierto = !D.abierto; pintarPanelGrupo(D); },
+  ubicar(b) {
+    ocupado(b, true);
+    getPos().then((p) => { ponerYo(p); S.map.setView([p.lat, p.lng], 17); })
+      .catch(() => aviso('No se pudo leer el GPS', 'current-location')).finally(() => ocupado(b, false));
+  },
+  cerca: () => cercaDeMi(),
+  cerca_filtro(b) { const D = $('.sheet')._cerca; D.mios = b.dataset.v === '1'; dibujarHoja(); },
+
+  /* muro, tarjetas y fichas */
+  muro_filtro(b) { S.muro = leerFiltro(b.dataset.v); pintarMuro(); },
+  refrescar: () => pintarMuro(),
+  mas: () => pintarMuro(true),
+  ficha: (b) => abrirFicha(b.dataset.id, b.dataset.s ? { foto: b.dataset.s } : null),
+  comentar_ficha: (b) => abrirFicha(b.dataset.id, { modo: b.dataset.ver ? 'coms' : 'comentar' }),
+  perfil: (b) => abrirPerfil(b.dataset.id),
+  galeria(b) { const top = hojaArriba(); if (!top || top.tipo !== 'ficha' || !fichaH) return; fichaH.i = +b.dataset.i; dibujarHoja(); },
+  async reaccion(b) {
+    const c = S.cache.get(b.dataset.id), tipo = b.dataset.v; if (!c) return;
+    const mia = (c.my_reactions || []).includes(tipo);
+    if (tipo === 'eye' && !mia) return marcarVisto(b, c);
+    // "Lo vi" ya marcado: se pregunta qué hacer (sumar la visita de hoy, otra con foto, o quitarlo)
+    if (tipo === 'eye' && mia && !c.is_private && navigator.onLine) {
+      if (b.disabled) return;
+      let e = null;
+      ocupado(b, true);
+      try { e = await api.estadoVisitas(c.id); } catch (err) { ocupado(b, false); fallo(err); return hojaVistoMarcado(c, null); }
+      ocupado(b, false);
+      return hojaVistoMarcado(c, e);
+    }
+    return alternarReaccion(c, tipo, mia);
+  },
+  // Antes de tomar la foto se revisa que estés en el lugar (igual que al marcar "Lo vi")
+  async visto_sumar_foto(b) {
+    const c = S.cache.get(b.dataset.id); if (!c) return;
+    ocupado(b, true);
+    let p;
+    try { p = await getPos(); } catch (e) { ocupado(b, false); return aviso(C.VISTO_SIN_GPS, 'current-location'); }
+    ocupado(b, false);
+    if (p.acc == null || p.acc > 100) return aviso(C.VISTO_APROXIMADA, 'current-location');
+    const d = distancia(p, c), radio = Math.min(Math.max(50, c.accuracy || 0), 300);
+    const visto = (b.dataset.tipo || 'visto') === 'visto';
+    if (d > radio) return aviso((visto ? C.VISTO_LEJOS : C.AUSENCIA_LEJOS).replace('{d}', metros(d)), 'navigation');
+    cerrarHoja(); abrirCol(c, visto ? 'visto' : 'no_esta', true);
+  },
+  visto_hoy(b) { const c = S.cache.get(b.dataset.id); if (!c) return; cerrarHoja(); marcarVisto(b, c); },
+  visto_quitar(b) { const c = S.cache.get(b.dataset.id); cerrarHoja(); if (c && (c.my_reactions || []).includes('eye')) alternarReaccion(c, 'eye', true); },
+  ir_al_punto(b) { const c = S.cache.get(b.dataset.id); if (!c) return; cerrarTodo(); irAlPunto(c); },
+  cerrar_guia: () => terminarGuia(),
+  // Solo se comparte lo propio: tus hallazgos y tu vitrina
+  whatsapp: (b) => { const c = S.cache.get(b.dataset.id); if (compartible(c)) compartirHallazgo(c, b); },
+  whatsapp_perfil(b) {
+    if (b.dataset.id !== S.user.id) return;
+    const M = MOSAICOS.get(b.dataset.id);
+    if (M && M.estado === 'listo' && puedeCompartirArchivo(M.file)) return compartirMosaico(M);
+    hojaMosaico(b.dataset.id);
+  },
+  enviar_mosaico(b) { const M = MOSAICOS.get(b.dataset.id); if (M && M.estado === 'listo') compartirMosaico(M); },
+  galeria_cat(b) {
+    const uid = b.dataset.id, cat = b.dataset.cat; if (!uid || !cat) return;
+    if (uid === S.user.id) { cerrarTodo(); S.coleccionCat = cat; return irA('coleccion'); }
+    abrirGaleriaCat(uid, cat);
+  },
+  ver_vitrina: (b) => abrirVitrina(b.dataset.id),
+  aviso_rapido: (b) => hojaAvisoRapido(b.dataset.id || null),
+  ya_no_esta(b) { const c = S.cache.get(b.dataset.id); if (c) marcarAusencia(b, c); },
+  pista_encuadre: () => aviso(C.ENCUADRE_PISTA, 'arrows-move'),
+  col_guardar: (b) => guardarCol(b),
+  persona_sin_col: (b) => hojaSinColeccion(b.dataset.id),
+  descargar_fichas(b) { const t = b.dataset.tipo; hojaPDF(t === 'coleccion' ? { tipo: t, cat: b.dataset.id || null } : { tipo: t, gid: b.dataset.id }); },
+  pdf_orden(b) { if (P_PDF.estado === 'creando') return; P_PDF.orden = b.dataset.v; P_PDF.file = null; if (P_PDF.estado === 'hecho') P_PDF.estado = 'listo';
+    try { localStorage.setItem('cg_pdf_orden', P_PDF.orden); } catch (e) { /* sin almacenamiento */ } dibujarHoja(); },
+  pdf_crear: (b) => generarPDF(b),
+  async salir_bloqueada() { try { await api.logout(); } catch (e) { /* nada */ } location.hash = ''; location.reload(); },
+  pdf_compartir: () => compartirPDF(),
+  encuadrar_col() { if (!K.enc) return; recordarCol(); hojaEncuadre(K.enc, async () => { await cuadroCol(); }); },
+  quitar_foto_col() { recordarCol(); limpiarCol(); dibujarHoja(); },
+  col_borrar: (b) => borrarColaboracion(b, b.dataset.id, b.dataset.f),
+  async col_descartar(b) {
+    const D = adminDatos(); if (!D) return;
+    try { await api.descartarReporteColaboracion(b.dataset.id); await D.cargar(); } catch (e) { fallo(e); }
+  },
+  async col_quitar(b) {
+    const D = adminDatos(); if (!D) return;
+    if (!(await confirmar(C.COL_QUITAR_CONFIRMAR, 'trash'))) return;
+    ocupado(b, true);
+    // La foto queda en la lista de su autora: su app la quita del almacén al abrirse
+    try { await api.delSighting(b.dataset.id); S.feed = []; await D.cargar(); aviso(C.COL_BORRADA.replace('Tu foto', 'La foto'), 'trash'); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  col_reportar: (b) => hojaReportarColaboracion(b.dataset.id),
+  async col_reporte_enviar(b) {
+    const t = $('#col-motivo'), motivo = t ? t.value.trim() : '';
+    if (!motivo) { if (t) t.focus(); return aviso(C.COL_REPORTE_VACIO, 'flag'); }
+    ocupado(b, true);
+    try { await api.reportarColaboracion(b.dataset.id, motivo.slice(0, 200)); api.dispararPush(); cerrarHoja(); aviso(C.COL_REPORTE_LISTO, 'flag'); }
+    catch (e) { ocupado(b, false); if (e && e.code === '23505') { cerrarHoja(); aviso(C.COL_REPORTE_YA, 'flag'); } else fallo(e); }
+  },
+  reg_enc_modo(b) { recordarFormulario(); R.encModo = b.dataset.v === 'punto' ? 'punto' : 'mira'; dibujarHoja(); },
+  aviso_tipo(b) { recordarRapido(); Q.kind = b.dataset.v === 'bien' ? 'bien' : 'ayuda'; dibujarHoja(); },
+  aviso_grupo(b) { recordarRapido(); const id = b.dataset.id; if (Q.sel.has(id)) Q.sel.delete(id); else Q.sel.add(id); dibujarHoja(); },
+  enviar_aviso_rapido: (b) => enviarAvisoRapido(b),
+  vitrina_invitar() {
+    const el = $('#invita'); if (!el) return;
+    el.scrollIntoView({ behavior: menosMovimiento() ? 'auto' : 'smooth', block: 'center' });
+    el.classList.remove('pulso'); void el.offsetWidth; el.classList.add('pulso');
+  },
+  reencuentro(b) {
+    const c = S.cache.get(b.dataset.id); if (!c) return;
+    nuevoRegistro(c);
+  },
+  usar_candidato(b) {
+    const c = S.cache.get(b.dataset.id); if (!c) return;
+    recordarFormulario(); R.destino = c; dibujarHoja();
+  },
+  sin_foto() { R.sinFoto = true; dibujarHoja(); },
+  editar_hallazgo: (b) => editarHallazgo(b.dataset.id),
+  guardar_edicion: (b) => guardarEdicion(b, b.dataset.id),
+  async borrar_hallazgo(b) {
+    const c = S.cache.get(b.dataset.id); if (!c) return;
+    const propio = c.user_id === S.user.id;
+    let hist = []; try { hist = await api.history(c.id); } catch (e) { hist = []; }
+    // Con fotos de la comunidad, el hallazgo sigue con la siguiente persona que lo retrató
+    const conCol = propio && !c.is_private && hist.some((h) => h.user_id && h.user_id !== S.user.id && (h.photo || h.thumb) && h.tipo !== 'no_esta');
+    if (!(await confirmar((conCol ? C.BORRAR_CONFIRMAR_COL : C.BORRAR_CONFIRMAR).replace('{h}', c.name)))) return;
+    ocupado(b, true);
+    try {
+      let traspaso = false;
+      if (propio) {
+        const r = await api.borrarHallazgo(c.id);
+        traspaso = !!(r && r.traspaso);
+        await api.removeFiles((r && r.quitar) || []).catch(() => null);
+      } else {
+        await api.removeFiles([c.photo, c.thumb]).catch(() => null);
+        await api.delFind(c.id);
+      }
+      if (propio) procesarFotosPorBorrar(); // su foto mediana (si tenía) también se quita
+      S.cache.delete(c.id); S.feed = S.feed.filter((x) => x.find_id !== c.id); S.stats = null;
+      const adm = adminAbierto();
+      if (adm) { await api.dismiss(c.id).catch(() => null); while (hojaArriba() !== adm) pila.pop(); dibujarHoja(); $('.sheet')._admin.cargar(); }
+      else cerrarTodo();
+      aviso(traspaso ? C.BORRADO_TRASPASO : 'Borrado', 'trash'); refrescarActual();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async avisar(b) {
+    if (!(await confirmar('¿Avisar a moderación sobre este hallazgo?', 'flag'))) return;
+    try { await api.report(b.dataset.id); aviso('Aviso enviado', 'flag'); }
+    catch (e) { if (e && e.code === '23505') aviso('Ya habías avisado', 'flag'); else fallo(e); }
+  },
+
+  /* registrar */
+  usar_original() {
+    if (!R.usarRecorte) return;
+    recordarFormulario(); R.usarRecorte = false; if (R.original) ponerVista(R.original); dibujarHoja();
+  },
+  async recortar(b) {
+    if (R.recorte) { recordarFormulario(); R.usarRecorte = true; ponerVista(R.recorte); return dibujarHoja(); }
+    const prog = $('#prog'); if (prog) prog.hidden = false; ocupado(b, true);
+    const E = R.enc; if (E) E.ocupado = true;   // mientras se quita el fondo, el encuadre no se mueve
+    try {
+      const cuadro = await cuadroAlDia(), ver = E ? E.ver || 0 : 0;
+      const r = await recortarFondo(cuadro, (k) => { const p = $('#prog'); if (p) p.firstElementChild.style.width = Math.round(k * 100) + '%'; });
+      if (R.enc !== E || (E && (E.ver || 0) !== ver)) return;
+      recordarFormulario(); R.recorte = r; R.usarRecorte = true; ponerVista(R.recorte); dibujarHoja();
+    } catch (e) {
+      console.error(e); ocupado(b, false);
+      aviso('No se pudo recortar. Se usará la foto original', 'scissors');
+    } finally { if (E) E.ocupado = false; const p = $('#prog'); if (p) p.hidden = true; }
+  },
+  gps_chip() {
+    const top = hojaArriba(), X = top && top.tipo === 'marca' ? M : R;
+    if (X.pos && X.pos.acc != null && esAproximada(X.pos)) { if (X === R) recordarFormulario(); else recordarMarca(); return avisarPrecision({ acc: X.pos.acc }, true); }
+    if (X.pos && X.pos.acc == null) return aviso(C.GPS_MARCADO_A_MANO, 'hand-finger');   // no se pierde el punto corregido a mano
+    if (X.gps === 'error' || !X.pos) aviso(C.GPS_TOCA_MAPA, 'map-pin');
+    if (X === R) leerGPS(); else leerGpsMarca();
+  },
+  releer_gps: () => leerGPS(),
+  guardar_hallazgo: (b) => guardarHallazgo(b),
+
+  /* colección y categorías */
+  colcat: (b) => { S.coleccionCat = b.dataset.v || null; S.colAbierta = false; pintarColeccion(true); },
+  col_mosaico: () => { S.colAbierta = !S.colAbierta; pintarColeccion(true); },
+  categorias: () => hojaCategorias(false),
+  editar_categoria: (b) => editarCategoria(b.dataset.id),
+  guardar_categoria: (b) => guardarCategoria(b, b.dataset.id),
+  async borrar_categoria(b) {
+    const c = S.cats.find((x) => x.id === b.dataset.id); if (!c) return;
+    if (!(await confirmar(`¿Borrar la categoría "${c.name}"?`))) return;
+    try {
+      await api.delCat(c.id);
+      S.cats = await api.listCats(S.user.id);
+      if (S.filtro.modo === 'cat' && S.filtro.id === c.id) S.filtro = { modo: 'todos', id: null };
+      dibujarHoja(); aviso('Borrado', 'trash');
+    } catch (e) { fallo(e); }
+  },
+  listo_categorias() {
+    if (!S.cats.length) return aviso('Crea al menos una categoría', 'plus');
+    const top = hojaArriba(); cerrarTodo(); if (top && top.listo) top.listo();
+  },
+
+  /* grupos */
+  grupo: (b) => abrirGrupo(b.dataset.id),
+  grupo_nuevo: () => (gruposCreados() >= maxGrupos() ? hojaLimiteGrupos() : editarGrupo('')),
+  editar_grupo: (b) => editarGrupo(b.dataset.id),
+  guardar_grupo: (b) => guardarGrupo(b, b.dataset.id),
+  // 2.0.3: eliminar un grupo de colección (solo su creadora). Las fotos no se borran: regresan a cada quien.
+  eliminar_grupo(b) {
+    const g = miGrupo(b.dataset.id); if (!g) return;
+    abrirHoja(() => `${cabeza(`${ic('trash')} ${esc(C.GRUPO_ELIMINAR)}`)}<div class="hoja-segunda">
+      <p><b>${esc(g.name)}</b></p><p class="tiny">${esc(C.GRUPO_ELIMINAR_TEXTO)}</p>
+      ${g.is_public ? '' : `<p class="tiny">${esc(C.GRUPO_ELIMINAR_PRIVADO)}</p>`}
+      <p class="tiny"><b>${esc(C.GRUPO_ELIMINAR_SIN_VUELTA)}</b></p>
+      <button class="btn block peligro" data-act="eliminar_grupo_si" data-id="${g.id}">${ic('trash')} ${esc(C.GRUPO_ELIMINAR)}</button>
+      <button class="btn alt block" data-act="cerrar" style="margin-top:8px">${esc(C.CANCELAR)}</button></div>`, null, 'eliminar_grupo');
+  },
+  async eliminar_grupo_si(b) {
+    const gid = b.dataset.id, g = miGrupo(gid); if (!gid || b.disabled) return;
+    ocupado(b, true);
+    try {
+      const r = await api.eliminarGrupo(gid);
+      if (S.filtro && S.filtro.modo === 'grupo' && S.filtro.id === gid) S.filtro = { modo: 'todos', id: null };
+      await recargarGrupos();
+      S.cats = await api.listCats(S.user.id); S.stats = null; S.cache.clear(); S.feed = [];
+      cerrarTodo();
+      aviso(r && r.sin_coleccion ? C.GRUPO_ELIMINADO_SIN_COL : C.GRUPO_ELIMINADO.replace('{g}', g ? g.name : ''), 'trash');
+      refrescarActual();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  ver_grupo_mapa(b) {
+    if (!miGrupo(b.dataset.id)) return aviso('Únete al grupo para verlo en tu mapa', 'users');
+    S.filtro = { modo: 'grupo', id: b.dataset.id }; cerrarTodo(); salirGrupo(); irA('map');
+  },
+  tabla_grupo: (b) => tablaGeneral(b.dataset.id),
+  async salir_grupo(b) {
+    const g = miGrupo(b.dataset.id); if (!g) return;
+    if (!(await confirmar(`¿Salir de "${g.name}"? Tus hallazgos se quedan en el grupo.`, 'door-exit'))) return;
+    try {
+      await api.leaveGroup(g.id, S.user.id); await recargarGrupos();
+      if (S.filtro.modo === 'grupo' && S.filtro.id === g.id) S.filtro = { modo: 'todos', id: null };
+      if (S.muro.modo === 'grupo' && S.muro.id === g.id) S.muro = { modo: 'todos', id: null };
+      cerrarTodo(); aviso('Saliste del grupo', 'door-exit'); refrescarActual();
+    } catch (e) { fallo(e); }
+  },
+  async unirme(b) {
+    ocupado(b, true);
+    try {
+      const gid = await api.joinGroup(b.dataset.v); await recargarGrupos();
+      cerrarTodo(); aviso('Ya eres parte del grupo', 'users'); abrirGrupo(gid); refrescarActual();
+      if (esEncuentro(miGrupo(gid))) ofrecerPush();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+
+  /* grupos de encuentro */
+  tipo_grupo(b) {
+    const top = hojaArriba(), E = top && top.datos; if (!E) return;
+    const raiz = $('.sheet'), n = $('#g-nombre', raiz);
+    E.nombre = n ? n.value : E.nombre; E.color = valor(raiz, 'color') || E.color; E.icon = iconoElegido(raiz) || E.icon;
+    const u = valor(raiz, 'uso'); if (u) E.uso = u;
+    E.tipo = b.dataset.v === 'encuentro' ? 'encuentro' : 'coleccion';
+    dibujarHoja();
+  },
+  // Desde la guía al punto: se termina la guía y vuelve el panel del grupo
+  encuentro: (b) => { terminarGuia(); abrirEncuentro(b.dataset.id); },
+  encuentro_guia: () => hojaGuiaEncuentro(),
+  encuentro_refrescar(b) { const D = encuentroActual(); if (D) { ocupado(b, true); D.cargar(true); } },
+  estado_encuentro(b) { const D = encuentroActual(); if (D) hojaEstado(D.gid, b.dataset.v === 'ayuda' ? 'ayuda' : 'bien'); },
+  enviar_estado: (b) => enviarEstado(b, b.dataset.gid, b.dataset.v === 'ayuda' ? 'ayuda' : 'bien'),
+  whatsapp_estado: (b) => abrirWhatsApp(b.dataset.texto || ''),
+  mira_nuevo() { const D = encuentroActual(); if (D) hojaMarca(D.gid, 'mira'); },
+  punto_nuevo() { const D = encuentroActual(); if (D) hojaMarca(D.gid, 'punto'); },
+  quitar_foto_marca() { recordarMarca(); if (M.vistaUrl) URL.revokeObjectURL(M.vistaUrl); if (M.enc) soltarLienzo(M.enc.img); M.foto = null; M.enc = null; M.vistaUrl = null; dibujarHoja(); },
+  encuadrar_marca() { if (!M.enc) return; recordarMarca(); hojaEncuadre(M.enc, async () => { await cuadroMarca(); }); },
+  async encuadre_listo(b) {
+    const raiz = $('.sheet'), fn = raiz && raiz._encuadre;
+    ocupado(b, true);
+    try { if (fn) await fn(); } catch (e) { console.error(e); }
+    cerrarHoja();
+  },
+  releer_gps_marca: () => leerGpsMarca(),
+  guardar_marca: (b) => guardarMarca(b),
+  ver_foto(b) { const src = b.dataset.src; if (src) abrirHoja(() => `${cabeza('')}<img class="big" src="${esc(src)}" alt="">`, null, 'foto'); },
+  ver_mira(b) {
+    const D = encuentroActual(), k = D && D.e && D.e.miras.find((x) => x.id === b.dataset.id); if (!k) return;
+    D.foco = { lat: k.lat, lng: k.lng }; verMapaEncuentro(D);
+  },
+  enc_mira_abrir(b) {
+    const D = encuentroActual(); if (!D) return;
+    D.miraAbierta = D.miraAbierta === b.dataset.id ? null : b.dataset.id;
+    const el = $('#enc-abajo'); if (el) el.innerHTML = encAbajoHTML(D); else pintarPanelGrupo(D);
+  },
+  ver_en_mapa_enc(b) { const D = encuentroActual(); if (!D) return; D.foco = b.dataset.id; verMapaEncuentro(D); },
+  enc_tab(b) {
+    const D = encuentroActual(); if (!D || !D.e) return;
+    D.tab = b.dataset.v; const el = $('#enc-abajo'); if (el) el.innerHTML = encAbajoHTML(D); else pintarPanelGrupo(D);
+  },
+  enc_linea(b) {
+    const D = encuentroActual(); if (!D || !D.e) return;
+    D.lineas[b.dataset.v] = !D.lineas[b.dataset.v]; const el = $('#enc-arriba'); if (el) el.innerHTML = encArribaHTML(D); else pintarPanelGrupo(D);
+  },
+  enc_ver_todo() { const D = encuentroActual(); if (D) verTodoEncuentro(D); },
+  async borrar_mira(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar('¿Quitar este "Mira esto"?'))) return;
+    try { await api.delMira(b.dataset.id); procesarFotosPorBorrar(); aviso('Quitado', 'trash'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  ir_punto_encuentro(b) {
+    const D = encuentroActual(), p = D && D.e && D.e.puntos.find((x) => x.id === b.dataset.id); if (!p) return;
+    const g = D.e.grupo; cerrarTodo();
+    irAlPunto({ id: 'punto-' + p.id, lat: p.lat, lng: p.lng, name: p.name, cat_color: g.color, cat_icon: 'flag', act: 'encuentro', actId: g.id });
+  },
+  async punto_principal(b) {
+    const D = encuentroActual(); if (!D) return;
+    try { await api.puntoPrincipal(b.dataset.id); aviso('Punto principal', 'star'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  async borrar_punto(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar('¿Borrar este punto de encuentro?'))) return;
+    try { await api.delPunto(b.dataset.id); procesarFotosPorBorrar(); aviso('Borrado', 'trash'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  miembro_encuentro: (b) => hojaMiembroEncuentro(b.dataset.id),
+  async coadmin_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    ocupado(b, true);
+    try { await api.nombrarCoadmin(D.gid, b.dataset.id, b.dataset.v === '1'); cerrarHoja(); aviso(b.dataset.v === '1' ? 'Ahora es coadministradora' : 'Ya no es coadministradora', 'shield'); D.cargar(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async sacar_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar('¿Sacar a esta persona del grupo? Se borra todo lo suyo aquí.', 'user-minus'))) return;
+    try { await api.sacarMiembro(D.gid, b.dataset.id); cerrarHoja(); aviso('Ya no es parte del grupo', 'user-minus'); D.cargar(); } catch (e) { fallo(e); }
+  },
+  ajustes_encuentro: () => hojaAjustesEncuentro(),
+  invitar_grupo: (b) => hojaInvitar(b.dataset.id),
+  async invitacion_unirme(b) {
+    const gid = b.dataset.g; ocupado(b, true);
+    try { await api.responderInvitacion(gid, true); await recargarGrupos(); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    S.avisos = S.avisos.filter((a) => !(a.kind === 'invitacion' && a.grupo_id === gid)); pintarCampana();
+    const top = hojaArriba(); if (top && top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+    aviso(C.INVITACION_DENTRO, 'users');
+    abrirGrupo(gid);
+  },
+  async invitacion_rechazar(b) {
+    const gid = b.dataset.g; ocupado(b, true);
+    try { await api.responderInvitacion(gid, false); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    S.avisos = S.avisos.map((a) => (a.kind === 'invitacion' && a.grupo_id === gid ? Object.assign({}, a, { reaccion: 'rechazada', nuevo: false }) : a)); pintarCampana();
+    const top = hojaArriba(); if (top && top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
+    aviso(C.INVITACION_RECHAZADA_OK, 'x');
+  },
+  async invitar_amiga(b) {
+    ocupado(b, true);
+    try { await api.invitarAGrupo(b.dataset.g, b.dataset.id); aviso(C.INVITAR_LISTO, 'user-plus'); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    const top = hojaArriba(); if (top && top.tipo === 'invitar' && top.datos) top.datos.cargar();
+  },
+  invitar_whatsapp(b) {
+    const g = datosGrupo(b.dataset.g).g, enlace = enlaceGrupo(g); if (!enlace) return;
+    abrirWhatsApp(`${C.WHATSAPP_INVITACION} "${g.name}"\n${enlace}`);
+  },
+  async copiar_invitacion(b) {
+    const enlace = enlaceGrupo(datosGrupo(b.dataset.g).g); if (!enlace) return;
+    try { await navigator.clipboard.writeText(enlace); aviso(C.INVITAR_COPIADO, 'copy'); }
+    catch (e) { aviso(enlace, 'copy'); }
+  },
+  async readmitir_persona(b) {
+    ocupado(b, true);
+    try { await api.readmitir(b.dataset.g, b.dataset.id); aviso(C.READMITIDA, 'user-check'); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    const top = hojaArriba(); if (top && top.tipo === 'invitar' && top.datos) top.datos.cargar();
+  },
+  miembro_grupo: (b) => hojaMiembroGrupo(b.dataset.g, b.dataset.id),
+  async coadmin_grupo(b) {
+    ocupado(b, true);
+    try { await api.nombrarCoadmin(b.dataset.g, b.dataset.id, b.dataset.v === '1'); cerrarHoja(); aviso(b.dataset.v === '1' ? 'Ahora es coadministradora' : 'Ya no es coadministradora', 'shield'); datosGrupo(b.dataset.g).recargar(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async sacar_grupo(b) {
+    if (b.disabled) return; b.disabled = true;
+    if (!(await confirmar(C.SACAR_GRUPO_CONFIRMAR, 'user-minus'))) { b.disabled = false; return; }
+    try { await api.sacarMiembro(b.dataset.g, b.dataset.id); cerrarHoja(); aviso('Ya no es parte del grupo', 'user-minus'); datosGrupo(b.dataset.g).recargar(); } catch (e) { b.disabled = false; fallo(e); }
+  },
+  async guardar_ajustes_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    const raiz = $('.sheet');
+    const o = { juego: valor(raiz, 'juego') === '1', tema: $('#enc-tema', raiz).value.trim(), acuerdo: $('#enc-acuerdo', raiz).value.trim() };
+    ocupado(b, true);
+    try { await api.ajustesEncuentro(D.gid, o); api.dispararPush(); cerrarHoja(); aviso('Guardado'); D.cargar(); } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async borrar_lo_mio(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar(C.ENCUENTRO_BORRAR_MIO, 'eraser'))) return;
+    ocupado(b, true);
+    try {
+      await api.borrarLoMio(D.gid);
+      if (S.comparte && S.comparte.gid === D.gid) pararCompartir(true);
+      procesarFotosPorBorrar(); aviso('Se borró todo lo tuyo en este grupo', 'eraser'); D.cargar();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async votar_borrado(b) {
+    const D = encuentroActual(), v = D && D.e && D.e.votos; if (!v) return;
+    if (!v.mio && !(await confirmar(v.n ? C.ENCUENTRO_VOTAR_APOYO : C.ENCUENTRO_VOTAR, 'trash'))) return;
+    ocupado(b, true);
+    try {
+      const r = await api.votarBorrado(D.gid, !v.mio);
+      if (!v.mio) api.dispararPush();
+      if (r === 'borrado') { await recargarGrupos(); cerrarTodo(); salirGrupo(); procesarFotosPorBorrar(); aviso('El grupo se borró', 'trash'); if (S.tab === 'coleccion') pintarColeccion(); return; }
+      aviso(v.mio ? 'Retiraste tu voto' : 'Voto registrado', 'trash'); D.cargar();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async eliminar_inactivo(b) {
+    const D = encuentroActual(), e = D && D.e; if (!e) return;
+    if (!(await confirmar(C.ENCUENTRO_INACTIVO.replace('{d}', e.inactividad.dias), 'clock-x'))) return;
+    ocupado(b, true);
+    try { await api.eliminarPorInactividad(D.gid); api.dispararPush(); await recargarGrupos(); cerrarTodo(); salirGrupo(); procesarFotosPorBorrar(); aviso('El grupo se eliminó', 'trash'); if (S.tab === 'coleccion') pintarColeccion(); }
+    catch (err) { ocupado(b, false); fallo(err); }
+  },
+  async salir_encuentro(b) {
+    const D = encuentroActual(); if (!D) return;
+    if (!(await confirmar(C.ENCUENTRO_SALIR, 'door-exit'))) return;
+    ocupado(b, true);
+    try {
+      await api.leaveGroup(D.gid, S.user.id);
+      if (S.comparte && S.comparte.gid === D.gid) pararCompartir(true);
+      await recargarGrupos(); cerrarTodo(); salirGrupo(); procesarFotosPorBorrar(); aviso('Saliste del grupo', 'door-exit');
+      if (S.tab === 'coleccion') pintarColeccion();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  compartir_ubicacion(b) { const D = encuentroActual(); if (D) iniciarCompartir(D.gid, +b.dataset.v === 30 ? 30 : 15, b); },
+  async dejar_compartir(b) {
+    const X = S.comparte; if (!X) return;
+    ocupado(b, true);
+    try { await api.dejarDeCompartir(X.gid); } catch (e) { /* sin red: deja de verse al terminar el tiempo */ }
+    pararCompartir(false);
+    const D = encuentroActual(); if (D) D.cargar();
+  },
+
+  /* notificaciones */
+  async activar_push(b) { ocupado(b, true); await activarPush(); ocupado(b, false); pintarNotificaciones(); },
+  async desactivar_push() { if (!(await confirmar(`${C.PUSH_DESACTIVAR}?`, 'bell-off'))) return; await desactivarPush(); pintarNotificaciones(); },
+  async push_pref(b) {
+    const k = b.dataset.k, p = Object.assign({}, S.push || {});
+    const nuevo = !p[k]; p[k] = nuevo;
+    b.classList.toggle('on', nuevo); b.setAttribute('aria-checked', String(nuevo));
+    try { await api.guardarPushPrefs(S.user.id, { [k]: nuevo }); S.push = p; resumenNotif(); }
+    catch (e) { b.classList.toggle('on', !nuevo); b.setAttribute('aria-checked', String(!nuevo)); fallo(e); }
+  },
+  async push_ofrecer_si(b) {
+    const top = hojaArriba(); ocupado(b, true);
+    const ok = await activarPush();
+    if (!ok) { ocupado(b, false); return; }
+    if (top && top.datos) { top.datos.paso = 2; dibujarHoja(); }
+  },
+  async push_ofrecer_listo(b) {
+    const s = $('#push-sonido'), si = !!(s && s.checked);
+    ocupado(b, true);
+    try { if (si) { await api.guardarPushPrefs(S.user.id, { sonido: true }); S.push = Object.assign({}, S.push || {}, { sonido: true }); } cerrarHoja(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+
+  /* sin conexión */
+  async fotos_offline(b) {
+    const si = !fotosSinConexion();
+    try { localStorage.setItem('cg_fotos_offline', si ? '1' : '0'); } catch (e) { /* nada */ }
+    b.classList.toggle('on', si); b.setAttribute('aria-checked', String(si));
+    await alTrabajador({ tipo: 'ajustes', uid: S.user.id, fotos: si });
+  },
+  async liberar_espacio(b) {
+    ocupado(b, true);
+    const r = await alTrabajador({ tipo: 'liberar' });
+    ocupado(b, false);
+    const e = $('#espacio'); if (e && r) e.textContent = textoEspacio(r);
+    aviso('Espacio liberado', 'eraser');
+  },
+  subir_ahora: () => subirPendientes(),
+  ver_pendientes() { try { localStorage.setItem('cg_plegado_offline', '1'); } catch (e) { /* nada */ } cerrarTodo(); irA('perfil'); setTimeout(() => { abrirPlegable('offline', true); const el = $('#sec-offline'); if (el) el.scrollIntoView({ block: 'start' }); }, 400); },
+  plegar: (b) => abrirPlegable(b.dataset.k, b.getAttribute('aria-expanded') !== 'true'),
+  async pendiente_borrar(b) {
+    if (!(await confirmar('¿Borrar este registro sin subir?'))) return;
+    await BDP.quitar(b.dataset.id).catch(() => null); await contarPendientes();
+  },
+  async pendiente_mismo(b) {
+    const x = (S.pendientes || []).find((y) => y.id === b.dataset.id); if (!x || !x.existente) return;
+    try {
+      const c = await api.card(x.existente); if (!c) return aviso('Ese hallazgo ya no está disponible', 'alert-triangle');
+      const d = x.datos;
+      Object.assign(x, { tipo: 'reencuentro', privado: !!c.is_private, nombre: c.name, estado: 'pendiente', existente: null,
+        datos: { find_id: c.id, lat: d.lat, lng: d.lng, note: d.note, created_at: d.created_at } });
+      await BDP.poner(x); await contarPendientes(); subirPendientes();
+    } catch (e) { fallo(e); }
+  },
+  pendiente_otro(b) {
+    const x = (S.pendientes || []).find((y) => y.id === b.dataset.id); if (!x) return;
+    abrirHoja(() => `${cabeza(ic('pencil'))}<div class="field"><label for="p-renombrar">${ic('pencil')} Nombre</label>
+      <input id="p-renombrar" class="in" maxlength="60" value="${esc(x.datos.name)}"></div>
+      <button class="btn block" data-act="guardar_nombre_pendiente" data-id="${x.id}">${ic('check')} Guardar</button>`, null, 'renombrar');
+  },
+  async guardar_nombre_pendiente(b) {
+    const x = (S.pendientes || []).find((y) => y.id === b.dataset.id), n = $('#p-renombrar'); if (!x || !n) return;
+    const nombre = n.value.trim(); if (!nombre) return aviso('Ponle un nombre', 'pencil');
+    if (sinAcentos(nombre) === sinAcentos(x.datos.name)) return aviso('Cambia el nombre para registrarlo como nuevo', 'pencil');
+    x.datos.name = nombre; x.estado = 'pendiente'; x.existente = null;
+    await BDP.poner(x); cerrarHoja(); await contarPendientes(); subirPendientes();
+  },
+  actualizar() { if (!trabajadorEsperando) return location.reload(); S.actualizando = true; trabajadorEsperando.postMessage({ tipo: 'saltar' }); },
+
+  /* perfil */
+  async crear_perfil(b) {
+    const d = leerPerfil($('.sheet') || document);
+    if (!d.name) return aviso('Escribe tu nombre', 'user');
+    ocupado(b, true);
+    // 2.0.4: entra directo a la app; la primera colección se crea sola con la primera foto
+    try { S.me = await api.createProfile(Object.assign({ id: S.user.id }, d)); const u = S.user; cerrarTodo(); S.user = null; arrancar(u); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  editar_perfil: () => abrirHoja(() => hojaPerfil(S.me, false), null, 'editar_perfil'),
+  async guardar_perfil(b) {
+    const d = leerPerfil($('.sheet'));
+    if (!d.name) return aviso('Escribe tu nombre', 'user');
+    ocupado(b, true);
+    try { S.me = await api.updateProfile(S.user.id, d); cerrarHoja(); aviso('Guardado'); if (S.tab === 'perfil') pintarPerfil(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async seguir(b) {
+    const uid = b.dataset.id, sigo = S.following.has(uid);
+    ocupado(b, true);
+    try {
+      await api.follow(uid, !sigo, S.user.id);
+      if (sigo) S.following.delete(uid); else S.following.add(uid);
+      aviso(sigo ? 'Dejaste de seguir' : 'Siguiendo', sigo ? 'user-x' : 'user-check');
+      const top = hojaArriba(); if (top && top.tipo === 'perfil') { const D = $('.sheet')._perfil; if (D) D.cargar(); }
+      if (top && (top.tipo === 'buzon_amigos' || top.tipo === 'chat') && top.datos) { dibujarHoja(); top.datos.cargar(); }
+      if (top && top.tipo === 'buscar' && top.datos) top.datos.pintarRes();
+      if (top && top.tipo === 'invitar' && top.datos) top.datos.cargar();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  tabla: () => tablaGeneral(),
+  favorito: (b) => alternarFavorito(b),
+  favoritos_ver: () => hojaFavoritos(),
+  inicio_aqui: () => { inicioVisto(); cerrarTodo(); irA('perfil'); },
+  buscar_personas: () => hojaBuscarPersonas(),
+  buscar_tab(b) {
+    const top = hojaArriba(); if (!top || top.tipo !== 'buscar' || !top.datos) return;
+    const D = top.datos; if (D.tab === b.dataset.v) return;
+    D.tab = b.dataset.v; D.res = null; dibujarHoja(); if (D.q.trim()) D.buscar();
+  },
+  async pedir_grupo(b) {
+    const gid = b.dataset.id; ocupado(b, true);
+    let estado;
+    try { estado = await api.solicitarGrupo(gid); } catch (e) { ocupado(b, false); return fallo(e); }
+    aviso(estado === 'miembro' ? C.SOLICITUD_MIEMBRO : C.SOLICITUD_LISTA, estado === 'miembro' ? 'user-check' : 'clock');
+    const top = hojaArriba();
+    if (top && top.tipo === 'buscar' && top.datos) top.datos.marcar(gid, estado);
+    if (top && top.tipo === 'grupo' && top.datos) { top.datos.solicitud = estado; dibujarHoja(); }
+  },
+  async solicitud_responder(b) {
+    const sid = b.dataset.id, acepta = b.dataset.v === '1'; if (!sid) return;
+    ocupado(b, true);
+    let r;
+    try { r = await api.responderSolicitud(sid, acepta); } catch (e) { ocupado(b, false); return fallo(e); }
+    S.avisos = (S.avisos || []).filter((a) => !(a.kind === 'solicitud' && a.reaccion === sid)); pintarCampana();
+    if (hojaArriba()) dibujarHoja();
+    aviso(r === 'aceptada' ? C.SOLICITUD_ACEPTADA_OK : C.SOLICITUD_RECHAZADA_OK, r === 'aceptada' ? 'user-check' : 'x');
+  },
+
+  /* silenciar */
+  async silenciar(b) {
+    const m = b.dataset.user ? { target_user: b.dataset.user } : { target_group: b.dataset.group };
+    if (!(await confirmar(C.SILENCIAR_CONFIRMAR, 'cg-silenciar'))) return;
+    ocupado(b, true);
+    try { await api.mute(m); await recargarSilencios(); aviso(C.SILENCIADO_LISTO, 'cg-silenciar'); trasSilencio(); }
+    catch (e) { ocupado(b, false); if (m.target_user && /row-level security/i.test(errTexto(e))) return aviso(C.SILENCIAR_COMPARTEN, 'users'); fallo(e); }
+  },
+  async quitar_silencio(b) {
+    ocupado(b, true);
+    try { await api.unmute(b.dataset.id); await recargarSilencios(); aviso(C.SILENCIO_QUITADO, 'eye'); trasSilencio(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  silenciados: () => hojaSilenciados(),
+
+  /* buzón */
+  buzon: () => hojaBuzon(),
+  buzon_tipo(b) { const D = $('.sheet')._buzon; if (!D) return; const t = $('#buzon-in'); if (t) D.texto = t.value; D.tipo = b.dataset.v; dibujarHoja(); },
+  buzon_quitar_foto() { const D = $('.sheet')._buzon; if (!D) return; const t = $('#buzon-in'); if (t) D.texto = t.value; if (D.fotoUrl) URL.revokeObjectURL(D.fotoUrl); D.foto = null; D.fotoUrl = null; dibujarHoja(); },
+  async enviar_buzon(b) {
+    const D = $('.sheet')._buzon; if (!D) return;
+    const t = $('#buzon-in'), texto = (t ? t.value : '').trim();
+    if (!texto) { if (t) t.focus(); return aviso('Escribe tu mensaje', 'mail'); }
+    if (texto.length > C.BUZON_MAX) return aviso(`Máximo ${C.BUZON_MAX} caracteres`, 'mail');
+    ocupado(b, true);
+    let ruta = null;
+    try {
+      if (D.foto) { ruta = `priv:${S.user.id}/buzon-${uuid()}.jpg`; await api.upload(ruta, D.foto); }
+      await api.sendRequest({ tipo: D.tipo, body: texto, screenshot: ruta, meta: metaBuzon() });
+      if (D.fotoUrl) URL.revokeObjectURL(D.fotoUrl);
+      Object.assign(D, { texto: '', foto: null, fotoUrl: null, lista: null });
+      aviso(C.BUZON_ENVIADO, 'mail'); dibujarHoja(); D.cargar();
+    } catch (e) { if (ruta) api.removeFiles([ruta]).catch(() => null); ocupado(b, false); fallo(e); }
+  },
+  async borrar_peticion(b) {
+    const sh = $('.sheet'), D = sh && (sh._buzon || sh._admin); if (!D) return;
+    const r = (D.lista || D.peticiones || []).find((x) => x.id === b.dataset.id); if (!r) return;
+    if (!(await confirmar('¿Borrar este mensaje?'))) return;
+    try {
+      await api.delRequest(r.id);
+      if (r.screenshot) await api.removeFiles([r.screenshot]).catch(() => null);
+      aviso('Borrado', 'trash'); D.cargar();
+    } catch (e) { fallo(e); }
+  },
+  admin_vista(b) { const D = $('.sheet')._admin; if (!D) return; D.vista = b.dataset.v; dibujarHoja(); },
+  async peticion_estado(b) {
+    const D = $('.sheet')._admin; if (!D) return;
+    try { await api.updateRequest(b.dataset.id, { status: b.dataset.v }); aviso(C.BUZON_ESTADOS[b.dataset.v].nombre, C.BUZON_ESTADOS[b.dataset.v].icono); D.cargar(); }
+    catch (e) { fallo(e); }
+  },
+  async responder_peticion(b) {
+    const D = adminDatos(); if (!D) return;
+    const t = $('#resp-' + b.dataset.id), texto = (t ? t.value : '').trim();
+    if (!texto) return aviso(C.RESPUESTA_VACIA, 'message-circle');
+    if (texto.length > C.BUZON_RESPUESTA_MAX) return aviso(`Máximo ${C.BUZON_RESPUESTA_MAX} caracteres`, 'message-circle');
+    if (t) t.blur();
+    ocupado(b, true);
+    try {
+      await api.updateRequest(b.dataset.id, { reply: texto });
+      const r = (D.peticiones || []).find((x) => x.id === b.dataset.id); if (r) Object.assign(r, { reply: texto, replied_at: new Date().toISOString() });
+      D.editandoResp = null; dibujarHoja();
+      aviso(C.RESPUESTA_LISTA, 'circle-check'); D.cargar();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  editar_respuesta(b) { const D = adminDatos(); if (!D) return; D.editandoResp = b.dataset.id; dibujarHoja(); const t = $('#resp-' + b.dataset.id); if (t) t.focus(); },
+
+  /* avisos */
+  avisos: () => hojaAvisos(),
+  chats: () => hojaChats(),
+  aviso_abrir(b) {
+    cerrarNotif();
+    const id = b.dataset.id, k = b.dataset.kind;
+    if (k === 'nada') return;
+    if (k === 'buzon') { const t = hojaArriba(); if (t && t.tipo === 'buzon_amigos') return; return hojaAvisos(); }
+    if (!id) return hojaAvisos();
+    if (k === 'encuentro') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirEncuentro(id, b.dataset.foco || null); }
+    if (k === 'encuentro_nuevo') { cerrarTodo(); return editarGrupo('', 'encuentro'); }
+    // Una foto de la comunidad en lo tuyo se celebra antes de abrir la ficha
+    if (k === 'colaboracion') {
+      S.cache.delete(id);
+      return celebrarHallazgo({ foto: b.dataset.foto ? api.photoUrl(b.dataset.foto) : '', icono: 'users', color: C.COLORES.terracota, titulo: C.COL_CELEBRA,
+        detalle: C.COL_CELEBRA_TEXTO.replace('{n}', b.dataset.n || '').replace('{h}', b.dataset.h || '') }, () => abrirFicha(id));
+    }
+    if (k === 'mis_mensajes') return hojaBuzon();
+    if (k === 'tabla') return tablaGeneral(null, id);
+    if (k === 'perfil') return abrirPerfil(id);
+    if (k === 'grupo') { if (!miGrupo(id)) return aviso('Este grupo ya no está disponible', 'alert-triangle'); return abrirGrupo(id); }
+    if (k === 'chat') return hojaChat(id);
+    if (k === 'admin') { if (!S.me.is_admin) return; const adm = adminAbierto(); if (adm) { while (hojaArriba() !== adm) pila.pop(); adm.datos.vista = id; dibujarHoja(); return; } return hojaAdmin(id); }
+    S.cache.delete(id); abrirFicha(id, k === 'comentarios' ? { modo: 'coms' } : null);
+  },
+  admin_uso: () => hojaAdmin('uso'),
+  anuncio_destino(b) { const D = adminDatos(); if (!D) return; recordarAnuncio(D); D.nuevo.destino = b.dataset.v || null; dibujarHoja(); },
+  anuncio_dias(b) { const D = adminDatos(); if (!D) return; recordarAnuncio(D); D.nuevo.dias = b.dataset.v ? +b.dataset.v : null; dibujarHoja(); },
+  async publicar_anuncio(b) {
+    const D = adminDatos(); if (!D) return; recordarAnuncio(D);
+    const t = (D.nuevo.texto || '').trim();
+    if (!t) { const x = $('#anuncio-in'); if (x) x.focus(); return aviso(C.ANUNCIO_VACIO, 'speakerphone'); }
+    if (!(await confirmar(C.ANUNCIO_CONFIRMAR, 'speakerphone'))) return;
+    ocupado(b, true);
+    try { await api.publicarAnuncio(t, D.nuevo.destino, D.nuevo.dias); api.dispararPush(); D.nuevo = { texto: '', destino: null, dias: null };
+      D.anuncios = await api.anuncios(); aviso(C.ANUNCIO_LISTO, 'speakerphone'); dibujarHoja(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async anuncio_cambiar(b) {
+    const D = adminDatos(); if (!D) return; recordarAnuncio(D);
+    try { await api.duracionAnuncio(b.dataset.id, b.dataset.v ? +b.dataset.v : null); D.anuncios = await api.anuncios(); aviso(C.ANUNCIO_CAMBIADO, 'clock'); dibujarHoja(); }
+    catch (e) { fallo(e); }
+  },
+  async retirar_anuncio(b) {
+    const D = adminDatos(); if (!D) return; recordarAnuncio(D);
+    if (!(await confirmar(C.ANUNCIO_RETIRAR_CONFIRMAR, 'x'))) return;
+    try { await api.retirarAnuncio(b.dataset.id); D.anuncios = await api.anuncios(); aviso(C.ANUNCIO_RETIRADO, 'x'); dibujarHoja(); }
+    catch (e) { fallo(e); }
+  },
+  chat: (b) => hojaChat(b.dataset.id),
+  pedir_amistad: (b) => hojaPedirAmistad(b.dataset.id),
+  async enviar_amistad(b) {
+    const t = $('#amistad-in'), texto = (t ? t.value : '').trim().slice(0, C.AMISTAD_MAX);
+    if (t) t.blur();
+    ocupado(b, true);
+    let r;
+    try { r = await api.pedirAmistad(b.dataset.id, texto); } catch (e) { ocupado(b, false); return fallo(e); }
+    cerrarHoja();
+    aviso(r === 'amigas' ? C.AMISTAD_LISTA : C.AMISTAD_ENVIADA_OK, r === 'amigas' ? 'user-check' : 'heart-handshake');
+    if (r === 'amigas') S.following.add(b.dataset.id);
+    refrescarAmistad();
+  },
+  async amistad_aceptar(b) {
+    const uid = b.dataset.id; ocupado(b, true);
+    try { await api.responderAmistad(uid, true); } catch (e) { ocupado(b, false); return fallo(e); }
+    S.following.add(uid);
+    S.avisos = S.avisos.filter((a) => !(a.kind === 'amistad' && a.actor_id === uid)); pintarCampana();
+    aviso(C.AMISTAD_LISTA, 'user-check');
+    refrescarAmistad();
+  },
+  async amistad_rechazar(b) {
+    const uid = b.dataset.id; ocupado(b, true);
+    try { await api.responderAmistad(uid, false); } catch (e) { ocupado(b, false); return fallo(e); }
+    S.avisos = S.avisos.filter((a) => !(a.kind === 'amistad' && a.actor_id === uid)); pintarCampana();
+    refrescarAmistad();
+  },
+  enviar_ficha: (b) => hojaEnviarFicha(b.dataset.id),
+  async mandar_ficha(b) {
+    const top = hojaArriba(), D = top && top.tipo === 'enviar_ficha' ? top.datos : null; if (!D) return;
+    const t = $('#ficha-linea'), linea = (t ? t.value : D.linea || '').trim().slice(0, C.MENSAJE_MAX);
+    if (t) t.blur();
+    ocupado(b, true);
+    try { await api.enviarMensaje(b.dataset.id, linea, b.dataset.f); } catch (e) { ocupado(b, false); return fallo(e); }
+    D.enviadas.add(b.dataset.id); D.linea = linea; dibujarHoja(); aviso(C.FICHA_ENVIADA, 'send');
+  },
+  async enviar_mensaje(b) {
+    const t = $('#chat-in'), texto = (t ? t.value : '').trim(), top = hojaArriba();
+    if (!texto) { if (t) t.focus(); return aviso('Escribe tu mensaje', 'messages'); }
+    if (texto.length > C.MENSAJE_MAX) return aviso(`Máximo ${C.MENSAJE_MAX} caracteres`, 'messages');
+    ocupado(b, true);
+    try {
+      await api.enviarMensaje(b.dataset.id, texto);
+      if (top && top.datos) {
+        top.datos.borrador = ''; if (t) t.value = '';
+        const n = $('#chat-n'); if (n) n.textContent = '0';
+        await top.datos.cargar();
+        const l = $('#chat-lista'); if (l) l.scrollTop = l.scrollHeight;
+      }
+      if (b.isConnected) ocupado(b, false);
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  etiquetar(b) { const c = S.cache.get(b.dataset.id); if (c && !c.is_private) hojaEtiquetar(c.id, null, null); },
+  etiquetar_registro() {
+    recordarFormulario();
+    hojaEtiquetar(null, R.etiquetas, (ids, gente) => { R.etiquetas = ids; R.etiquetasNombres = gente.filter((g) => ids.includes(g.persona)).map((g) => g.name); });
+  },
+  etiqueta_toggle(b) {
+    const D = hojaArriba() && hojaArriba().datos; if (!D) return;
+    const id = b.dataset.id;
+    if (D.sel.has(id)) D.sel.delete(id);
+    else { if (D.sel.size >= C.ETIQUETAS_MAX) return aviso(`Máximo ${C.ETIQUETAS_MAX} personas por hallazgo`, 'tag'); D.sel.add(id); }
+    dibujarHoja();
+  },
+  async guardar_etiquetas(b) {
+    const top = hojaArriba(), D = top && top.datos; if (!D) return;
+    const ids = [...D.sel];
+    if (D.guardar) { D.guardar(ids, D.gente || []); cerrarHoja(); return; }
+    const fid = (fichaH && fichaH.id) || null; if (!fid) return;
+    ocupado(b, true);
+    try {
+      await api.etiquetar(fid, ids.filter((x) => !D.antes.has(x)));
+      await api.desetiquetar(fid, [...D.antes].filter((x) => !D.sel.has(x)));
+      cerrarHoja(); aviso(ids.length ? C.ETIQUETAS_LISTO : 'Etiquetas quitadas', 'tag');
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  /* premios y guardarropa (1.9.8) */
+  premio_poner: (b) => ponerPremio(b.dataset.p, b),
+  premio_seguir: () => cerrarHoja(),
+  guardarropa: () => hojaGuardarropa(),
+  gr_elegir(b) {
+    const D = hojaArriba() && hojaArriba().datos; if (!D || !D.sel) return;
+    const esp = b.dataset.esp, v = b.dataset.v;
+    if (esp === 'aro') D.sel.aro = v === 'auto' ? null : v !== 'nada'; else D.sel[esp] = v === 'auto' ? null : v;
+    D.ultimo = v === 'nada' ? null : v;
+    dibujarHoja();
+  },
+  async gr_guardar(b) {
+    const D = hojaArriba() && hojaArriba().datos; if (!D || !D.sel) return;
+    ocupado(b, true);
+    try {
+      await api.guardarEstilo(null, D.sel);
+      const f = (D.estilos || []).find((x) => !x.ambito);
+      if (f) Object.assign(f, D.sel); else D.estilos.push(Object.assign({ ambito: null }, D.sel));
+      ocupado(b, false); aviso(C.GUARDARROPA_GUARDADO, 'hanger'); pinesAlDia();
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  reto_ir(b) {
+    const x = C.PASOS.find((p) => p.k === b.dataset.v); if (!x) return;
+    if (x.k === 'instala') { if (!tipoInstalacion()) return aviso(C.PASO_EN_CELULAR, 'device-mobile'); return instalarApp(); }
+    if (x.k === 'hallazgo') { cerrarTodo(); return ACCIONES.nuevo(); }
+    if (x.k === 'coleccion') { cerrarTodo(); irA('coleccion'); aviso(x.pista, 'cards'); return hojaCategorias(false); }
+    if (x.k === 'sigue') { aviso(x.pista, 'user-plus'); return hojaBuscarPersonas(); }
+    cerrarTodo(); irA(x.k === 'reaccion' ? 'feed' : x.k === 'verifica' ? 'map' : 'coleccion');
+    aviso(x.pista, { coleccion: 'cards', reaccion: 'heart', verifica: 'eye-check', vuelve: 'repeat' }[x.k] || 'info-circle');
+  },
+  async seguir_coleccion(b) {
+    const cat = b.dataset.id, sigo = (S.sigoCols || []).some((x) => x.category_id === cat);
+    ocupado(b, true);
+    try { await api.seguirColeccion(cat, !sigo); await cargarSigoCols(); aviso(sigo ? 'Dejaste de seguir la colección' : C.SIGUIENDO_COLECCION, sigo ? 'user-minus' : 'user-check'); }
+    catch (e) { ocupado(b, false); return fallo(e); }
+    if (hojaArriba()) dibujarHoja();
+  },
+  async calificar(b) {
+    const id = b.dataset.id, n = +b.dataset.v; if (!id || !(n >= 1 && n <= 3)) return;
+    ocupado(b, true);
+    // 2.0.3: quien registró el hallazgo califica sin estar en el lugar; las demás, estando ahí
+    const c = S.cache.get(id), propio = !!c && c.user_id === S.user.id;
+    let p = { lat: null, lng: null, acc: null };
+    if (!propio) { try { p = await getPos(); } catch (e) { ocupado(b, false); return aviso(C.CALIF_SIN_GPS, 'current-location'); } }
+    try {
+      const r = await api.calificar(id, n, p);
+      ocupado(b, false);
+      if (r && r.ok) { aviso(C.CALIF_LISTA, 'star'); if (fichaH && fichaH.id === id) { fichaH.calif = await api.calificacion(id).catch(() => fichaH.calif); refrescarFicha(id); } return; }
+      if (r && r.motivo === 'lejos') return aviso(C.CALIF_LEJOS.replace('{d}', metros(r.distancia)), 'navigation');
+      if (r && r.motivo === 'sin_mapa') return aviso(C.SIN_MAPA_NO_APLICA, 'map-pin-off');
+      return aviso(C.CALIF_APROX, 'current-location');
+    } catch (e) { ocupado(b, false); fallo(e); }
+  },
+  async color_premio(b) {
+    const { tipo, id, v } = b.dataset;
+    try {
+      if (tipo === 'cat') { await api.updateCat(id, { premio_color: v }); S.cats = await api.listCats(S.user.id); }
+      else {
+        await api.colorPremioGrupo(id, v);
+        const g = ((S.stats && S.stats.premios_grupos) || []).find((x) => x.id === id); if (g) g.premio_color = v;
+      }
+      $$('[data-act="color_premio"]', b.parentNode).forEach((x) => x.classList.toggle('on', x === b));
+      const muestra = b.closest('.premio-nuevo');
+      if (muestra) $$('.premio', muestra).forEach((el) => { el.innerHTML = svgPremio(el.className.replace(/.*p-/, '').trim(), v); });
+      aviso(C.COLOR_PREMIO_LISTO, 'crown');
+      if (S.tab === 'map') cargarPines();
+      const D = encuentroActual(); if (D && D.gid === id) D.cargar();
+    } catch (e) { fallo(e); }
+  },
+  instalar: () => instalarApp(),
+  instalar_no() { noMostrarInstalar(); pintarInstalar(); },
+  async copiar_liga() {
+    const liga = location.origin + location.pathname;
+    try { await navigator.clipboard.writeText(liga); aviso(C.INSTALAR_COPIADA, 'copy'); }
+    catch (e) { aviso(liga, 'copy'); }
+  },
+  cerrar_notif: () => cerrarNotif(),
+  tabla_metrica(b) { const D = $('.sheet')._tabla; if (!D || D.metric === b.dataset.v) return; D.metric = b.dataset.v; D.cargar(); },
+  async salir() {
+    const n = (S.pendientes || []).length;
+    if (!(await confirmar(n ? C.PENDIENTES_SALIR.replace('{n}', n) : '¿Cerrar sesión?', 'logout'))) return;
+    await limpiarTelefono();
+    await api.logout().catch(() => null); location.hash = ''; location.reload();
+  },
+  async borrar_cuenta(b) {
+    if (!(await confirmar('¿Borrar tu cuenta?', 'trash'))) return;
+    if (!(await confirmar('Se borrarán tu perfil, tus hallazgos y tus fotos. No se puede deshacer.', 'alert-triangle', '', 'trash'))) return;
+    ocupado(b, true);
+    try { await desactivarPush(true); await api.deleteAccount(S.user.id); await limpiarTelefono(); location.hash = ''; location.reload(); }
+    catch (e) { ocupado(b, false); fallo(e); }
+  },
+
+  /* moderación */
+  admin: () => hojaAdmin(),
+  async descartar(b) { try { await api.dismiss(b.dataset.id); aviso('Aviso descartado'); $('.sheet')._admin.cargar(); } catch (e) { fallo(e); } },
+  async bloquear(b) {
+    if (!(await confirmar('¿Bloquear esta cuenta? Sus hallazgos se ocultan', 'ban'))) return;
+    try { await api.setBlocked(b.dataset.id, true); aviso('Cuenta bloqueada', 'ban'); trasModerar(); } catch (e) { fallo(e); }
+  },
+  async desbloquear(b) {
+    try { await api.setBlocked(b.dataset.id, false); aviso('Cuenta desbloqueada', 'lock-open'); trasModerar(); } catch (e) { fallo(e); }
+  }
+};
+// Al cerrar sesión: se quitan las notificaciones de este teléfono, las copias y lo pendiente
+async function limpiarTelefono() {
+  pararCompartir(true);
+  await desactivarPush(true).catch(() => null);
+  await alTrabajador({ tipo: 'salir' });
+  try { for (const x of await BDP.todos(S.user.id)) await BDP.quitar(x.id); } catch (e) { /* nada */ }
+  try { [claveGrupoMapa(), 'cg_plegado_notif', 'cg_plegado_offline'].forEach((k) => localStorage.removeItem(k)); } catch (e) { /* nada */ }
+  S.grupo = null; S.colMias = null;
+}
+function trasModerar() {
+  const sh = $('.sheet');
+  if (sh && sh._admin) sh._admin.cargar();
+  else if (pila.length) { cerrarHoja(); }
+  refrescarActual();
+}
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-act]');
+  if (!b || b.disabled) return;
+  const f = ACCIONES[b.dataset.act];
+  if (!f) { console.warn('Acción sin lógica:', b.dataset.act); return; }
+  f(b, ev);
+});
+let tBuscar;
+document.addEventListener('input', (ev) => {
+  if (ev.target.id === 'anuncio-in') {
+    const n = $('#anuncio-n'); if (n) n.textContent = ev.target.value.length;
+    const v = $('#anuncio-vista-t'); if (v) v.textContent = ev.target.value || '…';
+  }
+  if (ev.target.id === 'coment-in') { if (fichaH) fichaH.borrador = ev.target.value; const n = $('#coment-n'); if (n) n.textContent = ev.target.value.length; }
+  if (ev.target.id === 'chat-in') { const top = hojaArriba(); if (top && top.datos) top.datos.borrador = ev.target.value; const n = $('#chat-n'); if (n) n.textContent = ev.target.value.length; }
+  if (ev.target.id === 'buzon-in') { const D = $('.sheet') && $('.sheet')._buzon; if (D) D.texto = ev.target.value; const n = $('#buzon-n'); if (n) n.textContent = ev.target.value.length; }
+  if (ev.target.matches('[data-in="buscar-icono"]')) { clearTimeout(tBuscar); const v = ev.target.value; tBuscar = setTimeout(() => buscarIconos(v), 300); }
+});
+
+/* ---------------------------------------------------------------------
+   9. INICIO
+   --------------------------------------------------------------------- */
+function pantallaEntrada() {
+  $('#app').innerHTML = `<div class="login">
+    <img class="logo" src="icon.svg" alt="">
+    <h1 class="serif" style="font-size:36px">Collector Go</h1>
+    <p class="muted" style="max-width:280px;font-size:18px">${ic('map-pin')} ${esc(C.LEMA)}</p>
+    <button class="btn" data-act="entrar">${ic('brand-google')} Entrar con Google</button>
+    <div data-instalar style="width:100%;max-width:300px"></div>
+    <button class="linkbtn" data-act="privacidad" style="color:var(--tinta2)">${ic('lock')} ${esc(C.DATOS_TITULO)}</button></div>`;
+  pintarInstalar();
+}
+function pantallaConfig() {
+  $('#app').innerHTML = `<div class="login"><h1 class="serif">Collector Go</h1>
+    <p class="muted">${ic('alert-triangle')} Falta pegar la URL y la llave pública de Supabase en config.js</p></div>`;
+}
+function pedirPerfil() { $('#app').innerHTML = ''; abrirHoja(() => hojaPerfil(null, true), null, 'perfil_nuevo', true); }
+async function arrancar(user) {
+  if (S.arrancando || (S.user && S.user.id === user.id)) return;
+  S.arrancando = true; S.user = user;
+  try {
+    S.me = await api.getProfile(user.id);
+    if (!S.me) return pedirPerfil();
+    if (S.me.blocked) return pantallaBloqueada();
+    const [cats, groups, following] = await Promise.all([api.listCats(user.id), api.myGroups(user.id), api.following(user.id)]);
+    S.cats = cats; S.groups = groups; S.following = new Set(following);
+    S.grupo = null;
+    S.mutes = await api.muteList().catch(() => []);
+    vigilarAvisos();
+    cuandoDesocupado(protegerFotosAntiguas);
+    alTrabajador({ tipo: 'ajustes', uid: user.id, fotos: fotosSinConexion() });
+    contarPendientes().then(() => subirPendientes());
+    cuandoDesocupado(() => { sincronizarPush(); procesarFotosPorBorrar(); });
+    pintarApp(); rutaHash();
+    cargarSigoCols(); cargarTop(); revisarPremiosPronto(1800); cargarLimiteGrupos(); cargarFavoritos(); arrancarBienvenida();
+  } catch (e) { fallo(e); S.user = null; pantallaEntrada(); }
+  finally { S.arrancando = false; }
+}
+// Enlaces compartidos: #f= hallazgo, #u= perfil, #v= vitrina, #g= invitación a grupo.
+// Se recuerdan durante el inicio de sesión con Google.
+const RX_DESTINO = /^#([fuvc])=([0-9a-f-]{36})$|^#g=([0-9a-f]{6,40})$|^#e=([0-9a-f-]{36})(?:\.([0-9a-f-]{36}))?$|^#b$|^#ayuda$|^#nuevo$/i;
+function guardarDestino() {
+  if (RX_DESTINO.test(location.hash)) { try { localStorage.setItem('cg_destino', location.hash); } catch (e) { /* sin almacenamiento */ } }
+}
+function rutaHash(forzada) {
+  let h = forzada || location.hash;
+  if (!RX_DESTINO.test(h)) { try { h = localStorage.getItem('cg_destino') || ''; } catch (e) { h = ''; } }
+  try { localStorage.removeItem('cg_destino'); } catch (e) { /* nada */ }
+  const m = h.match(RX_DESTINO);
+  if (location.hash) history.replaceState(null, '', location.pathname);
+  if (!m) return;
+  const fijo = m[0].toLowerCase();
+  if (fijo === '#b') hojaAvisos();
+  else if (fijo === '#ayuda') { cerrarTodo(); hojaAvisoRapido(); }    // atajo del ícono de la app (Android)
+  else if (fijo === '#nuevo') { cerrarTodo(); nuevoRegistro(); }
+  else if (m[3]) mostrarInvitacion(m[3]);
+  else if (m[4]) { if (miGrupo(m[4])) abrirEncuentro(m[4], m[5] || null); else aviso('Este grupo ya no está disponible', 'alert-triangle'); }
+  else if (m[1] === 'f') abrirFicha(m[2]); else if (m[1] === 'v') abrirVitrina(m[2]); else if (m[1] === 'c') hojaChat(m[2]); else abrirPerfil(m[2]);
+}
+window.addEventListener('hashchange', () => {
+  guardarDestino();
+  if (S.me && $('#scr-map')) rutaHash();
+  else if (!S.user && destinoVitrina()) pantallaVitrina(destinoVitrina());
+});
+// Una cuenta bloqueada no tiene ningún acceso: solo puede salir
+function pantallaBloqueada() {
+  $('#app').innerHTML = `<main class="screen bloqueada"><div class="empty">${ic('ban')}<h2 class="serif">${esc(C.BLOQUEADA_TITULO)}</h2><p>${esc(C.BLOQUEADA_TEXTO)}</p>
+    <button class="btn" data-act="salir_bloqueada">${ic('logout')} ${esc(C.AYUDA.salir || 'Salir')}</button></div></main>`;
+}
+// Sin sesión: la vitrina compartida se ve sin cuenta; lo demás pide entrar
+function pantallaSinCuenta() { const v = destinoVitrina(); if (v) pantallaVitrina(v); else pantallaEntrada(); }
+
+async function iniciar() {
+  guardarDestino();
+  registrarTrabajador();
+  api = window.__API_PRUEBAS__ || (/^https:\/\//.test(C.SUPABASE_URL) ? supabaseApi() : null);
+  if (!api) return pantallaConfig();
+  ['react', 'addComment', 'follow', 'seguirColeccion', 'marcarVisto', 'marcarAusencia', 'addFind', 'addSighting', 'colaborar', 'updateFind', 'merge'].forEach((k) => {
+    const f = api[k]; if (typeof f !== 'function') return;
+    api[k] = function () { return f.apply(this, arguments).then((r) => { revisarPremiosPronto(4000); return r; }); };
+  });
+  api.onAuth((ev, u) => {
+    if (ev === 'SIGNED_OUT') { S.user = null; S.grupo = null; S.colMias = null; if (S.capaEnc) S.capaEnc.clearLayers(); clearInterval(tAvisos); pararCompartir(true); alTrabajador({ tipo: 'salir' }); pantallaEntrada(); }
+    else if (u && (ev === 'SIGNED_IN' || ev === 'INITIAL_SESSION')) arrancar(u);
+  });
+  try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
+  catch (e) { fallo(e); pantallaSinCuenta(); }
+}
+window.__CG__ = { ACCIONES, S, ARTE, logros, motivoPremio, tablaGeneral, agrupar, pintarPines, hojaChats, cargarPrimeros, tarjeta, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
+  subirPendientes, contarPendientes, BDP, encuentroActual, textoAviso, salirGrupo, fotoMuro, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos, arrancar, crearPDF, ordenarFichas,
+  versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
+iniciar();
+})();
