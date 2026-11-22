@@ -5,7 +5,7 @@
    3. Notificaciones: el texto es genérico y se escribe aquí, en el teléfono.
    Cada parche cambia VERSION: así el teléfono sabe que hay una versión nueva.
    ===================================================================== */
-const VERSION = '2.0.8';
+const VERSION = '2.0.9';
 self.window = self;
 importScripts('config.js');
 const C = self.CONFIG;
@@ -20,7 +20,7 @@ const EXTERNOS = C.OFFLINE_EXTERNOS;
 // Consultas de solo lectura que se guardan para verlas sin conexión
 const LECTURAS = ['profile_stats', 'top_siempre', 'leaderboard', 'mis_avisos', 'mis_conversaciones', 'estado_encuentro', 'puedo_etiquetar',
   'puedo_escribir', 'comparte_grupo_conmigo', 'vitrina', 'uso_plan', 'mis_retos', 'colecciones_que_sigo', 'top_actual', 'calificacion', 'primeros_comentarios',
-  'adorno', 'pines_por_revisar', 'calificaciones_de', 'top_fotos'];
+  'adorno', 'pines_por_revisar', 'calificaciones_de', 'top_fotos', 'mis_personas', 'califico_sin_lugar'];
 
 /* ---------- pequeña base de datos del trabajador ---------- */
 function bd() {

@@ -372,6 +372,7 @@ function supabaseApi() {
     propuesta: (id) => sb.from('propuestas_lugar').select('id,find_id,lat,lng,distancia,estado').eq('id', id).maybeSingle().then(ok),
     responderPropuesta: (propuesta, mover, colonia) => sb.rpc('responder_propuesta', { propuesta, mover, colonia_nueva: colonia || null }).then(ok),
     pinesPorRevisar: () => sb.rpc('pines_por_revisar').then(ok),
+    misPersonas: () => sb.rpc('mis_personas').then(ok),
     pinRevisado: (hallazgo) => sb.rpc('pin_revisado', { hallazgo }).then(ok),
     propuestasDe: (fid) => sb.from('propuestas_lugar').select('id,find_id,lat,lng,distancia,estado,created_at').eq('find_id', fid).eq('estado', 'pendiente').order('created_at').then(ok),
     // 2.0.6: favoritos (privados) e instalación
@@ -813,6 +814,58 @@ function miniMapa(el, pos, alMover) {
   let vivo = true; m.on('unload', () => { vivo = false; });
   return { mover(p) { if (!vivo || m.removed) return; try { mk.setLatLng([p.lat, p.lng]); m.setView([p.lat, p.lng], 17); } catch (e) { /* el mapa ya se cerró */ } } };
 }
+// 2.0.9: mapa grande con mira fija al centro: se mueve el mapa hasta que la mira quede sobre el lugar
+function mapaMira(el, pos, alMover) {
+  const centro = pos ? [pos.lat, pos.lng] : (S.map ? [S.map.getCenter().lat, S.map.getCenter().lng] : C.MAPA_CENTRO);
+  const m = L.map(el, { zoomControl: false, attributionControl: false, maxBounds: MUNDO, maxBoundsViscosity: 1 }).setView(centro, pos ? 18 : 17);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, noWrap: true }).addTo(m);
+  let propio = false;   // los movimientos que hace la app (GPS, búsqueda) no cuentan como "a mano"
+  m.on('moveend', () => { const c = m.getCenter(); alMover({ lat: c.lat, lng: c.lng, acc: propio && R.pos ? R.pos.acc : null }); propio = false; });
+  S.mini = m;
+  let vivo = true; m.on('unload', () => { vivo = false; });
+  return { mover(p, z) { if (!vivo || m.removed) return; try { propio = true; m.setView([p.lat, p.lng], z || Math.max(m.getZoom(), 17)); } catch (e) { /* el mapa ya se cerró */ } } };
+}
+// Buscador de lugares (OpenStreetMap / Nominatim): solo se envía lo escrito; como mucho una búsqueda por segundo
+let lugarT = null, lugarUltima = 0, lugarN = 0;
+function buscarLugarPronto() {
+  clearTimeout(lugarT);
+  const q = (R.lugarQ || '').trim();
+  if (q.length < 3) { R.lugares = null; pintarLugares(); return; }
+  lugarT = setTimeout(buscarLugar, Math.max(700, 1100 - (Date.now() - lugarUltima)));
+}
+async function buscarLugar() {
+  const q = (R.lugarQ || '').trim(); if (q.length < 3) return;
+  const n = ++lugarN; lugarUltima = Date.now();
+  const c = S.mini && S.mini.getCenter ? S.mini.getCenter() : { lat: C.MAPA_CENTRO[0], lng: C.MAPA_CENTRO[1] };
+  const u = new URL(C.LUGARES_URL);
+  u.search = new URLSearchParams({ q, format: 'jsonv2', limit: '6', 'accept-language': 'es', addressdetails: '0',
+    viewbox: [c.lng - 0.4, c.lat + 0.4, c.lng + 0.4, c.lat - 0.4].map((x) => x.toFixed(4)).join(','), bounded: '0' }).toString();
+  R.lugares = 'buscando'; pintarLugares();
+  try {
+    const r = await fetch(u.toString(), { headers: { Accept: 'application/json' } });
+    if (!r.ok) throw new Error('LUGARES_' + r.status);
+    const l = await r.json();
+    if (n !== lugarN) return;
+    R.lugares = (Array.isArray(l) ? l : []).map((x) => ({ nombre: String(x.display_name || ''), lat: +x.lat, lng: +x.lon })).filter((x) => isFinite(x.lat) && isFinite(x.lng));
+  } catch (e) { if (n === lugarN) R.lugares = 'error'; }
+  pintarLugares();
+}
+function pintarLugares() {
+  const box = $('#lugares'); if (!box) return;
+  const l = R.lugares;
+  box.innerHTML = !l ? '' : l === 'buscando' ? `<p class="tiny"><span class="spin">${ic('loader-2')}</span> ${esc(C.LUGAR_BUSCANDO)}</p>`
+    : l === 'error' ? `<p class="tiny">${ic('wifi-off')} ${esc(C.LUGAR_ERROR)}</p>`
+    : !l.length ? `<p class="tiny">${esc(C.LUGAR_NADA)}</p>`
+    : `<div class="list lugares">${l.map((x, i) => `<button type="button" class="li" data-act="elegir_lugar" data-v="${i}">${ic('map-pin')}<span class="grow" style="min-width:0">${esc(x.nombre)}</span></button>`).join('')}</div>`;
+}
+function elegirLugar(b) {
+  const x = Array.isArray(R.lugares) && R.lugares[+b.dataset.v]; if (!x) return;
+  R.lugares = null; pintarLugares();
+  const i = $('#buscar-lugar'); if (i) i.blur();
+  if (R.moverMini) R.moverMini({ lat: x.lat, lng: x.lng }, 18);
+  R.pos = { lat: x.lat, lng: x.lng, acc: null }; R.manualAt = Date.now(); R.gps = 'ok'; pintarGPS(); buscarCandidatos();
+  aviso(C.LUGAR_LISTO, 'map-pin');
+}
 // Mapa de solo lectura con varios puntos (historia de un hallazgo)
 function mapaPuntos(el, puntos, color, icono) {
   const m = L.map(el, { zoomControl: false, attributionControl: false });
@@ -988,19 +1041,27 @@ function pinGrande(color, icono, ad, k, ancho) {
 }
 function crearMapa() {
   document.documentElement.style.setProperty('--map-filter', C.MAPA_FILTRO);
-  S.map = L.map('map', { zoomControl: false }).setView(C.MAPA_CENTRO, C.MAPA_ZOOM);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(S.map);
+  // 2.0.9: un solo mundo, sin copias a los lados ni franjas vacías; lo más lejos es el mundo llenando la pantalla
+  S.map = L.map('map', { zoomControl: false, maxBounds: MUNDO, maxBoundsViscosity: 1, worldCopyJump: false, minZoom: zoomMundo() }).setView(C.MAPA_CENTRO, C.MAPA_ZOOM);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, noWrap: true, bounds: MUNDO, attribution: '© OpenStreetMap' }).addTo(S.map);
+  window.addEventListener('resize', () => { if (S.map) { S.map.setMinZoom(zoomMundo()); } });
   S.capa = L.layerGroup().addTo(S.map);
   S.capaEnc = L.layerGroup().addTo(S.map);   // lo del grupo de encuentro activo (modo grupo)
   let t; S.map.on('moveend', () => { clearTimeout(t); t = setTimeout(() => { cargarPines(); guardarVistaMapa(); }, 250); });
   // 2.0.8: se abre donde se dejó el mapa; si el teléfono ya dio permiso, se centra en tu ubicación sin preguntar
-  const vista = leerVistaMapa(); if (vista) S.map.setView([vista.lat, vista.lng], vista.z);
+  const vista = leerVistaMapa();
+  if (vista) S.map.setView([Math.max(-85, Math.min(85, vista.lat)), Math.max(-180, Math.min(180, vista.lng))], Math.max(zoomMundo(), vista.z));
   revisarPermisoGeo().then((st) => {
     if (st !== 'granted') return cargarPines();
     getPos().then((p) => { ponerYo(p); if (!S.grupo) S.map.setView([p.lat, p.lng], 16); }).catch(() => cargarPines());
   });
   // el grupo que quedó activo la última vez vuelve a abrirse en el mapa
   const g = leerGrupoMapa(); if (g && miGrupo(g) && esEncuentro(miGrupo(g))) abrirEncuentro(g); else if (g) recordarGrupoMapa(null);
+}
+const MUNDO = [[-85, -180], [85, 180]];
+function zoomMundo() {
+  const el = document.getElementById('map'), w = (el && el.clientWidth) || innerWidth, h = (el && el.clientHeight) || innerHeight;
+  return Math.max(1, Math.ceil(Math.log2(Math.max(w, h) / 256)));
 }
 function ponerYo(p) {
   if (!S.map) return;
@@ -1780,9 +1841,44 @@ function refrescarAmistad() {
   if (top.tipo === 'chat' && top.datos) top.datos.cargar();
   if (top.tipo === 'buzon_amigos' && top.datos) top.datos.cargar();
 }
+// 2.0.9: "Tus personas": amistades (se siguen las dos), seguidores y a quién sigues. Solo en tu perfil.
+async function hojaPersonas(tab) {
+  const D = { tab: tab || 'amistad', lista: null, error: false };
+  const hoja = { tipo: 'personas', datos: D, render: () => {
+    const l = D.lista || [], de = (t) => l.filter((x) => x.tipo === t);
+    const tabs = [['amistad', 'heart-handshake', C.PERSONAS_AMISTADES], ['seguidor', 'users', C.PERSONAS_SEGUIDORES], ['siguiendo', 'user-check', C.PERSONAS_SIGUIENDO]];
+    const filas = de(D.tab);
+    return `${cabeza(`${ic('users')} ${esc(C.PERSONAS_TITULO)}`)}
+      <div class="toggle tabs personas-tabs" style="margin-bottom:12px">${tabs.map(([t, i, n]) => `<button type="button" data-act="personas_tab" data-v="${t}" class="${D.tab === t ? 'on' : ''}">${ic(i)} ${esc(n)} · ${D.lista ? de(t).length : '…'}</button>`).join('')}</div>
+      ${D.lista === null ? (D.error ? `<div class="empty">${ic('wifi-off')}<p>${esc(C.PERSONAS_ERROR)}</p></div>` : `<div class="empty"><span class="spin">${ic('loader-2')}</span></div>`)
+        : filas.length ? `<div class="list">${filas.map((x) => `<div class="li persona-fila">
+          <button class="row grow" data-act="perfil" data-id="${x.id}" style="text-align:left;min-width:0">${avatar(x)}<b class="grow" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.name)}</b></button>
+          ${D.tab === 'seguidor' && !x.lo_sigo && !S.following.has(x.id) ? `<button class="btn sm" data-act="seguir_persona" data-id="${x.id}">${ic('user-plus')} ${esc(C.PERSONAS_SEGUIR)}</button>` : ''}</div>`).join('')}</div>`
+        : `<div class="empty">${ic('users')}<p>${esc({ amistad: C.PERSONAS_SIN_AMISTADES, seguidor: C.PERSONAS_SIN_SEGUIDORES, siguiendo: C.PERSONAS_SIN_SIGUIENDO }[D.tab])}</p></div>`}`;
+  } };
+  pila.push(hoja); dibujarHoja();
+  try { D.lista = await api.misPersonas(); } catch (e) { D.error = true; }
+  if (pila.includes(hoja) && hojaArriba() === hoja) dibujarHoja();
+}
+async function seguirPersona(b) {
+  const id = b.dataset.id; if (!id || S.following.has(id)) return;
+  ocupado(b, true);
+  try { await api.follow(id, true, S.user.id); } catch (e) { ocupado(b, false); return fallo(e); }
+  S.following.add(id); guardarArranque(S.user.id);
+  const h = pila.find((x) => x.tipo === 'personas');
+  if (h && h.datos.lista) {
+    const yo = h.datos.lista.find((x) => x.id === id && x.tipo === 'seguidor');
+    h.datos.lista.forEach((x) => { if (x.id === id) x.lo_sigo = true; });
+    if (yo) { h.datos.lista.unshift(Object.assign({}, yo, { tipo: 'siguiendo', at: new Date().toISOString() }), Object.assign({}, yo, { tipo: 'amistad', at: new Date().toISOString() })); }
+  }
+  aviso(C.PERSONAS_SIGUES.replace('{n}', (h && h.datos.lista.find((x) => x.id === id) || {}).name || ''), 'user-check');
+  if (hojaArriba() === h) dibujarHoja();
+  if (S.tab === 'perfil' && !pila.length) pintarPerfil();
+}
 function perfilHTML(p, st, propio, tarjetas, o = {}) {
   const ls = logros(st);
-  const porCat = (st.categorias || []).map((c) => `<div class="li" style="flex-direction:column;align-items:stretch">
+  // 2.0.9: las medallas son información personal: solo en tu propio perfil
+  const porCat = !propio ? '' : (st.categorias || []).map((c) => `<div class="li" style="flex-direction:column;align-items:stretch">
       <div class="row between">${catBadge(c.name, c.icon, c.color)}<span class="muted">${c.total} ${c.total === 1 ? 'hallazgo' : 'hallazgos'}</span></div>
       <div class="medals">${ls.filter((l) => l.tipo === 'cat' && l.cat === c.id).map(medalla).join('')}</div></div>`).join('');
   const grupo = (t) => ls.filter((l) => l.tipo === t).map(medalla).join('');
@@ -1792,7 +1888,8 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
   const silencio = propio ? null : S.mutes.find((m) => m.target_user === p.id);
   return `${propio ? pasosHTML(S.retos) : ''}<div class="row perfil-cabeza" style="gap:14px">${avatar(p, 'lg')}<div class="grow" style="min-width:0"><h2>${esc(p.name)}${medallaNombre(p.id)}</h2>${p.bio ? `<div class="muted">${esc(p.bio)}</div>` : ''}
       ${colecciones.length ? `<div class="colicons">${colecciones.map((c) => `<span class="colicon" style="background:${okColor(c.color)}" data-tip="${esc(c.name)} · ${c.total}" aria-label="${esc(c.name)}">${ic(c.icon)}</span>`).join('')}</div>` : ''}
-      <div class="tiny row" style="margin-top:4px"><span data-tip="Seguidores">${ic('users')} ${st.seguidores || 0}</span> · <span data-tip="Siguiendo">${ic('user-check')} ${st.siguiendo || 0}</span></div>
+      ${propio ? `<button type="button" class="tiny row contadores" data-act="mis_personas" data-v="amistad" aria-label="${esc(C.PERSONAS_TITULO)}" style="margin-top:4px"><span data-tip="Seguidores">${ic('users')} ${st.seguidores || 0}</span> · <span data-tip="Siguiendo">${ic('user-check')} ${st.siguiendo || 0}</span>${ic('chevron-right')}</button>`
+        : `<div class="tiny row" style="margin-top:4px"><span data-tip="Seguidores">${ic('users')} ${st.seguidores || 0}</span> · <span data-tip="Siguiendo">${ic('user-check')} ${st.siguiendo || 0}</span></div>`}
       ${p.blocked ? `<div class="tiny row">${ic('ban')} bloqueada</div>` : ''}
       ${silencio && o.comparte === false ? `<div class="tiny row">${ic('cg-silenciar')} ${esc(C.AYUDA.silenciado)}</div>` : ''}</div>${pinPerfil(p, propio)}</div>
     ${propio ? `<div class="perfil-botones">${ib('editar_perfil', 'pencil', 'editar')}${ib('whatsapp_perfil', 'brand-whatsapp', 'whatsapp', `data-id="${p.id}"`)}
@@ -1816,8 +1913,8 @@ function perfilHTML(p, st, propio, tarjetas, o = {}) {
     </div>
     ${!propio && tarjetas ? coleccionesPersona(p, st, tarjetas) : ''}
     ${propio ? '<div class="sec" id="sec-favoritos"></div>' : ''}
-    <div class="sec"><h3>${ic('medal')} Medallas por categoría</h3><div class="list">${porCat || '<div class="muted">—</div>'}</div></div>
-    ${(st.premios_grupos || []).length ? `<div class="sec"><h3>${ic('users')} Medallas en grupos</h3><div class="list">${(st.premios_grupos || []).map((g) => `<div class="li" style="flex-direction:column;align-items:stretch">
+    ${propio ? `<div class="sec"><h3>${ic('medal')} Medallas por categoría</h3><div class="list">${porCat || '<div class="muted">—</div>'}</div></div>` : ''}
+    ${propio && (st.premios_grupos || []).length ? `<div class="sec"><h3>${ic('users')} Medallas en grupos</h3><div class="list">${(st.premios_grupos || []).map((g) => `<div class="li" style="flex-direction:column;align-items:stretch">
       <div class="row between">${catBadge(g.name, g.icon, g.color)}<span class="muted">${g.total} ${g.total === 1 ? 'hallazgo' : 'hallazgos'}</span></div>
       <div class="medals">${ls.filter((l) => l.tipo === 'grupo' && l.grupo === g.id).map(medalla).join('')}</div></div>`).join('')}</div></div>` : ''}
     ${propio ? `<div class="sec"><h3>${ic('map-pin')} ${esc(C.TITULOS_MEDALLAS.col)}</h3><div class="medals">${grupo('col')}</div>
@@ -2083,9 +2180,15 @@ function califHTML(c, H) {
   const n = k ? k.n || 0 : 0, prom = k && k.promedio, mia = k && k.mia;
   return `<div class="calif-caja">
     <div class="row between">${prom ? estrellas(prom, k.simbolo) : `<span class="tiny">${esc(C.CALIF_POCAS)}</span>`}<span class="tiny">${n ? esc(textoPersonas(n)) : ''}</span></div>
-    ${(c.user_id === S.user.id && !S.me.blocked) || puedoMarcarAusencia(c) ? `<div class="tiny" style="margin-top:6px">${esc(C.CALIF_TU)}</div>
+    ${califSinLugar(c) || puedoMarcarAusencia(c) ? `<div class="tiny" style="margin-top:6px">${esc(C.CALIF_TU)}</div>
     <div class="calif-botones">${[1, 2, 3].map((e) => `<button type="button" class="${mia === e ? 'on' : ''}" data-act="calificar" data-id="${c.id}" data-v="${e}" aria-pressed="${mia === e}" aria-label="${e} de 3">${simboloCalif(k && k.simbolo).repeat(e)}</button>`).join('')}</div>
-    ${c.user_id === S.user.id ? '' : `<div class="tiny">${esc(C.CALIF_SOLO_AHI)}</div>`}` : ''}</div>`;
+    ${califSinLugar(c) ? '' : `<div class="tiny">${esc(C.CALIF_SOLO_AHI)}</div>`}` : ''}</div>`;
+}
+// 2.0.9: la autora y las personas del grupo califican desde donde estén (como un "me gusta");
+// quienes no son del grupo, solo estando en el lugar
+function califSinLugar(c) {
+  if (!c || S.me.blocked) return false;
+  return c.user_id === S.user.id || (!!c.group_id && (S.groups || []).some((g) => g.id === c.group_id));
 }
 // "¡Ya no está!": en todo lo que puedes ver (en lo secreto, solo quien lo registró)
 const puedoMarcarAusencia = (c) => marcaMapa(c) && !S.me.blocked && (!c.is_private || c.user_id === S.user.id) && (!c.group_id || c.group_public || !!miGrupo(c.group_id));
@@ -2230,7 +2333,7 @@ function nuevoRegistro(destino) {
     : (S.coleccionCat ? 'c:' + S.coleccionCat : (S.cats[0] ? 'c:' + S.cats[0].id : MIS_HALLAZGOS));
   Object.assign(R, { original: null, recorte: null, usarRecorte: false, sinFoto: false, pos: null, gps: 'buscando', vistaUrl: null,
     candidatos: [], dest: destIni, destino: destino || null, nombre: '', nota: '', priv: false, etiquetas: [], etiquetasNombres: [], enc: null, encPromesa: null, encModo: 'mira',
-    sinMapa: !destino && sinMapaRecordado(destIni) && !destEncuentro(destIni) });
+    sinMapa: !destino && sinMapaRecordado(destIni) && !destEncuentro(destIni), galeria: false, lugares: null, lugarQ: '' });
   abrirHoja(registroHTML, montarRegistro, 'registro');
   // sin mapa no hace falta pedir la ubicación. 2.0.8: la foto va primero: si el teléfono aún no dio permiso,
   // el aviso del permiso no aparece al abrir la cámara sino al volver con la foto
@@ -2272,7 +2375,12 @@ function registroHTML() {
     <div id="candidatos"></div>
     ${sinMapaReg() || (R.destino && !enMapa(R.destino)) ? `${filaGuardar('guardar_hallazgo', null)}<p class="tiny sin-mapa-nota">${ic('map-pin-off')} ${esc(C.SIN_MAPA_NOTA)}</p>`
       : `${filaGuardar('guardar_hallazgo', R, 'gps-estado')}
-    <div class="mapa-caja"><div class="minimap" id="mini-reg"></div><div class="mapa-lado">${ib('releer_gps', 'current-location', 'gps', '', 'sm')}</div></div>`}`;
+    ${R.galeria ? `<div class="buscar-lugar"><p class="tiny" style="margin:0 0 6px">${ic('photo')} ${esc(C.GALERIA_PISTA)}</p>
+      <label class="campo-ic">${ic('search')}<input id="buscar-lugar" class="in compacto" maxlength="120" placeholder="${esc(C.LUGAR_PISTA)}" aria-label="${esc(C.LUGAR_PISTA)}" autocomplete="off" enterkeyhint="search"></label>
+      <div id="lugares"></div></div>` : ''}
+    <div class="mapa-caja ${R.galeria ? 'con-mira' : ''}"><div class="minimap ${R.galeria ? 'grande' : ''}" id="mini-reg"></div>${R.galeria ? `<div class="mira" aria-hidden="true"><div class="pin" style="background:${C.COLORES.terracota}">${ic('map-pin')}</div></div>` : ''}
+      <div class="mapa-lado">${ib('releer_gps', 'current-location', 'gps', '', 'sm')}</div></div>
+    ${R.galeria ? `<p class="tiny mira-nota">${esc(C.MIRA_NOTA)} · © OpenStreetMap</p>` : ''}`}`;
 }
 // Solo aplica a hallazgos nuevos fuera de los grupos de encuentro (ahí todo es ubicación)
 const sinMapaReg = () => !!R.sinMapa && !R.destino && !destEncuentro();
@@ -2305,15 +2413,19 @@ function recordarFormulario() {
   const p = valor(raiz, 'priv'); if (p) R.priv = p === '1';
 }
 function montarRegistro(raiz) {
-  $$('[data-in="foto"]', raiz).forEach((inp) => inp.addEventListener('change', () => inp.files[0] && tomarFoto(inp.files[0])));
+  // 2.0.9: si la foto viene de la galería (sin cámara), se ayuda a ubicarla: buscador y mapa grande con mira
+  $$('[data-in="foto"]', raiz).forEach((inp) => inp.addEventListener('change', () => { if (!inp.files[0]) return; R.galeria = !inp.hasAttribute('capture'); tomarFoto(inp.files[0]); }));
   const cv = $('#encuadre', raiz);
   if (cv && R.enc) montarEncuadre(cv, R.enc, () => { R.recorte = null; generarCuadro(); });
   const el = $('#mini-reg', raiz);
   if (el) {
-    const mm = miniMapa(el, R.pos, (p) => { R.pos = p; R.gps = 'ok'; pintarGPS(); buscarCandidatos(); });
+    const alMover = (p) => { if (p.acc == null) R.manualAt = Date.now(); R.pos = p; R.gps = 'ok'; pintarGPS(); buscarCandidatos(); };
+    const mm = R.galeria ? mapaMira(el, R.pos, alMover) : miniMapa(el, R.pos, alMover);
     R.moverMini = mm.mover;
     buscarCandidatos();
   }
+  const bl = $('#buscar-lugar', raiz);
+  if (bl) { bl.value = R.lugarQ || ''; bl.addEventListener('input', () => { R.lugarQ = bl.value; buscarLugarPronto(); }); if (R.lugares) pintarLugares(); }
 }
 function pintarGPS() {
   const e = $('#gps-estado'); if (!e) return;
@@ -2322,7 +2434,11 @@ function pintarGPS() {
 }
 function leerGPS() {
   R.gps = 'buscando'; pintarGPS();
-  getPos().then((p) => { R.pos = p; R.gps = 'ok'; pintarGPS(); if (R.moverMini) R.moverMini(p); buscarCandidatos(); })
+  const t0 = Date.now();
+  getPos().then((p) => {
+    // 2.0.9: si mientras tanto la persona eligió el lugar a mano (o con el buscador), el GPS no lo mueve
+    if (R.pos && R.pos.acc == null && (R.manualAt || 0) > t0) { R.gps = 'ok'; pintarGPS(); return; }
+    R.pos = p; R.gps = 'ok'; pintarGPS(); if (R.moverMini) R.moverMini(p); buscarCandidatos(); })
     .catch(() => { R.gps = R.pos ? 'ok' : 'error'; pintarGPS(); });
 }
 // Sugerencia: algo tuyo registrado muy cerca de aquí
@@ -4925,6 +5041,7 @@ function textoAviso(a) {
   if (k === 'premio_siempre') return C.SIEMPRE_AVISO.replace('{h}', a.find_name || '').replace('{n}', a.texto || '');
   if (k === 'premio_podio') return C.PODIO_AVISO.replace('{n}', a.texto || '');
   if (k === 'sigue_col') return C.SIGUE_COL_AVISO.replace('{n}', a.actor_name || '').replace('{c}', a.texto || '');
+  if (k === 'calificacion') return (+a.reaccion === 1 ? C.CALIF_AVISO_1 : C.CALIF_AVISO).replace('{n}', a.actor_name || '').replace('{h}', a.find_name || '').replace('{e}', a.reaccion || '');
   if (k === 'reaccion' && a.reaccion === 'eye') return C.VISTO_AVISO.replace('{n}', a.actor_name || '').replace('{h}', a.find_name || '');
   const r = C.REACCIONES.find((x) => x.tipo === a.reaccion);
   return `${a.actor_name} reaccionó a ${a.find_name}${r ? ` (${r.ayuda.toLowerCase()})` : ''}`;
@@ -4941,6 +5058,7 @@ function iconoAviso(a) {
   if (a.kind === 'propuesta') return 'map-pin';
   if (a.kind === 'gracias') return 'eye-check';
   if (a.kind === 'favorito') return 'bookmark';
+  if (a.kind === 'calificacion') return 'star';
   if (a.kind === 'solicitud_ok') return 'user-check';
   if (a.kind === 'respuesta') return 'message-circle';
   if (a.kind === 'amistad') return 'heart-handshake';
@@ -5798,6 +5916,10 @@ const ACCIONES = {
   esta_aqui_enviar: (b) => estaAquiEnviar(b),
   propuesta_responder: (b) => responderPropuesta(b),
   pines_revisar: () => hojaPinesRevisar(),
+  elegir_lugar: (b) => elegirLugar(b),
+  mis_personas: (b) => hojaPersonas(b.dataset.v),
+  personas_tab: (b) => { const h = hojaArriba(); if (h && h.tipo === 'personas') { h.datos.tab = b.dataset.v; dibujarHoja(); } },
+  seguir_persona: (b) => seguirPersona(b),
   revisar_listo: (b) => revisarListo(b),
   revisar_donde: (b) => hojaDondeLoVieron(b.dataset.id),
   calif_simbolo: (b) => hojaSimbolo(b.dataset.id, !!b.dataset.borrador),
@@ -6650,10 +6772,10 @@ const ACCIONES = {
   async calificar(b) {
     const id = b.dataset.id, n = +b.dataset.v; if (!id || !(n >= 1 && n <= 3)) return;
     ocupado(b, true);
-    // 2.0.3: quien registró el hallazgo califica sin estar en el lugar; las demás, estando ahí
-    const c = S.cache.get(id), propio = !!c && c.user_id === S.user.id;
+    // 2.0.9: la autora y las personas del grupo califican sin ubicación; quienes no son del grupo, estando ahí
+    const c = S.cache.get(id) || (fichaH && fichaH.id === id ? fichaH.c : null);
     let p = { lat: null, lng: null, acc: null };
-    if (!propio) { try { p = await getPos(); } catch (e) { ocupado(b, false); return aviso(C.CALIF_SIN_GPS, 'current-location'); } }
+    if (!califSinLugar(c)) { try { p = await getPos(); } catch (e) { ocupado(b, false); return aviso(C.CALIF_SIN_GPS, 'current-location'); } }
     try {
       const r = await api.calificar(id, n, p);
       ocupado(b, false);
@@ -6669,6 +6791,7 @@ const ACCIONES = {
       }
       if (r && r.motivo === 'lejos') return aviso(C.CALIF_LEJOS.replace('{d}', metros(r.distancia)), 'navigation');
       if (r && r.motivo === 'sin_mapa') return aviso(C.SIN_MAPA_NO_APLICA, 'map-pin-off');
+      if (r && r.motivo === 'ubicacion') return aviso(C.CALIF_SIN_GPS, 'current-location');
       return aviso(C.CALIF_APROX, 'current-location');
     } catch (e) { ocupado(b, false); fallo(e); }
   },
@@ -6902,7 +7025,7 @@ async function iniciar() {
   try { const u = await api.session(); if (u) arrancar(u); else if (!S.user) pantallaSinCuenta(); }
   catch (e) { fallo(e); pantallaSinCuenta(); }
 }
-window.__CG__ = { ACCIONES, S, cargarCalifs, ARTE, logros, motivoPremio, tablaGeneral, agrupar, pintarPines, hojaChats, cargarPrimeros, tarjeta, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
+window.__CG__ = { ACCIONES, S, R, cargarCalifs, ARTE, logros, motivoPremio, tablaGeneral, agrupar, pintarPines, hojaChats, cargarPrimeros, tarjeta, novedades, revisarPremios, cargarTop, cargarSigoCols, hojaGuardarropa, pasosHTML, pinIcono, capasAdorno, recortarVacio, protegerFotosAntiguas, tipoInstalacion,
   subirPendientes, contarPendientes, BDP, encuentroActual, textoAviso, salirGrupo, fotoMuro, textoWhatsAppEstado, abrirEncuentro, pararCompartir, R, dibujarHoja, recargarGrupos, arrancar, crearPDF, ordenarFichas,
   versionNueva: (w) => { trabajadorEsperando = w; pintarVersionNueva(); } };
 iniciar();

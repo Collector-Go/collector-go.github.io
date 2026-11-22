@@ -3,7 +3,7 @@
    Casi todos los cambios se hacen aquí, sin tocar app.js.
    ===================================================================== */
 window.CONFIG = {
-  VERSION: '2.0.8',
+  VERSION: '2.0.9',
 
   // Datos de tu proyecto de Supabase (Settings → API). Son públicos por
   // diseño: la seguridad la dan las reglas de la base de datos.
@@ -240,9 +240,9 @@ window.CONFIG = {
   SIGUE_COL_AVISO: '{n} sigue tu colección {c}',
   // Calificación en grupos (solo estrellas)
   CALIF_GRUPO: 'Calificación con estrellas',
-  CALIF_GRUPO_TEXTO: 'Cada lugar se califica con 1 a 3 estrellas. Quien lo registró califica desde donde sea; las demás personas, solo estando ahí.',
+  CALIF_GRUPO_TEXTO: 'Cada hallazgo se califica con 1 a 3 estrellas. Las personas del grupo califican desde donde estén; quienes no son del grupo, solo estando en el lugar.',
   CALIF_TU: 'Tu calificación',
-  CALIF_SOLO_AHI: 'Solo estando en el lugar.',
+  CALIF_SOLO_AHI: 'Como no eres del grupo, calificas estando en el lugar.',
   CALIF_POCAS: 'Aún sin calificar',
   CALIF_N: '{n} personas',
   CALIF_N1: '1 persona',
@@ -251,6 +251,8 @@ window.CONFIG = {
   CALIF_LEJOS: 'Para calificar tienes que estar en el lugar. Estás a {d}.',
   CALIF_APROX: 'Tu teléfono está dando una ubicación aproximada. Activa la ubicación exacta para calificar.',
   CALIF_SIN_GPS: 'Activa el GPS para calificar',
+  CALIF_AVISO: '{n} calificó tu {h} con {e} estrellas',
+  CALIF_AVISO_1: '{n} calificó tu {h} con 1 estrella',
   COLECCION_NUEVA: 'Desbloqueaste una nueva colección: ahora puedes tener {n}.',
   COLECCION_MAXIMO: 'Desbloqueaste tu colección número 15. Llegaste al máximo de colecciones.',
   COLECCION_MAXIMO_CORTO: 'llegaste al máximo de colecciones',
@@ -306,6 +308,24 @@ window.CONFIG = {
   GRUPO_PANEL_SUBIR: 'Subir el panel del grupo',
   GRUPO_PANEL_BAJAR: 'Bajar el panel del grupo',
   COL_TODAS: 'Todas',
+  LUGARES_URL: 'https://nominatim.openstreetmap.org/search',
+  GALERIA_PISTA: '¿La foto no es de aquí? Busca el lugar o mueve el mapa hasta que la mira quede encima.',
+  LUGAR_PISTA: 'Calle y número, lugar o colonia',
+  LUGAR_BUSCANDO: 'Buscando…',
+  LUGAR_ERROR: 'No se pudo buscar. Revisa tu señal o mueve el mapa a mano.',
+  LUGAR_NADA: 'No encontré ese lugar. Prueba con otra forma de escribirlo o mueve el mapa.',
+  LUGAR_LISTO: 'Listo. Mueve el mapa si hace falta afinar',
+  MIRA_NOTA: 'El pin queda donde está la mira',
+  PERSONAS_TITULO: 'Tus personas',
+  PERSONAS_AMISTADES: 'Amistades',
+  PERSONAS_SEGUIDORES: 'Seguidores',
+  PERSONAS_SIGUIENDO: 'Siguiendo',
+  PERSONAS_SEGUIR: 'Seguir',
+  PERSONAS_SIGUES: 'Ahora sigues a {n}',
+  PERSONAS_SIN_AMISTADES: 'Aún no tienes amistades: son las personas que sigues y que también te siguen',
+  PERSONAS_SIN_SEGUIDORES: 'Aún nadie te sigue',
+  PERSONAS_SIN_SIGUIENDO: 'Aún no sigues a nadie',
+  PERSONAS_ERROR: 'No se pudo cargar la lista. Revisa tu señal e inténtalo de nuevo.',
   COMENTARIO_EDITAR: 'Editar comentario',
   COMENTARIO_EDITADO: 'editado',
   COMENTARIO_GUARDADO: 'Comentario corregido',
